@@ -1,0 +1,19 @@
+[package]
+name = "castify-core"
+description = "Castify domain primitives, config, and error types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1.0.103"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+url = "2.5.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"

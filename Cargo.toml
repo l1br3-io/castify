@@ -1,0 +1,22 @@
+[workspace]
+members = ["crates/api", "crates/core", "crates/storage", "crates/auth"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "AGPL-3.0-only"
+repository = "https://github.com/l1br3/castify"
+authors = ["l1br3"]
+
+[workspace.dependencies]
+castify-core = { path = "crates/core" }
+castify-storage = { path = "crates/storage" }
+castify-auth = { path = "crates/auth" }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+panic = "abort"

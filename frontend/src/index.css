@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@theme {
+  --color-castify-canvas: oklch(20% 0.02 280);
+  --color-castify-surface: oklch(24% 0.02 280);
+  --color-castify-text: oklch(96% 0.01 280);
+  --color-castify-accent: oklch(70% 0.18 320);
+  --font-sans: "Inter", system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-castify-canvas);
+  color: var(--color-castify-text);
+}
