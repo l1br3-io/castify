@@ -1,6 +1,8 @@
+use axum::extract::Request;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
 use crate::routes::{csrf, health, session, session_webauthn, setup, setup_webauthn};
@@ -45,5 +47,18 @@ pub fn build_app(state: AppState) -> Router {
         // AppState to access the session secret; csrf_middleware has no state.
         .layer(from_fn(csrf_middleware))
         .layer(from_fn_with_state(state, auth_middleware))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    tracing::info_span!(
+                        "http.request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                    )
+                })
+                // Default OnResponse level is DEBUG, which the INFO filter
+                // drops. Bump to INFO so `status` + `latency` land on every
+                // request log (PRD FR-7.2).
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
 }

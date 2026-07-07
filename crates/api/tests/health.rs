@@ -27,6 +27,10 @@ async fn health_returns_ok_with_payload() {
         value["uptime_seconds"].is_u64(),
         "uptime_seconds must be u64"
     );
+    assert_eq!(
+        value["db"], "ok",
+        "db liveness field must be ok on happy path"
+    );
 }
 
 #[tokio::test]
