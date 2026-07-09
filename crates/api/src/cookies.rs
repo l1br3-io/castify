@@ -1,7 +1,7 @@
-//! Shared helpers for issuing and clearing the castify session cookie, plus
-//! extracting the signed session id from an incoming `CookieJar`. Used by both
-//! the password and passkey first-run setup flows, and by the session routes
-//! (login, get, logout).
+//! Cookie plumbing for the castify API: the signed session cookie and the
+//! double-submit CSRF cookie. Cross-cutting — consumed by [`crate::middleware`]
+//! (cookie extraction + name constants) and the session/setup/csrf routes
+//! (build/clear).
 use axum_extra::extract::CookieJar;
 use base64::Engine;
 use cookie::{Cookie, SameSite};

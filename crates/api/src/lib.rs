@@ -1,4 +1,6 @@
 pub mod app;
+pub mod cookies;
+pub mod dto;
 pub mod error;
 pub mod middleware;
 pub mod routes;

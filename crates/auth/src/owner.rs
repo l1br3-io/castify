@@ -20,11 +20,4 @@ impl NewOwner {
             display_name,
         }
     }
-
-    /// Construct a `NewOwner` with a caller-supplied id. Used by WebAuthn
-    /// setup, where the owner id must match the WebAuthn user handle that was
-    /// bound to the credential at `begin` time.
-    pub fn with_id(id: Uuid, display_name: Option<String>) -> Self {
-        Self { id, display_name }
-    }
 }

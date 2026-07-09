@@ -1,6 +1,5 @@
 use castify_api::app::build_app;
 use castify_api::state::AppState;
-use castify_auth::build_webauthn;
 use castify_core::Config;
 use castify_storage::{connect, run_migrations};
 use sqlx::SqlitePool;
@@ -31,10 +30,8 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         log_level: "warn".to_string(),
         data_dir: data_dir.clone(),
         database_path: path.clone(),
-        public_url: "http://localhost:3000".parse().unwrap(),
     };
-    let webauthn = build_webauthn(&config).unwrap();
-    let state = AppState::new(config, pool, secret, webauthn);
+    let state = AppState::new(config, pool, secret);
     (state, named, path)
 }
 

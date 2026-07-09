@@ -3,7 +3,7 @@ use castify_api::app::build_app;
 use castify_api::shutdown::shutdown_signal;
 use castify_api::state::AppState;
 use castify_api::tracing_init::init_tracing;
-use castify_auth::{build_webauthn, SessionSecret};
+use castify_auth::SessionSecret;
 use castify_core::Config;
 use castify_storage::{connect, run_migrations};
 
@@ -17,7 +17,6 @@ async fn main() -> anyhow::Result<()> {
         bind = %config.bind_addr,
         data_dir = %config.data_dir.display(),
         database_path = %config.database_path.display(),
-        public_url = %config.public_url,
         "starting castify"
     );
 
@@ -31,9 +30,8 @@ async fn main() -> anyhow::Result<()> {
         SessionSecret::resolve(&pool, std::env::var("CASTIFY_SESSION_SECRET").ok())
             .await
             .context("failed to resolve session secret")?;
-    let webauthn = build_webauthn(&config).context("failed to build webauthn relying party")?;
 
-    let state = AppState::new(config.clone(), pool, session_secret, webauthn);
+    let state = AppState::new(config.clone(), pool, session_secret);
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

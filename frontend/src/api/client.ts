@@ -130,3 +130,21 @@ async function refreshCsrfToken(): Promise<string | null> {
     return null;
   }
 }
+
+interface CsrfResponse {
+  token: string;
+}
+
+/**
+ * Bootstrap: fetch a fresh CSRF token from `GET /api/csrf` and cache it for
+ * `apiFetch` to inject on subsequent mutations. Callers must invoke this once
+ * after every successful login/setup finish — the cached token is scoped to a
+ * session and a fresh login establishes a new session. Throws `ApiError` on
+ * failure (unlike the internal `refreshCsrfToken`, which swallows errors to
+ * suit the 403-retry path).
+ */
+export async function fetchCsrfToken(): Promise<string> {
+  const body = await apiFetch<CsrfResponse>("/api/csrf");
+  setCsrfToken(body.token);
+  return body.token;
+}

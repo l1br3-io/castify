@@ -2,14 +2,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use url::Url;
 
 const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 3000;
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_DB_FILENAME: &str = "castify.db";
-const DEFAULT_PUBLIC_URL: &str = "http://localhost:3000";
 const CONFIG_DOCS_HINT: &str = "See docs/config.md for the full reference.";
 
 #[derive(Debug, Clone)]
@@ -18,9 +16,6 @@ pub struct Config {
     pub log_level: String,
     pub data_dir: PathBuf,
     pub database_path: PathBuf,
-    /// Public origin used for WebAuthn (e.g. `https://castify.example.com`).
-    /// Drives the relying party origin and id passed to `webauthn-rs`.
-    pub public_url: Url,
 }
 
 impl Config {
@@ -46,38 +41,13 @@ impl Config {
 
         validate_data_dir(&data_dir)?;
 
-        let public_url = parse_public_url(
-            "CASTIFY_PUBLIC_URL",
-            std::env::var("CASTIFY_PUBLIC_URL").ok().as_deref(),
-        )?;
-
         Ok(Self {
             bind_addr,
             log_level,
             data_dir,
             database_path,
-            public_url,
         })
     }
-}
-
-fn parse_public_url(key: &str, raw: Option<&str>) -> Result<Url> {
-    let raw = raw.unwrap_or(DEFAULT_PUBLIC_URL);
-    let url = Url::parse(raw).with_context(|| {
-        format!("{key} must be a valid absolute URL (e.g. https://castify.example.com); got {raw:?}. {CONFIG_DOCS_HINT}")
-    })?;
-    if !url.has_host() {
-        bail!("{key} must include a host (got {raw:?}). {CONFIG_DOCS_HINT}");
-    }
-    // WebAuthn relies on the origin's scheme + host + port. Origin URLs must be
-    // http(s); other schemes (file:, ws:, ...) can't back a credential.
-    if url.scheme() != "http" && url.scheme() != "https" {
-        bail!(
-            "{key} scheme must be http or https; got {:?}. {CONFIG_DOCS_HINT}",
-            url.scheme()
-        );
-    }
-    Ok(url)
 }
 
 fn env_string(key: &str, default: &str) -> String {
@@ -169,7 +139,6 @@ mod tests {
             "CASTIFY_LOG",
             "CASTIFY_DATA_DIR",
             "CASTIFY_DB_PATH",
-            "CASTIFY_PUBLIC_URL",
             "RUST_LOG",
         ] {
             std::env::remove_var(key);
@@ -188,8 +157,6 @@ mod tests {
         assert_eq!(cfg.bind_addr.port(), DEFAULT_PORT);
         assert_eq!(cfg.log_level, DEFAULT_LOG_LEVEL);
         assert!(cfg.database_path.ends_with(DEFAULT_DB_FILENAME));
-        assert_eq!(cfg.public_url.host_str(), Some("localhost"));
-        assert_eq!(cfg.public_url.port(), Some(3000));
     }
 
     #[test]
@@ -256,56 +223,5 @@ mod tests {
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.log_level, "debug");
-    }
-
-    #[test]
-    fn public_url_default_is_localhost() {
-        let _g = EnvGuard::lock();
-        clear_castify_env();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
-
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.public_url.host_str(), Some("localhost"));
-        assert_eq!(cfg.public_url.port(), Some(3000));
-    }
-
-    #[test]
-    fn public_url_overrides_apply() {
-        let _g = EnvGuard::lock();
-        clear_castify_env();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
-        std::env::set_var("CASTIFY_PUBLIC_URL", "https://castify.example.com");
-
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.public_url.scheme(), "https");
-        assert_eq!(cfg.public_url.host_str(), Some("castify.example.com"));
-    }
-
-    #[test]
-    fn public_url_rejects_non_http_schemes() {
-        let _g = EnvGuard::lock();
-        clear_castify_env();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
-        std::env::set_var("CASTIFY_PUBLIC_URL", "file:///etc/passwd");
-
-        let err = Config::from_env().expect_err("must error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("CASTIFY_PUBLIC_URL"), "msg = {msg}");
-    }
-
-    #[test]
-    fn public_url_rejects_malformed() {
-        let _g = EnvGuard::lock();
-        clear_castify_env();
-        let tmp = tempfile::tempdir().unwrap();
-        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
-        std::env::set_var("CASTIFY_PUBLIC_URL", "not a url");
-
-        let err = Config::from_env().expect_err("must error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("CASTIFY_PUBLIC_URL"), "msg = {msg}");
     }
 }

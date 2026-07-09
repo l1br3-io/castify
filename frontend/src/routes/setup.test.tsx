@@ -12,27 +12,32 @@ import {
 } from "../test/utils";
 
 describe("SetupPage", () => {
-  it("shows the wizard heading and passkey CTA", () => {
+  it("shows the wizard heading and create-account button", () => {
     renderWithProviders(<SetupPage />, {
       initialEntries: ["/setup"],
     });
     expect(screen.getByText("Welcome to Castify")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /set up with passkey/i }),
+      screen.getByRole("button", { name: /create account/i }),
     ).toBeInTheDocument();
   });
 
-  it("disables the passkey button until a display name is entered", () => {
+  it("disables the submit button until a display name and password are entered", () => {
     renderWithProviders(<SetupPage />, { initialEntries: ["/setup"] });
-    const passkeyBtn = screen.getByRole("button", {
-      name: /set up with passkey/i,
+    const submitBtn = screen.getByRole("button", {
+      name: /create account/i,
     });
-    expect(passkeyBtn).toBeDisabled();
+    expect(submitBtn).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("Display name"), {
       target: { value: "Alex" },
     });
-    expect(passkeyBtn).not.toBeDisabled();
+    expect(submitBtn).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    expect(submitBtn).not.toBeDisabled();
   });
 
   it("submits the password form and navigates home on success", async () => {
@@ -67,7 +72,7 @@ describe("SetupPage", () => {
     fireEvent.change(passwordInput, { target: { value: "testpassword123" } });
 
     fireEvent.click(
-      screen.getByRole("button", { name: /create with password/i }),
+      screen.getByRole("button", { name: /create account/i }),
     );
 
     await waitFor(() => {
@@ -110,7 +115,7 @@ describe("SetupPage", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: /create with password/i }),
+      screen.getByRole("button", { name: /create account/i }),
     );
 
     await waitFor(() => {

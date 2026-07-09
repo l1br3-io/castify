@@ -16,13 +16,14 @@ import { redirect } from "react-router-dom";
 
 import { fetchSetupStatus } from "../api/setup";
 import { fetchSession } from "../api/session";
+import { SESSION_QUERY_KEY } from "../hooks/use-session";
 import { queryClient } from "../query-client";
 
 export const SETUP_STATUS_QUERY_KEY = ["setup-status"] as const;
 
 export async function requireSessionLoader(): Promise<null> {
   const session = await queryClient.fetchQuery({
-    queryKey: ["session"],
+    queryKey: SESSION_QUERY_KEY,
     queryFn: fetchSession,
   });
 

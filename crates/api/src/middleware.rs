@@ -21,8 +21,8 @@ use axum_extra::extract::CookieJar;
 
 use castify_auth::SessionId;
 
+use crate::cookies::{extract_session_id, CSRF_COOKIE_NAME, CSRF_HEADER_NAME};
 use crate::error::ApiError;
-use crate::routes::session_cookie::{extract_session_id, CSRF_COOKIE_NAME, CSRF_HEADER_NAME};
 use crate::state::AppState;
 
 /// Predicates for the pre-auth (CSRF- and auth-exempt) `/api/*` routes.
@@ -40,10 +40,6 @@ pub fn is_pre_auth(method: &Method, path: &str) -> bool {
             | (&Method::GET, "/api/setup")
             | (&Method::POST, "/api/setup")
             | (&Method::POST, "/api/session")
-            | (&Method::POST, "/api/session/webauthn/begin")
-            | (&Method::POST, "/api/session/webauthn/finish")
-            | (&Method::POST, "/api/setup/webauthn/register/begin")
-            | (&Method::POST, "/api/setup/webauthn/register/finish")
     )
 }
 
@@ -118,18 +114,6 @@ fn require_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pre_auth_covers_setup_webauthn() {
-        assert!(is_pre_auth(
-            &Method::POST,
-            "/api/setup/webauthn/register/begin"
-        ));
-        assert!(is_pre_auth(
-            &Method::POST,
-            "/api/setup/webauthn/register/finish"
-        ));
-    }
 
     #[test]
     fn pre_auth_covers_setup_status_probe() {

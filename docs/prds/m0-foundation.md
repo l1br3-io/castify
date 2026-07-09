@@ -12,7 +12,7 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 - Single Rust binary serves the React SPA and the HTTP API on one port.
 - Durable storage in SQLite (WAL); data survives process restarts.
 - Configuration loaded from environment + optional file, validated at startup with clear errors.
-- First-run setup wizard: owner creates credentials via **passkey** (primary) or password (fallback).
+- First-run setup wizard: owner creates credentials via **password** (Argon2id).
 - Login, logout, durable sessions.
 - Protected API endpoints reject unauthenticated requests; CSRF protection on mutations.
 - Structured JSON logging with per-request tracing spans.
@@ -37,7 +37,7 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 | Frontend         | Vite + React + TypeScript + React Router + TanStack Query + Tailwind  |
 | API              | REST + JSON                                                            |
 | Database         | SQLite (WAL) via `sqlx`; Postgres target deferred to M5                |
-| Owner auth       | First-run wizard: passkey (`webauthn-rs`) primary, password (`argon2`) fallback |
+| Owner auth       | First-run wizard: password (`argon2`)                                    |
 | Sessions         | Signed HttpOnly cookies, SameSite=Lax, server-side session rows in SQLite |
 | CSRF             | Double-submit token cookie + header                                    |
 | Background work  | In-process `tokio` tasks (none needed in M0)                            |
@@ -65,11 +65,11 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 
 ### FR-4: Owner setup (first-run)
 - **FR-4.1** On first boot (no owner record exists), the API exposes `POST /api/setup`.
-- **FR-4.2** `POST /api/setup` enrolls a passkey via WebAuthn or sets a password; creates the owner row; issues a session cookie.
+- **FR-4.2** `POST /api/setup` sets an Argon2id password; creates the owner row; issues a session cookie.
 - **FR-4.3** After an owner exists, `POST /api/setup` returns `409 Conflict`.
 
 ### FR-5: Login and session
-- **FR-5.1** `POST /api/session` authenticates the owner (passkey assertion or password) and issues a signed HttpOnly cookie.
+- **FR-5.1** `POST /api/session` authenticates the owner (password verify) and issues a signed HttpOnly cookie.
 - **FR-5.2** `DELETE /api/session` invalidates the server-side session row and clears the cookie.
 - **FR-5.3** Sessions persist across server restart.
 - **FR-5.4** `GET /api/session` returns the current owner or `401`.
@@ -89,7 +89,7 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 | Category    | Requirement                                                                              |
 | ----------- | ---------------------------------------------------------------------------------------- |
 | Performance | Cold start < 2s; `/api/health` p99 < 50ms                                                 |
-| Security    | Passkeys preferred; passwords hashed with Argon2id; cookies `Secure` in prod, `HttpOnly`, `SameSite=Lax` |
+| Security    | Passwords hashed with Argon2id; cookies `Secure` in prod, `HttpOnly`, `SameSite=Lax`      |
 | Reliability | Graceful shutdown on SIGTERM drains in-flight requests within 10s                          |
 | Portability | Single static binary (musl) for Linux x86_64 + arm64; Docker image based on distroless     |
 | Operability | Logs parseable by `jq`; config documented in `docs/config.md`                              |
@@ -100,7 +100,7 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 - [ ] One port serves both API and SPA
 - [ ] `/api/health` returns 200 with version + uptime
 - [ ] First boot with no config → setup wizard appears
-- [ ] Owner can create credentials via passkey (password fallback)
+- [ ] Owner can create credentials via password
 - [ ] Subsequent boots skip wizard, show login
 - [ ] Login persists across server restart (session durable in SQLite)
 - [ ] Protected endpoints reject unauthenticated requests
@@ -117,7 +117,6 @@ None external. M0 is the base everything else builds on.
 
 | Risk                                                  | Impact | Mitigation                                                                                |
 | ----------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
-| Passkey (webauthn-rs) complexity blows up the setup flow | Med    | Password fallback always shippable; if passkey slips, M0 ships password-only + passkey fast-follow. |
 | `rust-embed` cross-compile issues in Docker           | Med    | Multi-stage Dockerfile builds frontend in Node stage, copies assets into Rust build stage.  |
 | SQLite migration runner race on first boot            | Low    | Single-writer pool; M0 is single-user.                                                    |
 | SPA deep-linking under embedded serve                 | Low    | Catch-all route returns `index.html` for non-API paths.                                   |
@@ -126,7 +125,7 @@ None external. M0 is the base everything else builds on.
 ## Open questions resolved
 
 - License: **AGPL-3.0**
-- Default credential: **passkey first**, password fallback
+- Default credential: **password** (Argon2id)
 - UI state: **React Context** (Zustand deferred until proven necessary)
 - Tests: **Rust unit + integration, Vitest, Playwright**
 - CLI surface: **wizard only** for M0 (headless CLI considered post-M0)

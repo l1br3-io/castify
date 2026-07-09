@@ -11,7 +11,6 @@ Castify is configured through environment variables. Defaults are chosen so the 
 | `CASTIFY_LOG`         | `info`             | Tracing filter directive (e.g. `info`, `debug`, `castify=trace`). Falls back to `RUST_LOG`. |
 | `CASTIFY_DATA_DIR`    | `./data`           | Directory holding the SQLite database and any other local state. Must exist or be creatable. |
 | `CASTIFY_DB_PATH`     | `<DATA_DIR>/castify.db` | Override the SQLite database file location.                                       |
-| `CASTIFY_PUBLIC_URL`  | `http://localhost:3000` | Public origin the app is reached at (scheme + host + port). Used as the WebAuthn relying party origin and to derive the RP id. Set to your production URL (e.g. `https://castify.example.com`) in real deployments. |
 | `CASTIFY_SESSION_SECRET` | _(auto-generated)_ | Base64- or raw-byte HMAC secret for signing session cookies. Auto-generated and persisted to the database on first boot; override to share sessions across instances. |
 
 ## Errors
@@ -31,16 +30,14 @@ M0 ships without external service keys. Provider OAuth credentials (Google Drive
 
 ## Development with `npm run dev`
 
-When using Vite's dev server (`npm run dev`, port 5173) instead of the embedded production bundle, the API proxy runs from `:5173` to the Rust backend on `:3000`. WebAuthn origin verification uses `CASTIFY_PUBLIC_URL`, so you must set it to the Vite origin:
+When using Vite's dev server (`npm run dev`, port 5173) instead of the embedded production bundle, the API proxy runs from `:5173` to the Rust backend on `:3000`.
 
 ```sh
-CASTIFY_PUBLIC_URL=http://localhost:5173 cargo run
-```
+# Terminal 1: backend on :3000
+cargo run -p castify-api
 
-In another terminal:
-
-```sh
+# Terminal 2: Vite dev server on :5173
 cd frontend && npm run dev
 ```
 
-Without this, passkey enrollment/login fails because the browser sends origin `http://localhost:5173` but the server expects `http://localhost:3000`. The production single-port serve (`cargo run` alone, serving the embedded SPA on `:3000`) is unaffected.
+The production single-port serve (`cargo run` alone, serving the embedded SPA on `:3000`) needs no separate frontend process.

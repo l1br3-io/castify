@@ -145,8 +145,8 @@ async fn pre_auth_allowlist_passes_without_session() {
     // /api/health (GET)
     let (status, _, _) = get(app.clone(), "/api/health", None).await;
     assert_eq!(status, StatusCode::OK);
-    // POST /api/setup is exercised by boot_and_setup; POST /api/session and
-    // the webauthn variants are covered by their dedicated test modules.
+    // POST /api/setup is exercised by boot_and_setup; POST /api/session is
+    // covered by its dedicated test module.
 }
 
 #[tokio::test]

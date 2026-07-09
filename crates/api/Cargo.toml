@@ -21,7 +21,6 @@ castify-auth.workspace = true
 castify-core.workspace = true
 castify-storage.workspace = true
 cookie = "0.18.1"
-dashmap = "6.1.0"
 mime_guess = "2.0.5"
 rand = { version = "0.8", features = ["std_rng"] }
 rust-embed = { version = "8.11.0", features = ["compression"] }
@@ -34,9 +33,6 @@ tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-uuid = "1.20.0"
-webauthn-rs = { version = "0.5.0", features = ["danger-allow-state-serialisation"] }
-webauthn-rs-proto = "0.5.0"
 
 [dev-dependencies]
 http-body-util = "0.1.3"

@@ -30,9 +30,7 @@ describe("LoginPage", () => {
     const passwordInput = screen.getByLabelText("Password");
     fireEvent.change(passwordInput, { target: { value: "testpassword123" } });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /sign in with password/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Wrong password.")).toBeInTheDocument();
@@ -66,43 +64,10 @@ describe("LoginPage", () => {
       target: { value: "testpassword123" },
     });
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /sign in with password/i }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId("home")).toBeInTheDocument();
     });
-  });
-
-  it("disables the passkey button with helper text when begin returns 404", async () => {
-    renderWithProviders(
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-      </Routes>,
-      {
-        initialEntries: ["/login"],
-        fetchImplementation: (input, init) => {
-          const url = String(input);
-          const method = init?.method ?? "GET";
-          if (url.includes("/api/session/webauthn/begin"))
-            return jsonError(404, "no passkeys");
-          return jsonError(404, `unmocked ${method} ${url}`);
-        },
-      },
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /sign in with passkey/i }),
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/no passkey registered/i),
-      ).toBeInTheDocument();
-    });
-    expect(
-      screen.getByRole("button", { name: /sign in with passkey/i }),
-    ).toBeDisabled();
   });
 });

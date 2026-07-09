@@ -20,11 +20,9 @@ use serde::{Deserialize, Serialize};
 use castify_auth::password::verify_password;
 use castify_auth::{AuthError, SessionToken};
 
+use crate::cookies::{build_session_cookie, clear_session_cookie, extract_session_id};
+use crate::dto::OwnerDto;
 use crate::error::{ApiError, ApiResult};
-use crate::routes::dto::OwnerDto;
-use crate::routes::session_cookie::{
-    build_session_cookie, clear_session_cookie, extract_session_id,
-};
 use crate::state::AppState;
 
 const MAX_DISPLAY_NAME_LEN: usize = 80;

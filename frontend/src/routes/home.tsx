@@ -1,5 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { fetchHealth, type HealthResponse } from "../api/health";
+
+interface HealthResponse {
+  status: string;
+  version: string;
+  uptime_seconds: number;
+}
+
+async function fetchHealth(): Promise<HealthResponse> {
+  const response = await fetch("/api/health");
+  if (!response.ok) {
+    throw new Error(`health check failed: ${response.status}`);
+  }
+  return (await response.json()) as HealthResponse;
+}
 
 export function HomePage() {
   const { data, isLoading, error } = useQuery<HealthResponse>({

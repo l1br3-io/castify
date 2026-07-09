@@ -1,6 +1,5 @@
 use crate::session::{iso_in, iso_now, SessionId};
 use crate::{AuthError, AuthResult, NewOwner, Owner};
-use base64::Engine;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 const DEFAULT_SESSION_TTL_DAYS: i64 = 30;
@@ -150,57 +149,5 @@ impl AuthRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
-    }
-
-    /// Persist a verified WebAuthn [`SecurityKey`] for `owner_id`. The
-    /// credential is stored as JSON in `webauthn_credentials.public_key`,
-    /// keyed by the base64url-encoded credential id (which is unique per key).
-    ///
-    /// The `counter` and `transports` columns are best-effort metadata: the
-    /// `public_key` JSON blob is the source of truth for re-authentication, and
-    /// is what [`Self::list_webauthn_credentials`] deserializes back.
-    pub async fn save_webauthn_credential(
-        &self,
-        owner_id: &Uuid,
-        credential: &webauthn_rs::prelude::SecurityKey,
-    ) -> AuthResult<()> {
-        let id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.cred_id());
-        let public_key = serde_json::to_vec(credential)
-            .map_err(|e| AuthError::Internal(anyhow::anyhow!("serialize security key: {e}")))?;
-        let now = iso_now();
-        sqlx::query(
-            "INSERT INTO webauthn_credentials (id, owner_id, public_key, counter, transports, created_at, last_used_at) \
-             VALUES (?, ?, ?, 0, NULL, ?, NULL) \
-             ON CONFLICT(id) DO UPDATE SET public_key = excluded.public_key",
-        )
-        .bind(&id)
-        .bind(owner_id.to_string())
-        .bind(&public_key)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Load every WebAuthn credential owned by `owner_id`. Used to populate
-    /// the allow-list when beginning an authentication challenge.
-    pub async fn list_webauthn_credentials(
-        &self,
-        owner_id: &Uuid,
-    ) -> AuthResult<Vec<webauthn_rs::prelude::SecurityKey>> {
-        let rows = sqlx::query("SELECT public_key FROM webauthn_credentials WHERE owner_id = ?")
-            .bind(owner_id.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            let blob: Vec<u8> = sqlx::Row::get(&row, "public_key");
-            let key: webauthn_rs::prelude::SecurityKey =
-                serde_json::from_slice(&blob).map_err(|e| {
-                    AuthError::Internal(anyhow::anyhow!("deserialize security key: {e}"))
-                })?;
-            out.push(key);
-        }
-        Ok(out)
     }
 }

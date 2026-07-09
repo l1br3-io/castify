@@ -3,7 +3,6 @@ mod common;
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
 use castify_api::app::build_app;
-use castify_auth::build_webauthn;
 use castify_storage::{connect, run_migrations};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -337,10 +336,8 @@ async fn session_survives_restart_with_persisted_secret() {
         log_level: "warn".to_string(),
         data_dir: std::env::temp_dir().join("castify-restart-test"),
         database_path: path.clone(),
-        public_url: "http://localhost:3000".parse().unwrap(),
     };
-    let webauthn = build_webauthn(&config).unwrap();
-    let new_state = castify_api::state::AppState::new(config, pool, secret, webauthn);
+    let new_state = castify_api::state::AppState::new(config, pool, secret);
     let new_app = build_app(new_state);
 
     let (status, body) = get_session(new_app, Some(&cookie)).await;

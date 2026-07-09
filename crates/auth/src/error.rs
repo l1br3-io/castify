@@ -12,8 +12,6 @@ pub enum AuthError {
     SessionExpired,
     #[error("validation failed: {0}")]
     Validation(String),
-    #[error("webauthn error: {0}")]
-    Webauthn(String),
     #[error("password hash error: {0}")]
     PasswordHash(String),
     #[error("database error: {0}")]

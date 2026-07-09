@@ -1,3 +1,15 @@
+//! First-run owner setup — password enrollment.
+//!
+//! All setup endpoints are gated on "no owner exists yet": once an owner
+//! exists, first-run setup is closed and every handler returns `409 Conflict`.
+//!
+//!   * Password — `POST /api/setup` (see [`setup_password`]) hashes the
+//!     password with Argon2id, creates the owner row, and issues a session
+//!     cookie.
+//!
+//! [`setup_status`] is a read-only owner-existence probe used by the SPA's
+//! cold-cache router.
+
 use axum::extract::State;
 use axum::http::header::SET_COOKIE;
 use axum::http::HeaderValue;
@@ -8,28 +20,14 @@ use serde::{Deserialize, Serialize};
 use castify_auth::password::hash_password;
 use castify_auth::{NewOwner, SessionToken};
 
+use crate::cookies::build_session_cookie;
+use crate::dto::OwnerDto;
 use crate::error::{ApiError, ApiResult};
-use crate::routes::session_cookie::build_session_cookie;
 use crate::state::AppState;
 
 const MIN_PASSWORD_LEN: usize = 8;
 const MAX_PASSWORD_LEN: usize = 256;
 const MAX_DISPLAY_NAME_LEN: usize = 80;
-
-#[derive(Debug, Deserialize)]
-pub struct SetupPasswordRequest {
-    pub display_name: Option<String>,
-    pub password: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SetupResponse {
-    pub owner: OwnerDto,
-}
-
-// Re-export so existing internal callers (`crate::routes::setup::OwnerDto`)
-// keep resolving after the type moved to `dto`.
-pub use crate::routes::dto::OwnerDto;
 
 /// Read-only owner-existence probe used by the SPA's cold-cache router.
 ///
@@ -54,6 +52,17 @@ pub async fn setup_status(State(state): State<AppState>) -> ApiResult<impl IntoR
 #[derive(Debug, Serialize)]
 pub struct SetupStatusResponse {
     pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupPasswordRequest {
+    pub display_name: Option<String>,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetupResponse {
+    pub owner: OwnerDto,
 }
 
 pub async fn setup_password(
@@ -81,10 +90,7 @@ pub async fn setup_password(
 
     let cookie = build_session_cookie(&token, state.config());
     let mut response = Json(SetupResponse {
-        owner: OwnerDto {
-            id: owner.id.to_string(),
-            display_name: owner.display_name.clone(),
-        },
+        owner: OwnerDto::from_owner(&owner),
     })
     .into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {

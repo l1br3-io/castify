@@ -109,15 +109,6 @@ async fn migration_0002_creates_auth_tables() {
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO webauthn_credentials \
-         (id, owner_id, public_key, counter, transports, created_at, last_used_at) \
-         VALUES ('cred-1', 'owner-A', X'00', 0, '[\"internal\"]', '2026-01-01T00:00:00Z', NULL)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
         "INSERT INTO sessions (id, owner_id, created_at, expires_at, last_seen_at, user_agent, ip_address) \
          VALUES ('sess-1', 'owner-A', '2026-01-01T00:00:00Z', '2026-02-01T00:00:00Z', '2026-01-01T00:00:00Z', NULL, NULL)",
     )

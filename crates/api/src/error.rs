@@ -43,13 +43,6 @@ impl IntoResponse for ApiError {
                     castify_auth::AuthError::NoOwner => StatusCode::NOT_FOUND,
                     castify_auth::AuthError::OwnerAlreadyExists => StatusCode::CONFLICT,
                     castify_auth::AuthError::Validation(_) => StatusCode::BAD_REQUEST,
-                    // WebAuthn verification failures are caused by client-supplied
-                    // data (malformed credential, wrong challenge, etc.). The
-                    // underlying webauthn-rs errors aren't distinguishable here
-                    // without leaking internals, so treat them all as 400. If a
-                    // genuine server-side misconfiguration occurs it surfaces as
-                    // a build-time `Webauthn` construction failure in `main.rs`.
-                    castify_auth::AuthError::Webauthn(_) => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
                 let message = if status == StatusCode::INTERNAL_SERVER_ERROR {

@@ -46,9 +46,9 @@ test:
 api:
     cargo run -p castify-api
 
-# Like `api`, but pre-set for the Vite dev workflow (WebAuthn origin :5173).
+# Like `api`, named for the split-terminal Vite dev workflow (pair with `dev-web`).
 dev-api:
-    CASTIFY_PUBLIC_URL=http://localhost:5173 cargo run -p castify-api
+    cargo run -p castify-api
 
 # Run the Vite dev server in the foreground (frontend on http://localhost:5173,
 # proxies /api to the backend declared by CASTIFY_BACKEND_URL, default 127.0.0.1:3000).
@@ -61,12 +61,10 @@ dev-web:
 
 # Dev mode: backend + frontend concurrently, with hot-reload on the frontend.
 # Ctrl-C kills both. Requires `cargo-watch` for backend auto-reload; falls back
-# to plain `cargo run` if it's not installed. WebAuthn origin is pinned to the
-# Vite dev server (http://localhost:5173); use `api` for other workflows.
+# to plain `cargo run` if it's not installed.
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    export CASTIFY_PUBLIC_URL=http://localhost:5173
     if cargo watch --version >/dev/null 2>&1; then
         ( cargo watch -x "run -p castify-api" ) &
     else
@@ -79,5 +77,25 @@ dev:
     fi
     # Trap SIGINT/TERM and kill both children.
     trap 'kill 0' INT TERM
+    # Don't expose the frontend until the backend is actually serving, so the
+    # page is never reachable before /api answers (avoids ECONNREFUSED proxy
+    # errors during a cold backend compile).
+    if command -v curl >/dev/null 2>&1; then
+        printf 'waiting for backend on :3000 …\n' >&2
+        ready=0
+        for _ in $(seq 1 120); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/api/health; then
+                ready=1; break
+            fi
+            sleep 0.5
+        done
+        if [ "$ready" = 1 ]; then
+            printf 'backend ready\n' >&2
+        else
+            printf 'warn: backend not responding after 60s; starting frontend anyway\n' >&2
+        fi
+    else
+        printf 'note: curl not found; skipping backend readiness gate\n' >&2
+    fi
     ( cd frontend && npm run dev ) &
     wait
