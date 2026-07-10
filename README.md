@@ -18,10 +18,19 @@ Greenfield. M0 (Foundation) is under active development. Nothing is shipped yet.
 castify/
 ├── crates/         # Rust workspace (api, core, storage, auth)
 ├── frontend/       # Vite + React SPA
-├── docs/prds/      # Product requirements per milestone
+├── docs/           # Config, deployment, and PRDs
 ├── tasks/          # Implementation plans and checklists
-└── ops/            # Docker, deploy
+├── Dockerfile      # Multi-stage build (Node → Rust → distroless)
+└── docker-compose.yml
 ```
+
+## Quick start
+
+```sh
+docker compose up -d
+```
+
+Open `http://localhost:3000` and follow the setup wizard. See [`docs/deploy.md`](./docs/deploy.md) for full deployment instructions.
 
 ## License
 

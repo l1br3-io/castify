@@ -11,6 +11,10 @@ authors.workspace = true
 [dependencies]
 anyhow = "1.0.103"
 chrono = { version = "0.4.45", features = ["serde"] }
+# Force bundled SQLite (compiles from C source) so the binary is fully static
+# and has no runtime dependency on libsqlite3.so. Feature unification across
+# the workspace ensures all crates using sqlx get the bundled build.
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "macros", "chrono"] }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["fs", "macros", "rt"] }

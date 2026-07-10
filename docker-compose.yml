@@ -1,0 +1,15 @@
+services:
+  castify:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - castify-data:/data
+    environment:
+      CASTIFY_DATA_DIR: /data
+      # CASTIFY_SESSION_SECRET: set to share sessions across instances;
+      # auto-generated and persisted to the database on first boot if omitted.
+    restart: unless-stopped
+
+volumes:
+  castify-data:

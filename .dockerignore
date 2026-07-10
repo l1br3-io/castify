@@ -1,0 +1,35 @@
+# Rust build artifacts
+target/
+
+# Frontend build artifacts (rebuilt in Docker)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local data (SQLite + WAL sidecars)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Environment / secrets
+.env
+.env.*
+
+# VCS
+.git/
+.gitignore
+
+# Tooling / docs (not needed in build context)
+.understand-anything/
+.opencode/
+tasks/
+docs/
+*.md
+!frontend/README.md
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
