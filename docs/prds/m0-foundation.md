@@ -1,7 +1,7 @@
 # PRD: M0 — Foundation
 
 > **Status:** Approved baseline — first milestone of the Media Hub Core.
-> **Companion:** [`VISION.md`](../../VISION.md), [`ROADMAP.md`](../../ROADMAP.md), [`tasks/plan.md`](../../tasks/plan.md).
+> **Companion:** [`VISION.md`](../VISION.md), [`ROADMAP.md`](../ROADMAP.md), [`tasks/plan.md`](../../tasks/plan.md).
 
 ## Purpose
 

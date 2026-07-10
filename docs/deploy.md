@@ -8,16 +8,16 @@ Castify ships as a single Docker image — a static Rust binary serving both the
 docker compose up -d
 ```
 
-That's it. The app builds from source (if not cached), starts on port 3000, and persists data to a named Docker volume.
+That's it. The app builds from source (if not cached), starts on port **8427**, and persists data to a named Docker volume.
 
 Verify it's running:
 
 ```sh
-curl localhost:3000/api/health
+curl localhost:8427/api/health
 # {"status":"ok","version":"0.1.0","uptime_seconds":2,"db":"ok"}
 ```
 
-Open `http://localhost:3000` in your browser. On first boot you'll see the setup wizard — enter a display name and password to create the owner account.
+Open `http://localhost:8427` in your browser. On first boot you'll see the setup wizard — enter a display name and password to create the owner account.
 
 ## Common operations
 
@@ -37,7 +37,7 @@ docker build -t castify .
 
 docker run -d \
   --name castify \
-  -p 3000:3000 \
+  -p 8427:8427 \
   -v castify-data:/data \
   --restart unless-stopped \
   castify
@@ -50,7 +50,7 @@ All configuration is via environment variables. See [`docs/config.md`](./config.
 | Variable                 | Default                  | Notes                                          |
 | ------------------------ | ------------------------ | ---------------------------------------------- |
 | `CASTIFY_HOST`           | `0.0.0.0`                | Bind interface                                |
-| `CASTIFY_PORT`           | `3000`                   | Listen port                                    |
+| `CASTIFY_PORT`           | `8427`                   | Listen port                                    |
 | `CASTIFY_LOG`            | `info`                   | Log level (`debug`, `info`, `warn`, `error`)  |
 | `CASTIFY_DATA_DIR`       | `/data` (in image)       | SQLite database + local state                  |
 | `CASTIFY_DB_PATH`        | `<DATA_DIR>/castify.db`  | Override database file location                |
@@ -68,7 +68,7 @@ services:
 
 ## First-run setup flow
 
-1. Navigate to `http://localhost:3000`
+1. Navigate to `http://localhost:8427`
 2. The setup wizard appears (no owner exists yet)
 3. Enter a display name and password (min 8 chars)
 4. You're signed in and redirected to the home page
@@ -103,7 +103,7 @@ docker run --rm -v castify_castify-data:/data -v $(pwd):/backup alpine \
 ## Troubleshooting
 
 **Port already in use:**
-Change `CASTIFY_PORT` or update the host-side port mapping: `-p 8080:3000`.
+Change `CASTIFY_PORT` or update the host-side port mapping: `-p 9090:8427`.
 
 **Permission denied writing to /data:**
 The container runs as uid 65532. If mounting a host directory instead of a named volume, ensure it's writable:

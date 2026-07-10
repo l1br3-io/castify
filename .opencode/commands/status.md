@@ -16,14 +16,14 @@ Produce a read-only snapshot of where the Castify project is right now. The
 
 ## What to read, in order
 
-1. `ROADMAP.md` → identify the **current milestone** (the one whose tasks are
+1. `docs/ROADMAP.md` → identify the **current milestone** (the one whose tasks are
    in flight) and its theme, for the headline.
 2. `tasks/todo.md` → the live checklist:
    - The first `[ ]` task is **the next task** — promote it to the top.
    - Count `[x]` vs total to get progress and the current phase.
    - Note checkpoint states (✅/⬜).
    - If every task is checked, the milestone is complete — say so and point
-     at `ROADMAP.md` for the next milestone instead of printing a next task.
+     at `docs/ROADMAP.md` for the next milestone instead of printing a next task.
 3. `tasks/plan.md` → two things:
    - The "Resuming" section (as-of state, completed work, deviations) —
      summarized, not copy-pasted. Mention the deviation count explicitly so
@@ -81,7 +81,7 @@ template with a one-line pass/fail for each command:
 3. **Graceful degradation.** If `tasks/plan.md` has no "Resuming" section,
    skip that block. If `tasks/todo.md` has no pending task, replace the
    Next-task block with a milestone-complete notice pointing at
-   `ROADMAP.md`. Never error out on a missing file — note it and continue.
+   `docs/ROADMAP.md`. Never error out on a missing file — note it and continue.
 4. **Verify never blocks.** If a verify-mode command fails, report the
    failure inline; do not abort the snapshot. Failures are signal, not
    exceptions.

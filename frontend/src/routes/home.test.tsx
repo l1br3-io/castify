@@ -38,7 +38,7 @@ describe("HomePage", () => {
     });
 
     expect(
-      await screen.findByText("Backend unreachable. Is the API running on port 3000?"),
+      await screen.findByText("Backend unreachable. Is the API running on port 8427?"),
     ).toBeInTheDocument();
   });
 });

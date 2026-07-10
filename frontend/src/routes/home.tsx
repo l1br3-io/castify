@@ -31,7 +31,7 @@ export function HomePage() {
         {isLoading ? (
           <p className="mt-2 opacity-60">Checking…</p>
         ) : error ? (
-          <p className="mt-2 text-red-400">Backend unreachable. Is the API running on port 3000?</p>
+          <p className="mt-2 text-red-400">Backend unreachable. Is the API running on port 8427?</p>
         ) : data ? (
           <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
             <dt className="opacity-60">Status</dt>

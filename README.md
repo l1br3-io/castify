@@ -4,8 +4,8 @@
 
 Castify is a free, open-source **personal media hub** that connects to the cloud storage you already pay for and unifies your scattered videos into one organized, searchable library. The media never leaves your cloud.
 
-- **Vision:** [`VISION.md`](./VISION.md)
-- **Roadmap:** [`ROADMAP.md`](./ROADMAP.md)
+- **Vision:** [`docs/VISION.md`](./docs/VISION.md)
+- **Roadmap:** [`docs/ROADMAP.md`](./docs/ROADMAP.md)
 - **Current milestone:** M0 — Foundation (see [`docs/prds/m0-foundation.md`](./docs/prds/m0-foundation.md))
 
 ## Status
@@ -30,7 +30,7 @@ castify/
 docker compose up -d
 ```
 
-Open `http://localhost:3000` and follow the setup wizard. See [`docs/deploy.md`](./docs/deploy.md) for full deployment instructions.
+Open `http://localhost:8427` and follow the setup wizard. See [`docs/deploy.md`](./docs/deploy.md) for full deployment instructions.
 
 ## License
 

@@ -33,10 +33,10 @@ COPY --from=backend /app/target/release/castify /castify
 COPY --from=backend --chown=65532:65532 /data /data
 
 ENV CASTIFY_HOST=0.0.0.0
-ENV CASTIFY_PORT=3000
+ENV CASTIFY_PORT=8427
 ENV CASTIFY_DATA_DIR=/data
 
-EXPOSE 3000
+EXPOSE 8427
 USER 65532:65532
 
 ENTRYPOINT ["/castify"]

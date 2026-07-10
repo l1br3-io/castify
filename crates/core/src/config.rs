@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 const DEFAULT_HOST: &str = "0.0.0.0";
-const DEFAULT_PORT: u16 = 3000;
+const DEFAULT_PORT: u16 = 8427;
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_DB_FILENAME: &str = "castify.db";

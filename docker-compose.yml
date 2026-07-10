@@ -2,7 +2,7 @@ services:
   castify:
     build: .
     ports:
-      - "3000:3000"
+      - "8427:8427"
     volumes:
       - castify-data:/data
     environment:

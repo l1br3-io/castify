@@ -42,7 +42,7 @@ test:
     echo "== backend: test ==";  cargo test --all
     echo "== frontend: test =="; ( cd frontend && npm run test )
 
-# Run the Rust API in the foreground (backend on 127.0.0.1:3000 by default).
+# Run the Rust API in the foreground (backend on 127.0.0.1:8427 by default).
 api:
     cargo run -p castify-api
 
@@ -51,7 +51,7 @@ dev-api:
     cargo run -p castify-api
 
 # Run the Vite dev server in the foreground (frontend on http://localhost:5173,
-# proxies /api to the backend declared by CASTIFY_BACKEND_URL, default 127.0.0.1:3000).
+# proxies /api to the backend declared by CASTIFY_BACKEND_URL, default 127.0.0.1:8427).
 web:
     cd frontend && npm run dev
 
@@ -81,10 +81,10 @@ dev:
     # page is never reachable before /api answers (avoids ECONNREFUSED proxy
     # errors during a cold backend compile).
     if command -v curl >/dev/null 2>&1; then
-        printf 'waiting for backend on :3000 …\n' >&2
+        printf 'waiting for backend on :8427 …\n' >&2
         ready=0
         for _ in $(seq 1 120); do
-            if curl -sf -o /dev/null http://127.0.0.1:3000/api/health; then
+            if curl -sf -o /dev/null http://127.0.0.1:8427/api/health; then
                 ready=1; break
             fi
             sleep 0.5
