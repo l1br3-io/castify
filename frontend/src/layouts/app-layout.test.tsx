@@ -40,6 +40,7 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Connections")).toBeInTheDocument();
   });
 
   it("sends DELETE /api/session with x-csrf-token on sign-out", async () => {
@@ -81,10 +82,11 @@ describe("AppLayout", () => {
     renderLayout(() => jsonError(401, "unauthorized"));
 
     await waitFor(() => {
-      expect(screen.getByText("M0 · Foundation")).toBeInTheDocument();
+      expect(screen.getByText("Castify")).toBeInTheDocument();
     });
     expect(
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("Connections")).not.toBeInTheDocument();
   });
 });

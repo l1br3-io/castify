@@ -40,6 +40,10 @@ pub fn build_app(state: AppState) -> Router {
             "/api/connections/{id}",
             axum::routing::delete(connections::disconnect),
         )
+        .route(
+            "/api/connections/{id}/scan",
+            axum::routing::post(connections::trigger_rescan).get(connections::scan_status),
+        )
         .route("/api/videos", axum::routing::get(videos::list_videos))
         .fallback(spa_handler)
         .with_state(state.clone())

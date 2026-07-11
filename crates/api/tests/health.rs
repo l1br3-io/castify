@@ -8,7 +8,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn health_returns_ok_with_payload() {
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -39,7 +39,7 @@ async fn unknown_api_route_returns_401_when_unauthenticated() {
     // matching, so an unauthenticated request to a non-existent `/api/*` path
     // returns 401 rather than 404. This is intentional: it prevents path
     // enumeration by unauthenticated callers.
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -54,7 +54,7 @@ async fn unknown_api_route_returns_401_when_unauthenticated() {
 
 #[tokio::test]
 async fn spa_root_serves_html() {
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let response = app
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
@@ -70,7 +70,7 @@ async fn spa_root_serves_html() {
 
 #[tokio::test]
 async fn spa_deep_link_serves_html() {
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -85,7 +85,7 @@ async fn spa_deep_link_serves_html() {
 
 #[tokio::test]
 async fn spa_serves_hashed_asset() {
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let sample = castify_api::spa::list_embedded_assets()
         .into_iter()
         .find(|name| name.starts_with("assets/"))

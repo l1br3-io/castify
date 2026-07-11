@@ -5,6 +5,8 @@
 //!   * `POST /api/connections/{provider}/start`    — initiate OAuth flow
 //!   * `GET  /api/connections/{provider}/callback` — OAuth callback
 //!   * `DELETE /api/connections/{id}`        — disconnect a provider
+//!   * `POST /api/connections/{id}/scan`     — trigger a rescan (202/409)
+//!   * `GET  /api/connections/{id}/scan`     — scan status JSON
 
 use std::time::Instant;
 
@@ -59,6 +61,37 @@ pub struct AvailableProviders {
     pub google_drive: bool,
     pub dropbox: bool,
     pub onedrive: bool,
+}
+
+/// Scan status returned by `GET /api/connections/{id}/scan` (FR-7.3).
+#[derive(Debug, Serialize)]
+pub struct ScanStatusDto {
+    pub status: String,
+    pub videos_found: i64,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl ScanStatusDto {
+    fn from_scan_state(state: Option<castify_catalog::ScanState>) -> Self {
+        match state {
+            Some(s) => Self {
+                status: s.status.as_str().to_string(),
+                videos_found: s.videos_found,
+                started_at: s.started_at,
+                completed_at: s.completed_at,
+                error_message: s.error_message,
+            },
+            None => Self {
+                status: "idle".into(),
+                videos_found: 0,
+                started_at: None,
+                completed_at: None,
+                error_message: None,
+            },
+        }
+    }
 }
 
 pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<ConnectionDto>>> {
@@ -222,6 +255,55 @@ pub async fn disconnect(
 
     repo.delete_connection(&conn.id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/connections/{id}/scan` — trigger a manual rescan.
+///
+/// Returns 202 Accepted if the scan was started, or 409 Conflict if a scan is
+/// already in progress. The scan runs in a background task; progress is visible
+/// via `GET /api/connections/{id}/scan` or the `scan_status` field on
+/// `GET /api/connections`.
+pub async fn trigger_rescan(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let repo = state.catalog_repository();
+
+    let conn = repo
+        .fetch_connection(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    let scan = repo.fetch_scan_state(&id).await?;
+    if let Some(ref s) = scan {
+        if s.status == castify_catalog::ScanStatus::Scanning {
+            return Err(ApiError::Conflict(
+                "a scan is already in progress for this connection".into(),
+            ));
+        }
+    }
+
+    spawn_scan(&state, &conn.id, conn.provider);
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// `GET /api/connections/{id}/scan` — current scan status for a connection.
+///
+/// Returns the scan state: status (`idle`/`scanning`/`error`), videos found,
+/// timestamps, and error message if any. If no scan has been run yet, returns
+/// a default `idle` status.
+pub async fn scan_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ScanStatusDto>> {
+    let repo = state.catalog_repository();
+
+    repo.fetch_connection(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+
+    let scan = repo.fetch_scan_state(&id).await?;
+    Ok(Json(ScanStatusDto::from_scan_state(scan)))
 }
 
 fn parse_provider(s: &str) -> ApiResult<Provider> {

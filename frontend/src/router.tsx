@@ -1,5 +1,6 @@
 import { createBrowserRouter } from "react-router-dom";
 import { AppLayout } from "./layouts/app-layout";
+import { ConnectionsPage } from "./routes/connections";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { NotFoundPage } from "./routes/not-found";
@@ -14,6 +15,11 @@ export const router = createBrowserRouter([
       {
         index: true,
         element: <HomePage />,
+        loader: requireSessionLoader,
+      },
+      {
+        path: "connections",
+        element: <ConnectionsPage />,
         loader: requireSessionLoader,
       },
       { path: "setup", element: <SetupPage />, loader: setupLoader },

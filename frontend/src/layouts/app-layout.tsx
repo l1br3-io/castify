@@ -6,11 +6,17 @@
 // redirected to `/login`. When no session (logged out, on `/setup` or
 // `/login`), the header shows just the brand.
 
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, Link, NavLink, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { logout } from "../api/session";
 import { SESSION_QUERY_KEY, useSession } from "../hooks/use-session";
+
+const NAV_LINK_CLASS = ({ isActive }: { isActive: boolean }) =>
+  [
+    "text-sm transition hover:opacity-100",
+    isActive ? "opacity-100" : "opacity-60",
+  ].join(" ");
 
 export function AppLayout() {
   const navigate = useNavigate();
@@ -29,9 +35,18 @@ export function AppLayout() {
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-white/10 bg-[var(--color-castify-surface)]">
         <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-          <a href="/" className="text-lg font-semibold tracking-tight">
-            Castify
-          </a>
+          <div className="flex items-center gap-6">
+            <Link to="/" className="text-lg font-semibold tracking-tight">
+              Castify
+            </Link>
+            {session && (
+              <nav className="flex items-center gap-4">
+                <NavLink to="/connections" className={NAV_LINK_CLASS}>
+                  Connections
+                </NavLink>
+              </nav>
+            )}
+          </div>
           {session ? (
             <div className="flex items-center gap-3 text-sm">
               <span className="opacity-70">
@@ -49,9 +64,7 @@ export function AppLayout() {
                 {logoutMutation.isPending ? "Signing out…" : "Sign out"}
               </button>
             </div>
-          ) : (
-            <span className="text-xs opacity-60">M0 · Foundation</span>
-          )}
+          ) : null}
         </div>
       </header>
       <main className="flex-1 mx-auto max-w-6xl w-full px-4 py-8">

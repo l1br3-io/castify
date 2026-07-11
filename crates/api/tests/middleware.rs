@@ -132,7 +132,7 @@ async fn protected_route_rejects_missing_session() {
 async fn unknown_api_path_rejects_missing_session() {
     // Unauthenticated requests to unknown `/api/*` paths get 401, not 404 —
     // path enumeration is gated behind auth.
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let (status, _, _) = get(app, "/api/secret-stuff", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
@@ -141,7 +141,7 @@ async fn unknown_api_path_rejects_missing_session() {
 async fn pre_auth_allowlist_passes_without_session() {
     // Each of these must respond with anything other than 401 — they're
     // the routes that establish the session in the first place.
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     // /api/health (GET)
     let (status, _, _) = get(app.clone(), "/api/health", None).await;
     assert_eq!(status, StatusCode::OK);

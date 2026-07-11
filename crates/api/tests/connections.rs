@@ -6,10 +6,18 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
+use castify_catalog::{NewConnection, Provider, TokenBundle};
+
 const PASSWORD: &str = "correct horse battery staple";
 
-async fn boot_and_setup() -> (axum::Router, String, tempfile::TempPath) {
+async fn boot_and_setup() -> (
+    axum::Router,
+    String,
+    castify_catalog::CatalogRepository,
+    tempfile::TempPath,
+) {
     let (state, guard, _path) = common::fresh_state().await;
+    let repo = state.catalog_repository().clone();
     let app = castify_api::app::build_app(state);
     let response = app
         .clone()
@@ -27,7 +35,7 @@ async fn boot_and_setup() -> (axum::Router, String, tempfile::TempPath) {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let cookie = extract_cookie(&response);
-    (app, cookie, guard)
+    (app, cookie, repo, guard)
 }
 
 fn extract_cookie(response: &axum::http::Response<Body>) -> String {
@@ -147,7 +155,7 @@ async fn delete(
 
 #[tokio::test]
 async fn available_returns_all_false_when_unconfigured() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (status, body) = get_json(app, "/api/connections/available", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["google_drive"], false);
@@ -157,7 +165,7 @@ async fn available_returns_all_false_when_unconfigured() {
 
 #[tokio::test]
 async fn list_returns_empty_array() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (status, body) = get_json(app, "/api/connections", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.is_array());
@@ -166,7 +174,7 @@ async fn list_returns_empty_array() {
 
 #[tokio::test]
 async fn start_returns_503_when_not_configured() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
     let (status, body) = post_json(
         app,
@@ -196,7 +204,7 @@ async fn start_rejects_unauthenticated() {
 
 #[tokio::test]
 async fn dropbox_start_returns_503_when_not_configured() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
     let (status, body) = post_json(
         app,
@@ -226,7 +234,7 @@ async fn dropbox_start_rejects_unauthenticated() {
 
 #[tokio::test]
 async fn onedrive_start_returns_503_when_not_configured() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
     let (status, body) = post_json(
         app,
@@ -264,7 +272,7 @@ async fn available_rejects_unauthenticated() {
 
 #[tokio::test]
 async fn disconnect_nonexistent_returns_404() {
-    let (app, cookie, _guard) = boot_and_setup().await;
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
     let status = delete(
         app,
@@ -290,5 +298,138 @@ async fn list_rejects_unauthenticated() {
     let (state, _guard, _path) = common::fresh_state().await;
     let app = castify_api::app::build_app(state);
     let (status, _) = get_json(app, "/api/connections", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+fn sample_bundle() -> TokenBundle {
+    TokenBundle {
+        access_token: "ya29.test".into(),
+        refresh_token: Some("refresh".into()),
+        expires_at: None,
+        token_type: "Bearer".into(),
+        scope: None,
+    }
+}
+
+async fn seed_connection(
+    repo: &castify_catalog::CatalogRepository,
+) -> castify_catalog::ProviderConnection {
+    repo.create_connection(&NewConnection {
+        provider: Provider::GoogleDrive,
+        token_bundle: sample_bundle(),
+        provider_account_id: Some("acct-1".into()),
+        provider_account_email: Some("user@example.com".into()),
+    })
+    .await
+    .unwrap()
+}
+
+// --- Scan status ---
+
+#[tokio::test]
+async fn scan_status_returns_default_idle_for_unscanned_connection() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo).await;
+
+    let (status, body) = get_json(
+        app,
+        &format!("/api/connections/{}/scan", conn.id),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "idle");
+    assert_eq!(body["videos_found"], 0);
+}
+
+#[tokio::test]
+async fn scan_status_404_for_nonexistent_connection() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _body) = get_json(app, "/api/connections/nonexistent/scan", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn scan_status_rejects_unauthenticated() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _) = get_json(app, "/api/connections/x/scan", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// --- Rescan trigger ---
+
+#[tokio::test]
+async fn rescan_returns_202_for_idle_connection() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let conn = seed_connection(&repo).await;
+
+    let (status, _body) = post_json(
+        app,
+        &format!("/api/connections/{}/scan", conn.id),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn rescan_returns_409_when_already_scanning() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let conn = seed_connection(&repo).await;
+
+    // Manually set scan state to "scanning" to simulate an in-progress scan.
+    repo.upsert_scan_state(&castify_catalog::ScanState {
+        connection_id: conn.id.clone(),
+        status: castify_catalog::ScanStatus::Scanning,
+        cursor: None,
+        started_at: Some("2026-01-01T00:00:00Z".into()),
+        completed_at: None,
+        error_message: None,
+        videos_found: 5,
+    })
+    .await
+    .unwrap();
+
+    let (status, body) = post_json(
+        app,
+        &format!("/api/connections/{}/scan", conn.id),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("already in progress"));
+}
+
+#[tokio::test]
+async fn rescan_404_for_nonexistent_connection() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+
+    let (status, _body) = post_json(
+        app,
+        "/api/connections/nonexistent/scan",
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rescan_rejects_unauthenticated() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _) = post_json(app, "/api/connections/x/scan", None, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

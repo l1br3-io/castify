@@ -7,7 +7,7 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 async fn post_setup(body: &str) -> (StatusCode, Value, Option<String>) {
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let response = app
         .oneshot(
             Request::builder()
@@ -144,7 +144,7 @@ async fn get_setup_status(app: axum::Router) -> (StatusCode, Value) {
 #[tokio::test]
 async fn setup_status_open_when_no_owner() {
     // Fresh DB, no owner — must return 200 {"status":"open"} without a cookie.
-    let app = common::fresh_app().await;
+    let (app, _guard) = common::fresh_app().await;
     let (status, body) = get_setup_status(app).await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
     assert_eq!(body["status"], "open", "body = {body}");

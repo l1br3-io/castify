@@ -4,41 +4,84 @@ import { screen } from "@testing-library/react";
 import { HomePage } from "./home";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 
+// The home page branches on `GET /api/connections` (via the `['connections']`
+// query). Zero connections → first-run guide; at least one → the video library
+// (`VideoList`), which queries `GET /api/videos`.
+
+const SAMPLE_CONNECTION = {
+  id: "c1",
+  provider: "google_drive",
+  provider_account_email: "user@example.com",
+  connected_at: "2026-01-01T00:00:00Z",
+  scan_status: "idle" as const,
+  last_scan_at: null,
+  video_count: 3,
+};
+
+const SAMPLE_VIDEO_PAGE = {
+  videos: [
+    {
+      id: "v1",
+      name: "sample.mp4",
+      provider: "google_drive",
+      size_bytes: 1048576,
+      mime_type: "video/mp4",
+      duration_ms: 60000,
+      width: 1920,
+      height: 1080,
+      sources: [
+        {
+          connection_id: "c1",
+          provider: "google_drive",
+          provider_file_id: "gd-1",
+        },
+      ],
+    },
+  ],
+  total: 1,
+  page: 1,
+  limit: 50,
+};
+
+function fetchFor(
+  connectionsResponse: unknown,
+  videoPage: unknown = SAMPLE_VIDEO_PAGE,
+) {
+  return (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/connections") return jsonResponse(connectionsResponse);
+    if (url.startsWith("/api/videos")) return jsonResponse(videoPage);
+    return jsonError(404, "unmocked");
+  };
+}
+
 describe("HomePage", () => {
-  it("shows the loading state before the health check resolves", () => {
+  it("shows the first-run guide when no connections exist", async () => {
     renderWithProviders(<HomePage />, {
-      fetchImplementation: () => new Promise<Response>(() => {}),
-    });
-    expect(screen.getByText("Checking…")).toBeInTheDocument();
-  });
-
-  it("renders health details when the check succeeds", async () => {
-    renderWithProviders(<HomePage />, {
-      fetchImplementation: (input) => {
-        const url = String(input);
-        if (url === "/api/health") {
-          return jsonResponse({
-            status: "ok",
-            version: "1.2.3",
-            uptime_seconds: 42,
-          });
-        }
-        return jsonError(404, "unmocked");
-      },
-    });
-
-    expect(await screen.findByText("ok")).toBeInTheDocument();
-    expect(screen.getByText("1.2.3")).toBeInTheDocument();
-    expect(screen.getByText("42s")).toBeInTheDocument();
-  });
-
-  it("shows an unreachable message when the check fails", async () => {
-    renderWithProviders(<HomePage />, {
-      fetchImplementation: () => jsonError(503, "down"),
+      fetchImplementation: fetchFor([]),
     });
 
     expect(
-      await screen.findByText("Backend unreachable. Is the API running on port 8427?"),
+      await screen.findByText("Connect your first cloud"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Connect a provider" }),
+    ).toHaveAttribute("href", "/connections");
+  });
+
+  it("shows the video library when a connection exists", async () => {
+    renderWithProviders(<HomePage />, {
+      fetchImplementation: fetchFor([SAMPLE_CONNECTION]),
+    });
+
+    expect(await screen.findByText("Your library")).toBeInTheDocument();
+    expect(await screen.findByText("sample.mp4")).toBeInTheDocument();
+  });
+
+  it("shows a loading state while connections resolve", () => {
+    renderWithProviders(<HomePage />, {
+      fetchImplementation: () => new Promise<Response>(() => {}),
+    });
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
   });
 });

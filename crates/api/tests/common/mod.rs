@@ -42,8 +42,14 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
     (state, named, path)
 }
 
+/// Build a fully wired app backed by a fresh on-disk SQLite database.
+/// Returns the router and the `TempPath` guard keeping the db file alive.
+/// Callers MUST hold the guard for the test's lifetime: dropping it unlinks
+/// the db file, and because the pool opens connections lazily with
+/// `create_if_missing(true)`, a later connection would re-open the path and
+/// create a brand-new empty database (no tables) — surfacing as 500s.
 #[allow(dead_code)]
-pub async fn fresh_app() -> axum::Router {
-    let (state, _guard, _path) = fresh_state().await;
-    build_app(state)
+pub async fn fresh_app() -> (axum::Router, TempPath) {
+    let (state, guard, _path) = fresh_state().await;
+    (build_app(state), guard)
 }

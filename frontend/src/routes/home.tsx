@@ -1,48 +1,54 @@
-import { useQuery } from "@tanstack/react-query";
+// Home page (`/`): first-run connection guide or the video library.
+//
+// Per FR-9.1, on first visit after login with zero connections the page shows a
+// "Connect your first cloud" guide linking to `/connections`. Because zero
+// connections implies zero videos (the scanner only runs on connections and
+// disconnect cascade-deletes catalog rows), the connections-empty check alone
+// is the gate — no separate `/api/videos` probe needed.
+//
+// Once at least one connection exists, the video library (`VideoList`) takes
+// over. The M0 health-probe placeholder was removed — `/api/health` remains
+// available as an API endpoint and via logs.
 
-interface HealthResponse {
-  status: string;
-  version: string;
-  uptime_seconds: number;
-}
+import { Link } from "react-router-dom";
 
-async function fetchHealth(): Promise<HealthResponse> {
-  const response = await fetch("/api/health");
-  if (!response.ok) {
-    throw new Error(`health check failed: ${response.status}`);
-  }
-  return (await response.json()) as HealthResponse;
-}
+import { useConnections } from "../hooks/use-connections";
+import { VideoList } from "./videos";
 
 export function HomePage() {
-  const { data, isLoading, error } = useQuery<HealthResponse>({
-    queryKey: ["health"],
-    queryFn: fetchHealth,
-  });
+  const connections = useConnections();
 
+  // While connections are still loading we can't yet decide first-run vs.
+  // library view — avoid a flash of the wrong state.
+  if (connections.isLoading) {
+    return <p className="opacity-60">Loading…</p>;
+  }
+
+  const isEmpty = (connections.data ?? []).length === 0;
+  if (isEmpty) {
+    return <FirstRunGuide />;
+  }
+  return <VideoList />;
+}
+
+function FirstRunGuide() {
   return (
     <section className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">One home for all your cloud media.</h1>
-        <p className="mt-2 opacity-70">M0 (Foundation) is the current milestone — provider connections and the unified library arrive in later milestones.</p>
+        <h1 className="text-3xl font-semibold tracking-tight">
+          Connect your first cloud
+        </h1>
+        <p className="mt-2 opacity-70">
+          Castify scans your cloud storage for videos and unifies them into one
+          library. Connect a provider to get started.
+        </p>
       </div>
-      <div className="rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-4">
-        <h2 className="text-sm uppercase tracking-wide opacity-60">Backend health</h2>
-        {isLoading ? (
-          <p className="mt-2 opacity-60">Checking…</p>
-        ) : error ? (
-          <p className="mt-2 text-red-400">Backend unreachable. Is the API running on port 8427?</p>
-        ) : data ? (
-          <dl className="mt-2 grid grid-cols-3 gap-2 text-sm">
-            <dt className="opacity-60">Status</dt>
-            <dd className="col-span-2">{data.status}</dd>
-            <dt className="opacity-60">Version</dt>
-            <dd className="col-span-2">{data.version}</dd>
-            <dt className="opacity-60">Uptime</dt>
-            <dd className="col-span-2">{data.uptime_seconds}s</dd>
-          </dl>
-        ) : null}
-      </div>
+      <Link
+        to="/connections"
+        className="inline-block rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+      >
+        Connect a provider
+      </Link>
     </section>
   );
 }
