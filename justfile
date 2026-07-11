@@ -1,5 +1,15 @@
 # Castify task runner. See https://github.com/casey/just
 
+# Load `.env` (root-level) into every recipe's environment, so `cargo run`,
+# `npm run dev`, etc. inherit provider creds without manual `source`. The same
+# file is read by `docker-compose.yml` via `env_file:` — single source of truth.
+# See `.env.example` for the full list of keys.
+set dotenv-load := true
+
+# Plain `docker compose` (default stack). E2E recipes use COMPOSE_E2E.
+COMPOSE := "docker compose"
+COMPOSE_E2E := "docker compose -f docker-compose.yml -f docker-compose.e2e.yml"
+
 # Default: list available recipes.
 default:
     @just --list
@@ -70,7 +80,7 @@ e2e:
             echo "== teardown skipped (CASTIFY_E2E_REUSE=1) =="
         else
             echo "== docker: teardown =="
-            docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+            {{COMPOSE_E2E}} down -v --remove-orphans 2>/dev/null || true
         fi
     }
     trap cleanup EXIT
@@ -86,8 +96,8 @@ e2e:
     fi
 
     echo "== docker: cold boot (fresh volume, e2e build) =="
-    docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
-    docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
+    {{COMPOSE_E2E}} down -v --remove-orphans 2>/dev/null || true
+    {{COMPOSE_E2E}} up --build -d
 
     echo "== waiting for health on :8427 =="
     ready=0
@@ -99,13 +109,35 @@ e2e:
     done
     if [ "$ready" = 0 ]; then
         echo "error: stack did not become healthy within 120s" >&2
-        docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=50
+        {{COMPOSE_E2E}} logs --tail=50
         exit 1
     fi
     echo "stack healthy"
 
     echo "== playwright: running e2e tests =="
     ( cd e2e && npx playwright test )
+
+# --- Docker stack (prod-like; reads the same .env as the recipes above) ---
+
+# Start the Docker stack in the background.
+up:
+    {{COMPOSE}} up -d
+
+# Stop the Docker stack (data survives in the named volume).
+down:
+    {{COMPOSE}} down
+
+# Rebuild images and restart the stack (use after code changes).
+rebuild:
+    {{COMPOSE}} up -d --build
+
+# Tail Docker stack logs (Ctrl-C to detach).
+logs:
+    {{COMPOSE}} logs -f
+
+# Show Docker stack container status.
+ps:
+    {{COMPOSE}} ps
 
 # Dev mode: backend + frontend concurrently, with hot-reload on the frontend.
 # Ctrl-C kills both. Requires `cargo-watch` for backend auto-reload; falls back

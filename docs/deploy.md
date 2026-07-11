@@ -47,6 +47,10 @@ docker run -d \
 
 All configuration is via environment variables. See [`docs/config.md`](./config.md) for the full reference.
 
+### Local dev `.env` (shared with `just`)
+
+For local/dev stacks, put provider credentials and overrides in a root-level `.env` (copy from [`.env.example`](../.env.example)). It is read by **both** the `just` recipes (via `dotenv-load`) and `docker compose` (via `env_file:` in `docker-compose.yml`), so `just dev` and `just up` see the same keys. The file is gitignored; production should set real env vars in the deployment platform instead.
+
 | Variable                 | Default                  | Notes                                          |
 | ------------------------ | ------------------------ | ---------------------------------------------- |
 | `CASTIFY_HOST`           | `0.0.0.0`                | Bind interface                                |

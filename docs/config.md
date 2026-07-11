@@ -33,51 +33,22 @@ Caused by:
     CASTIFY_PORT must be a valid port number (1..=65535); got "abc". See docs/config.md for the full reference.
 ```
 
+## Local development (`.env`)
+
+For local work, put values in a root-level `.env` (copy from [`.env.example`](../.env.example)). It is the single source of truth shared by every run path:
+
+- **`just`** recipes load it automatically (`set dotenv-load := true` in the justfile), so `cargo run` / `npm run dev` inherit it with no manual `source`.
+- **`docker compose`** injects it into the container via `env_file:` in `docker-compose.yml`.
+
+Both `just dev` (local, hot reload) and `just up` (Docker, prod-like) therefore read the same keys. `.env` is gitignored; production sets real env vars in the deployment platform.
+
 ## Basic mode
 
-M0 ships without external service keys. Provider OAuth credentials (Google Drive, Dropbox, OneDrive) arrive in M1 — until then, no keys are required. When provider credentials are absent, the corresponding "Connect" buttons in the UI are disabled with a setup hint.
+M0 ships without external service keys. Provider OAuth credentials (Google Drive, Dropbox, OneDrive) arrive in M1 — until then, no keys are required. When a provider's credentials are absent it is hidden on the Connections page; if none are configured, an empty state points to [`docs/providers.md`](./providers.md) for setup.
 
-## Provider setup (M1)
+## Provider setup
 
-To connect a cloud provider, you need to register an OAuth app with that provider and supply the client ID and secret via environment variables. The OAuth redirect URI is:
-
-```
-{CASTIFY_APP_BASE_URL}/api/connections/{provider}/callback
-```
-
-For example, if `CASTIFY_APP_BASE_URL=https://media.example.com`, the Google Drive redirect URI is:
-
-```
-https://media.example.com/api/connections/google_drive/callback
-```
-
-For local development (`CASTIFY_APP_BASE_URL=http://localhost:8427`):
-
-```
-http://localhost:8427/api/connections/google_drive/callback
-```
-
-### Google Drive
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials.
-2. Create an OAuth 2.0 Client ID (Web application).
-3. Add the redirect URI above to "Authorized redirect URIs".
-4. Enable the Google Drive API.
-5. Set `CASTIFY_GOOGLE_CLIENT_ID` and `CASTIFY_GOOGLE_CLIENT_SECRET`.
-
-### Dropbox
-
-1. Go to [Dropbox App Console](https://www.dropbox.com/developers/apps).
-2. Create an app with Dropbox API access.
-3. Add the redirect URI above to "Redirect URIs".
-4. Set `CASTIFY_DROPBOX_CLIENT_ID` and `CASTIFY_DROPBOX_CLIENT_SECRET`.
-
-### OneDrive
-
-1. Go to [Azure portal](https://portal.azure.com/) → App registrations → New registration.
-2. Add the redirect URI above as a Web redirect URI.
-3. Add Microsoft Graph permissions: `Files.Read.All`, `offline_access`.
-4. Set `CASTIFY_MS_CLIENT_ID` and `CASTIFY_MS_CLIENT_SECRET`.
+To connect a cloud provider you register an OAuth app with the provider and set the client ID/secret as environment variables (see the table above). The full step-by-step walkthrough for Google Drive, Dropbox, and OneDrive — the redirect-URI format, the consent-screen setup, and troubleshooting — lives in [`docs/providers.md`](./providers.md).
 
 ## Development with `npm run dev`
 

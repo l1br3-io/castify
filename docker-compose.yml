@@ -5,7 +5,14 @@ services:
       - "8427:8427"
     volumes:
       - castify-data:/data
+    # Local dev: reads the same `.env` the justfile uses (see `.env.example`).
+    # `required: false` so a fresh checkout without `.env` still boots in basic mode.
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # Explicit `environment:` wins over `env_file:` — keep container-only
+      # defaults here so they aren't shadowed by a local `.env`.
       CASTIFY_DATA_DIR: /data
       # CASTIFY_SESSION_SECRET: set to share sessions across instances;
       # auto-generated and persisted to the database on first boot if omitted.
