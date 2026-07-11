@@ -13,7 +13,7 @@ const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
-const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly openid email profile";
 const TOKEN_BUFFER_SECS: i64 = 60;
 const DRIVE_FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
@@ -500,6 +500,19 @@ mod tests {
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("state=state-123"));
         assert!(url.contains("access_type=offline"));
+
+        let query = url.split_once('?').unwrap().1;
+        let params: std::collections::HashMap<String, String> =
+            serde_urlencoded::from_str(query).unwrap();
+        let scope = params.get("scope").unwrap();
+        let granted: std::collections::HashSet<&str> = scope.split(' ').collect();
+        assert!(
+            granted.contains("openid")
+                && granted.contains("email")
+                && granted.contains("profile")
+                && granted.contains("https://www.googleapis.com/auth/drive.readonly"),
+            "missing required scopes, got: {scope}"
+        );
     }
 
     #[test]
