@@ -8,12 +8,13 @@
 // Card states:
 //   * Connected — shows account email, video count, scan status, a Disconnect
 //     button (confirm dialog → `DELETE /api/connections/{id}`).
-//   * Scanning — shows a live "Found N videos…" indicator; the
+//   * Scanning — shows a live "Found N media…" indicator; the
 //     `['connections']` query refetches every few seconds while any connection
 //     is in the `scanning` state (see `use-connections.ts`).
 //   * Available (not connected) — Connect button → `POST .../start` → navigate
 //     to the returned `auth_url` (full page redirect to the provider).
-//   * Unconfigured — Connect button disabled with a `docs/config.md` hint.
+// Unconfigured providers (no OAuth env vars) are hidden; if none are configured
+// the grid shows an empty-state hint pointing to `docs/config.md`.
 //
 // Errors from connect/disconnect surface inline on the relevant card.
 
@@ -51,7 +52,7 @@ export function ConnectionsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Connections</h1>
         <p className="mt-2 opacity-70">
-          Connect a cloud provider to scan it for videos. Your tokens are
+          Connect a cloud provider to scan it for media. Your tokens are
           encrypted at rest.
         </p>
       </div>
@@ -62,7 +63,7 @@ export function ConnectionsPage() {
         </Banner>
       ) : connectedProvider ? (
         <Banner kind="success" onDismiss={dismissBanner}>
-          {PROVIDER_LABELS[connectedProvider as ProviderKey] ?? connectedProvider} connected. Scanning for videos…
+          {PROVIDER_LABELS[connectedProvider as ProviderKey] ?? connectedProvider} connected. Scanning for media…
         </Banner>
       ) : null}
 
@@ -75,7 +76,7 @@ function ConnectionsGrid() {
   const connections = useConnections();
   const available = useAvailableProviders();
 
-  if (connections.isLoading) {
+  if (connections.isLoading || available.isLoading) {
     return <p className="opacity-60">Loading connections…</p>;
   }
   if (connections.isError) {
@@ -91,35 +92,38 @@ function ConnectionsGrid() {
     connectedByProvider.set(conn.provider, conn);
   }
 
+  const visibleProviders = PROVIDERS.filter(
+    (provider) =>
+      (available.data?.[provider] ?? false) ||
+      connectedByProvider.has(provider),
+  );
+
+  if (visibleProviders.length === 0) {
+    return <NoConfiguredProviders />;
+  }
+
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {PROVIDERS.map((provider) => {
-        const conn = connectedByProvider.get(provider);
-        return (
-          <ProviderCard
-            key={provider}
-            provider={provider}
-            connection={conn}
-            configured={available.data?.[provider] ?? false}
-          />
-        );
-      })}
+      {visibleProviders.map((provider) => (
+        <ProviderCard
+          key={provider}
+          provider={provider}
+          connection={connectedByProvider.get(provider)}
+        />
+      ))}
     </div>
   );
 }
 
-interface ProviderCardProps {
+function ProviderCard({
+  provider,
+  connection,
+}: {
   provider: ProviderKey;
   connection: ConnectionDto | undefined;
-  configured: boolean;
-}
-
-function ProviderCard({ provider, connection, configured }: ProviderCardProps) {
+}) {
   if (connection) {
     return <ConnectedCard provider={provider} connection={connection} />;
-  }
-  if (!configured) {
-    return <UnconfiguredCard provider={provider} />;
   }
   return <AvailableCard provider={provider} />;
 }
@@ -178,7 +182,7 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
   if (connection.scan_status === "scanning") {
     return (
       <p className="text-sm opacity-70">
-        {videos > 0 ? `Found ${videos} videos…` : "Starting scan…"}
+        {videos > 0 ? `Found ${videos} media…` : "Starting scan…"}
       </p>
     );
   }
@@ -191,7 +195,7 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
   }
   return (
     <p className="text-sm opacity-70">
-      {videos} {videos === 1 ? "video" : "videos"}
+      {videos} media
       {connection.last_scan_at
         ? ` · last scanned ${formatDate(connection.last_scan_at)}`
         : ""}
@@ -251,7 +255,7 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
   });
 
   function handleDisconnect(): void {
-    if (window.confirm(`Disconnect ${PROVIDER_LABELS[connection.provider]}? Your videos will be removed from the catalog.`)) {
+    if (window.confirm(`Disconnect ${PROVIDER_LABELS[connection.provider]}? Your media will be removed from the catalog.`)) {
       setError(null);
       disconnect.mutate();
     }
@@ -292,7 +296,7 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
         <p className="text-sm opacity-60">Not connected</p>
       </div>
       <p className="text-sm opacity-70">
-        Connect to scan your {PROVIDER_LABELS[provider]} for videos.
+        Connect to scan your {PROVIDER_LABELS[provider]} for media.
       </p>
       <div className="mt-auto">
         <button
@@ -312,29 +316,18 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
   );
 }
 
-function UnconfiguredCard({ provider }: { provider: ProviderKey }) {
+function NoConfiguredProviders() {
   return (
-    <article className="flex flex-col gap-3 rounded-lg border border-dashed border-white/10 bg-[var(--color-castify-surface)]/50 p-4 opacity-80">
-      <div>
-        <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
-        <p className="text-sm opacity-60">Not configured</p>
-      </div>
-      <p className="text-sm opacity-70">
-        Ask the administrator to add {PROVIDER_LABELS[provider]} OAuth credentials.
+    <div className="rounded-lg border border-dashed border-white/10 bg-[var(--color-castify-surface)]/50 p-8 text-center">
+      <p className="text-lg font-medium">No cloud providers configured</p>
+      <p className="mt-2 text-sm opacity-60">
+        Add OAuth credentials for Google Drive, Dropbox, or OneDrive to start
+        connecting accounts.
       </p>
-      <div className="mt-auto">
-        <button
-          type="button"
-          disabled
-          className="w-full cursor-not-allowed rounded-md border border-white/10 px-3 py-2 text-sm opacity-50"
-        >
-          Connect
-        </button>
-        <p className="mt-1 text-xs opacity-50">
-          See <code>docs/config.md</code> for setup.
-        </p>
-      </div>
-    </article>
+      <p className="mt-3 text-xs opacity-50">
+        See <code>docs/config.md</code> for setup.
+      </p>
+    </div>
   );
 }
 

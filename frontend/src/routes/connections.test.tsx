@@ -58,7 +58,7 @@ describe("ConnectionsPage", () => {
     });
 
     expect(await screen.findByText("user@example.com")).toBeInTheDocument();
-    expect(screen.getByText(/7 videos/)).toBeInTheDocument();
+    expect(screen.getByText(/7 media/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /disconnect/i }),
     ).toBeInTheDocument();
@@ -74,18 +74,30 @@ describe("ConnectionsPage", () => {
     expect(await screen.findAllByRole("button", { name: /^connect$/i })).toHaveLength(3);
   });
 
-  it("disables the connect button and shows a config hint when unconfigured", async () => {
+  it("shows an empty state instead of disabled cards when no providers are configured", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([], NONE_AVAILABLE),
     });
 
-    const disabledButtons = await screen.findAllByRole("button", {
-      name: /connect/i,
+    expect(
+      await screen.findByText(/No cloud providers configured/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /connect/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still shows a connected card whose provider config was removed", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([GOOGLE_CONNECTED], NONE_AVAILABLE),
     });
-    // All three disabled.
-    expect(disabledButtons.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
-    expect(screen.getAllByText(/see/i).length).toBeGreaterThan(0);
+
+    expect(await screen.findByText("user@example.com")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /disconnect/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows a scanning badge and found-videos detail while scanning", async () => {
@@ -96,7 +108,7 @@ describe("ConnectionsPage", () => {
     });
 
     expect(await screen.findByText("Scanning")).toBeInTheDocument();
-    expect(screen.getByText(/Found 4 videos/)).toBeInTheDocument();
+    expect(screen.getByText(/Found 4 media/)).toBeInTheDocument();
   });
 
   it("navigates to the auth_url on connect", async () => {

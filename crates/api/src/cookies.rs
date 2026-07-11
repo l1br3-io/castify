@@ -17,9 +17,10 @@ const SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const CSRF_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const CSRF_TOKEN_BYTES: usize = 32;
 
-/// Build the signed session cookie. `Secure` is only set when the bind
-/// address is non-loopback — local dev typically runs plain HTTP and a
-/// `Secure` cookie would be dropped by the browser.
+/// Build the signed session cookie. The `Secure` flag is controlled by
+/// [`castify_core::Config::cookie_secure`] (env: `CASTIFY_COOKIE_SECURE`),
+/// which auto-detects from `CASTIFY_APP_BASE_URL` and defaults to `false` for
+/// local HTTP dev so browsers don't drop the cookie.
 pub fn build_session_cookie(
     token: &SessionToken,
     config: &castify_core::Config,
@@ -30,7 +31,7 @@ pub fn build_session_cookie(
         .same_site(SameSite::Lax)
         .http_only(true)
         .max_age(cookie::time::Duration::seconds(SESSION_TTL_SECONDS));
-    if !config.bind_addr.ip().is_loopback() {
+    if config.cookie_secure {
         cookie = cookie.secure(true);
     }
     cookie.build()
@@ -47,7 +48,7 @@ pub fn clear_session_cookie(config: &castify_core::Config) -> Cookie<'static> {
         .same_site(SameSite::Lax)
         .http_only(true)
         .max_age(cookie::time::Duration::seconds(0));
-    if !config.bind_addr.ip().is_loopback() {
+    if config.cookie_secure {
         cookie = cookie.secure(true);
     }
     cookie.build()
@@ -84,7 +85,7 @@ pub fn build_csrf_cookie(token: &str, config: &castify_core::Config) -> Cookie<'
         .same_site(SameSite::Lax)
         .http_only(false)
         .max_age(cookie::time::Duration::seconds(CSRF_TTL_SECONDS));
-    if !config.bind_addr.ip().is_loopback() {
+    if config.cookie_secure {
         cookie = cookie.secure(true);
     }
     cookie.build()
@@ -98,7 +99,7 @@ pub fn clear_csrf_cookie(config: &castify_core::Config) -> Cookie<'static> {
         .same_site(SameSite::Lax)
         .http_only(false)
         .max_age(cookie::time::Duration::seconds(0));
-    if !config.bind_addr.ip().is_loopback() {
+    if config.cookie_secure {
         cookie = cookie.secure(true);
     }
     cookie.build()

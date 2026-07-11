@@ -340,6 +340,7 @@ async fn session_survives_restart_with_persisted_secret() {
         data_dir: std::env::temp_dir().join("castify-restart-test"),
         database_path: path.clone(),
         app_base_url: None,
+        cookie_secure: false,
         google_oauth: None,
         dropbox_oauth: None,
         microsoft_oauth: None,

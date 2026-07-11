@@ -34,6 +34,7 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         data_dir: data_dir.clone(),
         database_path: path.clone(),
         app_base_url: None,
+        cookie_secure: false,
         google_oauth: None,
         dropbox_oauth: None,
         microsoft_oauth: None,

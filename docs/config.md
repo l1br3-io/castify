@@ -13,6 +13,7 @@ Castify is configured through environment variables. Defaults are chosen so the 
 | `CASTIFY_DB_PATH`     | `<DATA_DIR>/castify.db` | Override the SQLite database file location.                                       |
 | `CASTIFY_SESSION_SECRET` | _(auto-generated)_ | Base64- or raw-byte HMAC secret for signing session cookies. Auto-generated and persisted to the database on first boot; override to share sessions across instances. |
 | `CASTIFY_APP_BASE_URL` | _(none)_ | The app's external URL (e.g. `https://media.example.com`). Used to construct OAuth redirect URIs for provider connections. Required only when connecting a cloud provider. |
+| `CASTIFY_COOKIE_SECURE` | _(auto)_ | Whether session and CSRF cookies carry the `Secure` flag. When unset, auto-detected from `CASTIFY_APP_BASE_URL` (`https://` → `true`, otherwise `false`). Set explicitly (`true`/`false`) to override. |
 | `CASTIFY_TOKEN_KEY` | _(auto-generated)_ | Base64- or raw-byte AES-256 key for encrypting OAuth tokens at rest. Auto-generated and persisted to the database on first boot; override to share across instances. |
 | `CASTIFY_GOOGLE_CLIENT_ID` | _(none)_ | Google Drive OAuth client ID. Obtain from Google Cloud Console. |
 | `CASTIFY_GOOGLE_CLIENT_SECRET` | _(none)_ | Google Drive OAuth client secret. |

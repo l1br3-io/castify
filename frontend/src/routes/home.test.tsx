@@ -5,8 +5,22 @@ import { HomePage } from "./home";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 
 // The home page branches on `GET /api/connections` (via the `['connections']`
-// query). Zero connections → first-run guide; at least one → the video library
-// (`VideoList`), which queries `GET /api/videos`.
+// query) and `GET /api/connections/available`. Zero connections → first-run
+// guide (if a provider is configured) or setup-required notice (if none are);
+// at least one connection → the video library (`VideoList`), which queries
+// `GET /api/videos`.
+
+const ALL_AVAILABLE = {
+  google_drive: true,
+  dropbox: true,
+  onedrive: true,
+};
+
+const NONE_AVAILABLE = {
+  google_drive: false,
+  dropbox: false,
+  onedrive: false,
+};
 
 const SAMPLE_CONNECTION = {
   id: "c1",
@@ -46,10 +60,12 @@ const SAMPLE_VIDEO_PAGE = {
 function fetchFor(
   connectionsResponse: unknown,
   videoPage: unknown = SAMPLE_VIDEO_PAGE,
+  available: unknown = ALL_AVAILABLE,
 ) {
   return (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === "/api/connections") return jsonResponse(connectionsResponse);
+    if (url === "/api/connections/available") return jsonResponse(available);
     if (url.startsWith("/api/videos")) return jsonResponse(videoPage);
     return jsonError(404, "unmocked");
   };
@@ -67,6 +83,18 @@ describe("HomePage", () => {
     expect(
       screen.getByRole("link", { name: "Connect a provider" }),
     ).toHaveAttribute("href", "/connections");
+  });
+
+  it("shows a setup-required notice when no providers are configured", async () => {
+    renderWithProviders(<HomePage />, {
+      fetchImplementation: fetchFor([], SAMPLE_VIDEO_PAGE, NONE_AVAILABLE),
+    });
+
+    expect(await screen.findByText(/Setup required/i)).toBeInTheDocument();
+    // No dead-end "Connect a provider" link when nothing can be connected.
+    expect(
+      screen.queryByRole("link", { name: "Connect a provider" }),
+    ).toBeNull();
   });
 
   it("shows the video library when a connection exists", async () => {

@@ -24,6 +24,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub database_path: PathBuf,
     pub app_base_url: Option<String>,
+    pub cookie_secure: bool,
     pub google_oauth: Option<ProviderOAuthConfig>,
     pub dropbox_oauth: Option<ProviderOAuthConfig>,
     pub microsoft_oauth: Option<ProviderOAuthConfig>,
@@ -55,6 +56,7 @@ impl Config {
         let app_base_url = std::env::var("CASTIFY_APP_BASE_URL")
             .ok()
             .filter(|s| !s.is_empty());
+        let cookie_secure = resolve_cookie_secure(&app_base_url)?;
         let google_oauth =
             load_provider_oauth("CASTIFY_GOOGLE_CLIENT_ID", "CASTIFY_GOOGLE_CLIENT_SECRET");
         let dropbox_oauth =
@@ -68,6 +70,7 @@ impl Config {
             data_dir,
             database_path,
             app_base_url,
+            cookie_secure,
             google_oauth,
             dropbox_oauth,
             microsoft_oauth,
@@ -113,6 +116,27 @@ fn parse_bind_addr(key: &str, host: &str, port: u16) -> Result<SocketAddr> {
     format!("{host}:{port}").parse().with_context(|| {
         format!("{key} produced an invalid bind address {host}:{port}. {CONFIG_DOCS_HINT}")
     })
+}
+
+fn resolve_cookie_secure(app_base_url: &Option<String>) -> Result<bool> {
+    match std::env::var("CASTIFY_COOKIE_SECURE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => parse_bool_env("CASTIFY_COOKIE_SECURE", &raw),
+        None => Ok(app_base_url
+            .as_deref()
+            .map(|u| u.starts_with("https://"))
+            .unwrap_or(false)),
+    }
+}
+
+fn parse_bool_env(key: &str, raw: &str) -> Result<bool> {
+    match raw.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => bail!("{key} must be a boolean (true/false/1/0); got {raw:?}. {CONFIG_DOCS_HINT}"),
+    }
 }
 
 fn validate_data_dir(data_dir: &Path) -> Result<()> {
@@ -174,6 +198,7 @@ mod tests {
             "CASTIFY_DATA_DIR",
             "CASTIFY_DB_PATH",
             "CASTIFY_APP_BASE_URL",
+            "CASTIFY_COOKIE_SECURE",
             "CASTIFY_TOKEN_KEY",
             "CASTIFY_GOOGLE_CLIENT_ID",
             "CASTIFY_GOOGLE_CLIENT_SECRET",
@@ -309,6 +334,92 @@ mod tests {
             cfg.google_oauth.is_none(),
             "partial credentials should not produce a config"
         );
+    }
+
+    #[test]
+    fn cookie_secure_defaults_false_without_app_base_url() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+
+        let cfg = Config::from_env().unwrap();
+        assert!(
+            !cfg.cookie_secure,
+            "cookie_secure should default to false when there is no app_base_url (local HTTP dev)"
+        );
+    }
+
+    #[test]
+    fn cookie_secure_auto_detects_from_https_app_base_url() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_APP_BASE_URL", "https://media.example.com");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(
+            cfg.cookie_secure,
+            "cookie_secure should auto-enable when app_base_url is HTTPS"
+        );
+    }
+
+    #[test]
+    fn cookie_secure_auto_detects_from_http_app_base_url() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_APP_BASE_URL", "http://localhost:8427");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(
+            !cfg.cookie_secure,
+            "cookie_secure should stay off for HTTP app_base_url"
+        );
+    }
+
+    #[test]
+    fn cookie_secure_explicit_overrides_auto_detect() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_APP_BASE_URL", "https://media.example.com");
+        std::env::set_var("CASTIFY_COOKIE_SECURE", "false");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(
+            !cfg.cookie_secure,
+            "explicit CASTIFY_COOKIE_SECURE=false must override the HTTPS auto-detect"
+        );
+    }
+
+    #[test]
+    fn cookie_secure_explicit_true_without_app_base_url() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_COOKIE_SECURE", "true");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.cookie_secure);
+    }
+
+    #[test]
+    fn cookie_secure_invalid_value_errors() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_COOKIE_SECURE", "maybe");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_COOKIE_SECURE"), "msg = {msg}");
+        assert!(msg.contains("boolean"), "msg = {msg}");
     }
 
     #[test]

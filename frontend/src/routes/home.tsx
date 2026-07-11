@@ -1,10 +1,14 @@
-// Home page (`/`): first-run connection guide or the video library.
+// Home page (`/`): first-run connection guide, setup-required notice, or the
+// video library.
 //
 // Per FR-9.1, on first visit after login with zero connections the page shows a
-// "Connect your first cloud" guide linking to `/connections`. Because zero
-// connections implies zero videos (the scanner only runs on connections and
-// disconnect cascade-deletes catalog rows), the connections-empty check alone
-// is the gate — no separate `/api/videos` probe needed.
+// "Connect your first cloud" guide linking to `/connections`. If no providers
+// are configured either (no OAuth env vars), that guide is a dead-end, so a
+// "Setup required" notice pointing to `docs/config.md` is shown instead.
+// Because zero connections implies zero videos (the scanner only runs on
+// connections and disconnect cascade-deletes catalog rows), the
+// connections-empty check alone is the gate — no separate `/api/videos` probe
+// needed.
 //
 // Once at least one connection exists, the video library (`VideoList`) takes
 // over. The M0 health-probe placeholder was removed — `/api/health` remains
@@ -12,23 +16,48 @@
 
 import { Link } from "react-router-dom";
 
+import { useAvailableProviders } from "../hooks/use-available-providers";
 import { useConnections } from "../hooks/use-connections";
 import { VideoList } from "./videos";
 
 export function HomePage() {
   const connections = useConnections();
+  const available = useAvailableProviders();
 
   // While connections are still loading we can't yet decide first-run vs.
   // library view — avoid a flash of the wrong state.
-  if (connections.isLoading) {
+  if (connections.isLoading || available.isLoading) {
     return <p className="opacity-60">Loading…</p>;
   }
 
   const isEmpty = (connections.data ?? []).length === 0;
   if (isEmpty) {
+    const anyConfigured = available.data
+      ? Object.values(available.data).some(Boolean)
+      : false;
+    if (!anyConfigured) {
+      return <SetupRequired />;
+    }
     return <FirstRunGuide />;
   }
   return <VideoList />;
+}
+
+function SetupRequired() {
+  return (
+    <section className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-semibold tracking-tight">Setup required</h1>
+        <p className="mt-2 opacity-70">
+          Castify needs OAuth credentials for at least one cloud provider before
+          you can connect an account.
+        </p>
+        <p className="mt-3 text-xs opacity-50">
+          See <code>docs/config.md</code> for setup.
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function FirstRunGuide() {
