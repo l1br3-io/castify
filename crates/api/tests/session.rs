@@ -331,13 +331,20 @@ async fn session_survives_restart_with_persisted_secret() {
     let secret = castify_auth::SessionSecret::resolve(&pool, None)
         .await
         .unwrap();
+    let token_key = castify_catalog::TokenKey::resolve(&pool, None)
+        .await
+        .unwrap();
     let config = castify_core::Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         log_level: "warn".to_string(),
         data_dir: std::env::temp_dir().join("castify-restart-test"),
         database_path: path.clone(),
+        app_base_url: None,
+        google_oauth: None,
+        dropbox_oauth: None,
+        microsoft_oauth: None,
     };
-    let new_state = castify_api::state::AppState::new(config, pool, secret);
+    let new_state = castify_api::state::AppState::new(config, pool, secret, token_key);
     let new_app = build_app(new_state);
 
     let (status, body) = get_session(new_app, Some(&cookie)).await;

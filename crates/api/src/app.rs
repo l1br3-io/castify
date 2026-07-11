@@ -5,7 +5,7 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
-use crate::routes::{csrf, health, session, setup};
+use crate::routes::{connections, csrf, health, session, setup, videos};
 use crate::spa::spa_handler;
 use crate::state::AppState;
 
@@ -23,6 +23,24 @@ pub fn build_app(state: AppState) -> Router {
                 .get(session::get_session)
                 .delete(session::logout),
         )
+        .route("/api/connections", axum::routing::get(connections::list))
+        .route(
+            "/api/connections/available",
+            axum::routing::get(connections::available),
+        )
+        .route(
+            "/api/connections/{provider}/start",
+            axum::routing::post(connections::start),
+        )
+        .route(
+            "/api/connections/{provider}/callback",
+            axum::routing::get(connections::callback),
+        )
+        .route(
+            "/api/connections/{id}",
+            axum::routing::delete(connections::disconnect),
+        )
+        .route("/api/videos", axum::routing::get(videos::list_videos))
         .fallback(spa_handler)
         .with_state(state.clone())
         // Layer order is outermost-first: trace logs every request, CSRF runs

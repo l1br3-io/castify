@@ -59,6 +59,54 @@ web:
 dev-web:
     cd frontend && npm run dev
 
+# E2e smoke test: cold-boot the Docker stack, run Playwright, tear down.
+# Pass CASTIFY_E2E_REUSE=1 to keep the stack running after tests (for debugging).
+e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    cleanup() {
+        if [ -n "${CASTIFY_E2E_REUSE:-}" ]; then
+            echo "== teardown skipped (CASTIFY_E2E_REUSE=1) =="
+        else
+            echo "== docker: teardown =="
+            docker compose down -v --remove-orphans 2>/dev/null || true
+        fi
+    }
+    trap cleanup EXIT
+
+    echo "== e2e: install deps =="
+    ( cd e2e && npm ci )
+    echo "== e2e: install chromium =="
+    # --with-deps installs system libraries (libnss3, etc.) via sudo.
+    # Fall back to browser-only if sudo is unavailable.
+    if ! ( cd e2e && npx playwright install --with-deps chromium ); then
+        echo "note: --with-deps failed (no sudo?); installing browser only" >&2
+        ( cd e2e && npx playwright install chromium )
+    fi
+
+    echo "== docker: cold boot (fresh volume) =="
+    docker compose down -v --remove-orphans 2>/dev/null || true
+    docker compose up --build -d
+
+    echo "== waiting for health on :8427 =="
+    ready=0
+    for _ in $(seq 1 120); do
+        if curl -sf http://localhost:8427/api/health >/dev/null 2>&1; then
+            ready=1; break
+        fi
+        sleep 1
+    done
+    if [ "$ready" = 0 ]; then
+        echo "error: stack did not become healthy within 120s" >&2
+        docker compose logs --tail=50
+        exit 1
+    fi
+    echo "stack healthy"
+
+    echo "== playwright: running e2e tests =="
+    ( cd e2e && npx playwright test )
+
 # Dev mode: backend + frontend concurrently, with hot-reload on the frontend.
 # Ctrl-C kills both. Requires `cargo-watch` for backend auto-reload; falls back
 # to plain `cargo run` if it's not installed.

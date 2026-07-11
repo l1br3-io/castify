@@ -18,6 +18,7 @@ axum = { version = "0.8.9", features = ["macros"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.22.1"
 castify-auth.workspace = true
+castify-catalog.workspace = true
 castify-core.workspace = true
 castify-storage.workspace = true
 cookie = "0.18.1"

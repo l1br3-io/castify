@@ -10,12 +10,23 @@ const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_DB_FILENAME: &str = "castify.db";
 const CONFIG_DOCS_HINT: &str = "See docs/config.md for the full reference.";
 
+/// OAuth credentials for a single cloud storage provider.
+#[derive(Debug, Clone)]
+pub struct ProviderOAuthConfig {
+    pub client_id: String,
+    pub client_secret: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub log_level: String,
     pub data_dir: PathBuf,
     pub database_path: PathBuf,
+    pub app_base_url: Option<String>,
+    pub google_oauth: Option<ProviderOAuthConfig>,
+    pub dropbox_oauth: Option<ProviderOAuthConfig>,
+    pub microsoft_oauth: Option<ProviderOAuthConfig>,
 }
 
 impl Config {
@@ -41,17 +52,40 @@ impl Config {
 
         validate_data_dir(&data_dir)?;
 
+        let app_base_url = std::env::var("CASTIFY_APP_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let google_oauth =
+            load_provider_oauth("CASTIFY_GOOGLE_CLIENT_ID", "CASTIFY_GOOGLE_CLIENT_SECRET");
+        let dropbox_oauth =
+            load_provider_oauth("CASTIFY_DROPBOX_CLIENT_ID", "CASTIFY_DROPBOX_CLIENT_SECRET");
+        let microsoft_oauth =
+            load_provider_oauth("CASTIFY_MS_CLIENT_ID", "CASTIFY_MS_CLIENT_SECRET");
+
         Ok(Self {
             bind_addr,
             log_level,
             data_dir,
             database_path,
+            app_base_url,
+            google_oauth,
+            dropbox_oauth,
+            microsoft_oauth,
         })
     }
 }
 
 fn env_string(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn load_provider_oauth(id_key: &str, secret_key: &str) -> Option<ProviderOAuthConfig> {
+    let client_id = std::env::var(id_key).ok().filter(|s| !s.is_empty())?;
+    let client_secret = std::env::var(secret_key).ok().filter(|s| !s.is_empty())?;
+    Some(ProviderOAuthConfig {
+        client_id,
+        client_secret,
+    })
 }
 
 fn log_level_value() -> String {
@@ -139,6 +173,14 @@ mod tests {
             "CASTIFY_LOG",
             "CASTIFY_DATA_DIR",
             "CASTIFY_DB_PATH",
+            "CASTIFY_APP_BASE_URL",
+            "CASTIFY_TOKEN_KEY",
+            "CASTIFY_GOOGLE_CLIENT_ID",
+            "CASTIFY_GOOGLE_CLIENT_SECRET",
+            "CASTIFY_DROPBOX_CLIENT_ID",
+            "CASTIFY_DROPBOX_CLIENT_SECRET",
+            "CASTIFY_MS_CLIENT_ID",
+            "CASTIFY_MS_CLIENT_SECRET",
             "RUST_LOG",
         ] {
             std::env::remove_var(key);
@@ -223,5 +265,83 @@ mod tests {
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.log_level, "debug");
+    }
+
+    #[test]
+    fn provider_oauth_defaults_to_none() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.google_oauth.is_none());
+        assert!(cfg.dropbox_oauth.is_none());
+        assert!(cfg.microsoft_oauth.is_none());
+        assert!(cfg.app_base_url.is_none());
+    }
+
+    #[test]
+    fn provider_oauth_loaded_when_both_keys_present() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_GOOGLE_CLIENT_ID", "g-id");
+        std::env::set_var("CASTIFY_GOOGLE_CLIENT_SECRET", "g-secret");
+
+        let cfg = Config::from_env().unwrap();
+        let google = cfg.google_oauth.expect("google oauth should be set");
+        assert_eq!(google.client_id, "g-id");
+        assert_eq!(google.client_secret, "g-secret");
+    }
+
+    #[test]
+    fn provider_oauth_ignored_when_only_id_present() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_GOOGLE_CLIENT_ID", "g-id");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(
+            cfg.google_oauth.is_none(),
+            "partial credentials should not produce a config"
+        );
+    }
+
+    #[test]
+    fn app_base_url_loaded_when_present() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_APP_BASE_URL", "https://media.example.com");
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(
+            cfg.app_base_url.as_deref(),
+            Some("https://media.example.com")
+        );
+    }
+
+    #[test]
+    fn all_three_providers_can_be_configured() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_GOOGLE_CLIENT_ID", "g");
+        std::env::set_var("CASTIFY_GOOGLE_CLIENT_SECRET", "gs");
+        std::env::set_var("CASTIFY_DROPBOX_CLIENT_ID", "d");
+        std::env::set_var("CASTIFY_DROPBOX_CLIENT_SECRET", "ds");
+        std::env::set_var("CASTIFY_MS_CLIENT_ID", "m");
+        std::env::set_var("CASTIFY_MS_CLIENT_SECRET", "ms");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.google_oauth.is_some());
+        assert!(cfg.dropbox_oauth.is_some());
+        assert!(cfg.microsoft_oauth.is_some());
     }
 }

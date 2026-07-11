@@ -20,6 +20,9 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
     let secret = castify_auth::SessionSecret::resolve(&pool, None)
         .await
         .unwrap();
+    let token_key = castify_catalog::TokenKey::resolve(&pool, None)
+        .await
+        .unwrap();
     let data_dir = std::env::temp_dir().join(format!(
         "castify-api-test-{}",
         COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -30,8 +33,12 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         log_level: "warn".to_string(),
         data_dir: data_dir.clone(),
         database_path: path.clone(),
+        app_base_url: None,
+        google_oauth: None,
+        dropbox_oauth: None,
+        microsoft_oauth: None,
     };
-    let state = AppState::new(config, pool, secret);
+    let state = AppState::new(config, pool, secret, token_key);
     (state, named, path)
 }
 

@@ -15,8 +15,14 @@ pub enum ApiError {
     Unauthorized,
     #[error("csrf token missing or mismatched")]
     ForbiddenCsrf,
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("auth error: {0}")]
     Auth(#[from] castify_auth::AuthError),
+    #[error("catalog error: {0}")]
+    Catalog(#[from] castify_catalog::CatalogError),
+    #[error("provider error: {0}")]
+    Provider(#[from] castify_catalog::ProviderError),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -35,6 +41,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             ApiError::ForbiddenCsrf => (StatusCode::FORBIDDEN, self.to_string()),
+            ApiError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             ApiError::Auth(err) => {
                 let status = match err {
                     castify_auth::AuthError::InvalidCredentials
@@ -52,6 +59,25 @@ impl IntoResponse for ApiError {
                     err.to_string()
                 };
                 (status, message)
+            }
+            ApiError::Catalog(err) => {
+                let status = match err {
+                    castify_catalog::CatalogError::ConnectionNotFound(_) => StatusCode::NOT_FOUND,
+                    _ => {
+                        tracing::error!(error = ?err, "catalog subsystem error");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
+                };
+                let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    "internal error".to_string()
+                } else {
+                    err.to_string()
+                };
+                (status, message)
+            }
+            ApiError::Provider(err) => {
+                tracing::error!(error = ?err, "provider error");
+                (StatusCode::BAD_GATEWAY, err.to_string())
             }
             ApiError::Internal(err) => {
                 tracing::error!(error = ?err, "internal server error");

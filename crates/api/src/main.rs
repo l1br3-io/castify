@@ -4,6 +4,7 @@ use castify_api::shutdown::shutdown_signal;
 use castify_api::state::AppState;
 use castify_api::tracing_init::init_tracing;
 use castify_auth::SessionSecret;
+use castify_catalog::TokenKey;
 use castify_core::Config;
 use castify_storage::{connect, run_migrations};
 
@@ -30,8 +31,11 @@ async fn main() -> anyhow::Result<()> {
         SessionSecret::resolve(&pool, std::env::var("CASTIFY_SESSION_SECRET").ok())
             .await
             .context("failed to resolve session secret")?;
+    let token_key = TokenKey::resolve(&pool, std::env::var("CASTIFY_TOKEN_KEY").ok())
+        .await
+        .context("failed to resolve token encryption key")?;
 
-    let state = AppState::new(config.clone(), pool, session_secret);
+    let state = AppState::new(config.clone(), pool, session_secret, token_key);
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)

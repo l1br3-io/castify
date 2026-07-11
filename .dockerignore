@@ -25,6 +25,7 @@ data/
 .opencode/
 tasks/
 docs/
+e2e/
 *.md
 !frontend/README.md
 
