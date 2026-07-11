@@ -4,7 +4,10 @@ use sha2::{Digest, Sha256};
 use crate::crypto::TokenBundle;
 use crate::model::{DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult};
+use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
+use crate::providers::common::{
+    classify_token_error, has_video_extension, infer_image_mime, to_hex, TokenResponse,
+};
 
 const AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
 const TOKEN_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
@@ -13,12 +16,7 @@ const DELTA_URL: &str = "https://graph.microsoft.com/v1.0/me/drive/root/delta";
 const ME_URL: &str = "https://graph.microsoft.com/v1.0/me";
 const REVOKE_URL: &str = "https://graph.microsoft.com/v1.0/me/revokeSignInSessions";
 const SCOPE: &str = "files.read.all offline_access";
-const TOKEN_BUFFER_SECS: i64 = 60;
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
-
-const VIDEO_EXTENSIONS: &[&str] = &[
-    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv", ".flv",
-];
 
 /// Configuration for the OneDrive OAuth client. Derived from `Config`.
 #[derive(Debug, Clone)]
@@ -181,53 +179,6 @@ impl OneDriveClient {
     }
 }
 
-/// Raw token response from Microsoft's token endpoint. The refresh response
-/// may omit `refresh_token` (depends on account type); the factory carries
-/// the old one forward.
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: Option<i64>,
-    token_type: String,
-    #[serde(default)]
-    scope: Option<String>,
-}
-
-impl TokenResponse {
-    fn into_bundle(self) -> TokenBundle {
-        let expires_at = self.expires_in.map(|secs| {
-            let now = chrono::Utc::now();
-            let expiry = now + chrono::Duration::seconds(secs - TOKEN_BUFFER_SECS);
-            expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-        });
-        TokenBundle {
-            access_token: self.access_token,
-            refresh_token: self.refresh_token,
-            expires_at,
-            token_type: self.token_type,
-            scope: self.scope,
-        }
-    }
-}
-
-fn classify_token_error(status: u16, body: &str) -> ProviderError {
-    if status == 401 {
-        ProviderError::Unauthorized
-    } else if status == 429 || status == 503 {
-        ProviderError::RateLimited {
-            retry_after_secs: None,
-        }
-    } else {
-        ProviderError::Api {
-            status,
-            body: body.to_string(),
-        }
-    }
-}
-
 // ── Graph delta response types ──────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -319,11 +270,6 @@ fn is_video_item(item: &DriveItem) -> bool {
         return true;
     }
     has_video_extension(&item.name)
-}
-
-fn has_video_extension(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    VIDEO_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
 }
 
 // ── OneDrive Graph API methods ──────────────────────────────────────
@@ -527,6 +473,64 @@ impl OneDriveClient {
         hasher.update(&bytes);
         Ok(Some(to_hex(&hasher.finalize())))
     }
+
+    /// Fetch a poster thumbnail for a OneDrive item. The Graph
+    /// `thumbnails/0/c400x400/content` endpoint responds 302 to a
+    /// preauthenticated CDN URL; `http_download` follows the redirect (same
+    /// client used for prefix-hash downloads). Returns `NotFound` (404) when
+    /// the item has no thumbnail.
+    pub async fn fetch_thumbnail(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<ThumbnailData> {
+        let url = format!("{GRAPH_ROOT}/me/drive/items/{file_id}/thumbnails/0/c400x400/content");
+        let resp = self
+            .http_download
+            .get(&url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        if status.as_u16() == 404 {
+            return Err(ProviderError::NotFound(format!(
+                "no thumbnail for OneDrive item {file_id}"
+            )));
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let mime_type = infer_image_mime(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg"),
+        )
+        .to_string();
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?
+            .to_vec();
+
+        Ok(ThumbnailData { bytes, mime_type })
+    }
 }
 
 /// Response from `GET /me/drive/items/{id}?$select=@microsoft.graph.downloadUrl`.
@@ -534,15 +538,6 @@ impl OneDriveClient {
 struct DownloadUrlResponse {
     #[serde(rename = "@microsoft.graph.downloadUrl", default)]
     download_url: Option<String>,
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(&mut s, "{b:02x}").unwrap();
-    }
-    s
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -568,6 +563,12 @@ impl crate::provider::Provider for OneDriveProvider {
     async fn fetch_prefix_hash(&self, file_id: &str, size: i64) -> ProviderResult<Option<String>> {
         self.client
             .fetch_onedrive_prefix_hash(&self.token.access_token, file_id, size)
+            .await
+    }
+
+    async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData> {
+        self.client
+            .fetch_thumbnail(&self.token.access_token, file_id)
             .await
     }
 
@@ -621,6 +622,29 @@ impl crate::provider::ProviderFactory for OneDriveFactory {
         let client = OneDriveClient::new(self.config.clone());
         client.revoke_token(&token_bundle.access_token).await
     }
+
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
+        OneDriveClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle> {
+        let client = OneDriveClient::new(self.config.clone());
+        client.exchange_code(code, verifier, redirect_uri).await
+    }
+
+    async fn fetch_user_info(
+        &self,
+        token_bundle: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        let client = OneDriveClient::new(self.config.clone());
+        let info = client.fetch_user_info(&token_bundle.access_token).await?;
+        Ok((info.account_id, info.email))
+    }
 }
 
 #[cfg(test)]
@@ -651,34 +675,6 @@ mod tests {
         // Scope includes offline_access (Microsoft's way to get refresh tokens).
         assert!(url.contains("offline_access"));
         assert!(url.contains("files.read.all"));
-    }
-
-    #[test]
-    fn token_response_expires_at_has_buffer() {
-        let resp = TokenResponse {
-            access_token: "eyJtest".into(),
-            refresh_token: Some("refresh".into()),
-            expires_in: Some(3600),
-            token_type: "Bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.expires_at.is_some());
-        assert!(bundle.refresh_token.is_some());
-    }
-
-    #[test]
-    fn token_response_without_refresh_token() {
-        let resp = TokenResponse {
-            access_token: "eyJtest".into(),
-            refresh_token: None,
-            expires_in: None,
-            token_type: "Bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.refresh_token.is_none());
-        assert!(bundle.expires_at.is_none());
     }
 
     #[test]
@@ -783,21 +779,6 @@ mod tests {
         let json = r#"{ "id": "4", "name": "videos.mp4" }"#;
         let item: DriveItem = serde_json::from_str(json).unwrap();
         assert!(!is_video_item(&item));
-    }
-
-    #[test]
-    fn has_video_extension_matches_case_insensitive() {
-        assert!(has_video_extension("video.MP4"));
-        assert!(has_video_extension("clip.WEBM"));
-        assert!(has_video_extension("a.b.c.mkv"));
-        assert!(!has_video_extension("photo.jpg"));
-        assert!(!has_video_extension("noext"));
-    }
-
-    #[test]
-    fn to_hex_produces_lowercase_hex() {
-        let bytes = [0x01, 0x23, 0xab, 0xff];
-        assert_eq!(to_hex(&bytes), "0123abff");
     }
 
     #[test]

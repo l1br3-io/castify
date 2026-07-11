@@ -44,7 +44,11 @@ pub fn build_app(state: AppState) -> Router {
             "/api/connections/{id}/scan",
             axum::routing::post(connections::trigger_rescan).get(connections::scan_status),
         )
-        .route("/api/videos", axum::routing::get(videos::list_videos));
+        .route("/api/videos", axum::routing::get(videos::list_videos))
+        .route(
+            "/api/videos/folders",
+            axum::routing::get(videos::list_folders),
+        );
 
     #[cfg(feature = "e2e")]
     let router = router.route(

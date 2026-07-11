@@ -181,39 +181,82 @@ impl NewVideo {
     }
 }
 
-/// Sort order for the unified video list.
-#[derive(Debug, Clone)]
+/// Sort order for the unified video list. Direction-aware variants per
+/// PRD FR-4.1. All variants use `NULLS LAST` so that missing values
+/// (null duration, unrated) sink to the bottom regardless of direction —
+/// more intuitive than SQLite's default (nulls first on ASC).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoSort {
     NameAsc,
+    NameDesc,
+    SizeAsc,
     SizeDesc,
+    DateAsc,
     DateDesc,
+    DurationAsc,
+    DurationDesc,
+    RatingDesc,
 }
 
 impl VideoSort {
+    /// SQL `ORDER BY` fragment. Column names reference the outer query's `v`
+    /// alias (including the `my_rating` join alias for `RatingDesc`).
     pub fn order_clause(&self) -> &'static str {
         match self {
-            VideoSort::NameAsc => "name ASC",
-            VideoSort::SizeDesc => "size_bytes DESC",
-            VideoSort::DateDesc => "created_at DESC",
+            VideoSort::NameAsc => "v.name ASC NULLS LAST",
+            VideoSort::NameDesc => "v.name DESC NULLS LAST",
+            VideoSort::SizeAsc => "v.size_bytes ASC",
+            VideoSort::SizeDesc => "v.size_bytes DESC",
+            VideoSort::DateAsc => "v.created_at ASC",
+            VideoSort::DateDesc => "v.created_at DESC",
+            VideoSort::DurationAsc => "v.duration_ms ASC NULLS LAST",
+            VideoSort::DurationDesc => "v.duration_ms DESC NULLS LAST",
+            VideoSort::RatingDesc => "my_rating DESC NULLS LAST",
         }
     }
 
+    /// Parse a sort key from the query string. Accepts the PRD FR-4.1 strings.
+    /// Unknown values fall back to `DateDesc` (the default).
     pub fn parse(s: &str) -> Self {
         match s {
-            "name" => VideoSort::NameAsc,
-            "size" => VideoSort::SizeDesc,
-            _ => VideoSort::DateDesc,
+            "name" => Self::NameAsc,
+            "name-desc" => Self::NameDesc,
+            "size" => Self::SizeDesc,
+            "size-asc" => Self::SizeAsc,
+            "date" => Self::DateAsc,
+            "date-desc" => Self::DateDesc,
+            "duration" => Self::DurationAsc,
+            "duration-desc" => Self::DurationDesc,
+            "rating" => Self::RatingDesc,
+            _ => Self::DateDesc,
         }
     }
 }
 
-/// Query filter for the unified video list.
+/// Query filter for the unified video list. All extended fields (PRD FR-2/FR-3)
+/// are optional; only `owner_id` is required (for favorites/ratings joins).
 #[derive(Debug, Clone)]
 pub struct VideoFilter {
     pub page: i64,
     pub limit: i64,
     pub provider: Option<Provider>,
     pub sort: VideoSort,
+    /// FTS5 full-text search across `name` and `path`.
+    pub q: Option<String>,
+    /// Duration range filter in milliseconds (inclusive). Null-duration videos
+    /// are excluded when either bound is set.
+    pub duration_min: Option<i64>,
+    pub duration_max: Option<i64>,
+    /// Resolution floor: `height >= min_height` (e.g. 720 for HD+).
+    pub min_height: Option<i64>,
+    /// Restrict to the current owner's favorited videos.
+    pub favorites_only: bool,
+    /// Restrict to videos the current owner rated ≥ `min_rating` (1–5).
+    pub min_rating: Option<i32>,
+    /// Top-level path segment prefix (e.g. `"Movies"` matches `/Movies/...`).
+    pub folder: Option<String>,
+    /// Current owner — required for `is_favorite` / `my_rating` joins.
+    pub owner_id: String,
 }
 
 impl Default for VideoFilter {
@@ -223,6 +266,14 @@ impl Default for VideoFilter {
             limit: 50,
             provider: None,
             sort: VideoSort::DateDesc,
+            q: None,
+            duration_min: None,
+            duration_max: None,
+            min_height: None,
+            favorites_only: false,
+            min_rating: None,
+            folder: None,
+            owner_id: String::new(),
         }
     }
 }
@@ -236,6 +287,8 @@ pub struct VideoSource {
 }
 
 /// A deduplicated video summary returned by the unified video list API.
+/// Enriched per PRD M2: `created_at`, `path`, `is_favorite`, `my_rating`,
+/// and `thumbnail_status`.
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoSummary {
     pub id: String,
@@ -247,6 +300,17 @@ pub struct VideoSummary {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub sources: Vec<VideoSource>,
+    /// ISO timestamp of when the video row was first inserted.
+    pub created_at: String,
+    /// Resolved folder path (e.g. `/Movies/Action/movie.mp4`). `None` if the
+    /// provider didn't populate it (e.g. Google Drive before path resolution).
+    pub path: Option<String>,
+    /// Whether the current owner has favorited this video.
+    pub is_favorite: bool,
+    /// The current owner's 1–5 star rating, or `None` if unrated.
+    pub my_rating: Option<i32>,
+    /// Thumbnail cache state: `"pending"` / `"cached"` / `"failed"` / `"unsupported"`.
+    pub thumbnail_status: String,
 }
 
 /// Paginated response for the unified video list.

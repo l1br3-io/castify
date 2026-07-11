@@ -1,20 +1,20 @@
-use base64::Engine;
-use rand::rngs::OsRng;
-use rand::RngCore;
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 use crate::crypto::TokenBundle;
 use crate::model::{DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult};
+use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
+use crate::providers::common::{classify_token_error, infer_image_mime, to_hex, TokenResponse};
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly openid email profile";
-const TOKEN_BUFFER_SECS: i64 = 60;
 const DRIVE_FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
 
@@ -161,56 +161,6 @@ impl GoogleDriveClient {
         Ok(info)
     }
 }
-
-/// Raw token response from Google's token endpoint.
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<i64>,
-    token_type: String,
-    scope: Option<String>,
-}
-
-impl TokenResponse {
-    fn into_bundle(self) -> TokenBundle {
-        let expires_at = self.expires_in.map(|secs| {
-            let now = chrono::Utc::now();
-            let expiry = now + chrono::Duration::seconds(secs - TOKEN_BUFFER_SECS);
-            expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-        });
-        TokenBundle {
-            access_token: self.access_token,
-            refresh_token: self.refresh_token,
-            expires_at,
-            token_type: self.token_type,
-            scope: self.scope,
-        }
-    }
-}
-
-fn classify_token_error(status: u16, body: &str) -> ProviderError {
-    if status == 401 {
-        ProviderError::Unauthorized
-    } else if status == 429 || status == 503 {
-        ProviderError::RateLimited {
-            retry_after_secs: None,
-        }
-    } else {
-        ProviderError::Api {
-            status,
-            body: body.to_string(),
-        }
-    }
-}
-
-/// Generate a short-lived state nonce (delegates to the shared helper).
-pub fn generate_state() -> String {
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-}
-
 // ── Drive API response types ─────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -234,6 +184,10 @@ struct DriveFile {
     sha256_checksum: Option<String>,
     #[serde(rename = "videoMediaMetadata", default)]
     video_media_metadata: Option<DriveVideoMetadata>,
+    /// Parent folder IDs (Drive API v3 returns a flat string array). Empty or
+    /// absent means the file lives in "My Drive" root. Used for path resolution.
+    #[serde(default)]
+    parents: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,12 +198,43 @@ struct DriveVideoMetadata {
     height: Option<i64>,
 }
 
+/// A folder entry returned by the batch metadata query (`files.list?q=...`).
+/// Only `id`, `name`, and `parents` are requested.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveFolderMeta {
+    id: String,
+    name: String,
+    #[serde(default)]
+    parents: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveFolderListResponse {
+    #[serde(default)]
+    files: Vec<DriveFolderMeta>,
+    next_page_token: Option<String>,
+}
+
+/// Response from `GET /drive/v3/files/{id}?fields=thumbnailLink`. The field is
+/// absent when Drive has no thumbnail for the file.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveThumbnailResponse {
+    #[serde(default)]
+    thumbnail_link: Option<String>,
+}
+
 impl GoogleDriveClient {
-    /// List one page of video files from Google Drive.
+    /// List one page of video files from Google Drive. `folder_cache` is a
+    /// scan-local map of folder_id → resolved folder path, persisted across
+    /// pages to avoid re-fetching folder metadata.
     pub async fn list_drive_videos(
         &self,
         access_token: &str,
         cursor: Option<&str>,
+        folder_cache: &mut HashMap<String, String>,
     ) -> ProviderResult<ListPage> {
         let mut query: Vec<(&str, &str)> = vec![
             (
@@ -258,7 +243,7 @@ impl GoogleDriveClient {
             ),
             (
                 "fields",
-                "files(id,name,mimeType,size,modifiedTime,md5Checksum,sha256Checksum,videoMediaMetadata(durationMillis,width,height)),nextPageToken",
+                "files(id,name,mimeType,size,modifiedTime,md5Checksum,sha256Checksum,videoMediaMetadata(durationMillis,width,height),parents),nextPageToken",
             ),
             ("pageSize", "1000"),
             ("orderBy", "folder,modifiedTime desc,name"),
@@ -299,6 +284,23 @@ impl GoogleDriveClient {
 
         let response: DriveListResponse = serde_json::from_str(&body)?;
 
+        // Collect unique parent IDs across this page that aren't cached yet.
+        let parent_ids: Vec<String> = response
+            .files
+            .iter()
+            .flat_map(|f| f.parents.iter().flatten().cloned())
+            .filter(|id| !folder_cache.contains_key(id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Resolve folder paths via batch metadata queries (bounded: O(unique
+        // folders) API calls per scan, not per file).
+        if !parent_ids.is_empty() {
+            self.resolve_folder_paths(access_token, &parent_ids, folder_cache)
+                .await?;
+        }
+
         let videos = response
             .files
             .into_iter()
@@ -312,10 +314,18 @@ impl GoogleDriveClient {
                     None
                 };
 
+                // Resolve the full path using the first parent's folder path.
+                let path = f
+                    .parents
+                    .as_ref()
+                    .and_then(|p| p.first())
+                    .and_then(|pid| folder_cache.get(pid))
+                    .map(|folder_path| format!("{folder_path}/{}", f.name));
+
                 DiscoveredVideo {
                     provider_file_id: f.id,
                     name: f.name,
-                    path: None,
+                    path,
                     size_bytes: f.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
                     mime_type: Some(f.mime_type),
                     duration_ms: f
@@ -336,6 +346,174 @@ impl GoogleDriveClient {
             videos,
             next_cursor: response.next_page_token,
         })
+    }
+
+    /// Resolve full folder paths for the given folder IDs, populating `cache`.
+    ///
+    /// Fetches unknown folders via batched `files.list?q=(id=… or id=…)`
+    /// queries (chunked to stay within URL length limits), recursing up the
+    /// parent chain. After fetching all metadata, paths are computed
+    /// iteratively (no recursion → cycle-safe), then cached.
+    async fn resolve_folder_paths(
+        &self,
+        access_token: &str,
+        folder_ids: &[String],
+        cache: &mut HashMap<String, String>,
+    ) -> ProviderResult<()> {
+        // Queue IDs not yet resolved.
+        let mut pending: HashSet<String> = folder_ids
+            .iter()
+            .filter(|id| !cache.contains_key(*id))
+            .cloned()
+            .collect();
+        // Everything we've already sent to the API (avoids re-querying).
+        let mut queried: HashSet<String> = HashSet::new();
+        // folder_id → (name, parent_ids)
+        let mut meta: HashMap<String, (String, Vec<String>)> = HashMap::new();
+
+        while !pending.is_empty() {
+            let batch: Vec<String> = pending.drain().collect();
+            for id in &batch {
+                queried.insert(id.clone());
+            }
+            let fetched = self.fetch_folder_metadata(access_token, &batch).await?;
+            for folder in fetched {
+                let parents = folder.parents.unwrap_or_default();
+                // Queue any unknown parents for the next round.
+                for pid in &parents {
+                    if !cache.contains_key(pid)
+                        && !queried.contains(pid)
+                        && !pending.contains(pid)
+                    {
+                        pending.insert(pid.clone());
+                    }
+                }
+                meta.insert(folder.id, (folder.name, parents));
+            }
+            // IDs in `batch` that weren't returned (deleted/inaccessible) are
+            // simply absent from `meta`; they won't be retried (in `queried`).
+        }
+
+        // Iteratively compute folder paths (pure logic — see `compute_folder_paths`).
+        compute_folder_paths(&meta, cache);
+
+        Ok(())
+    }
+}
+
+/// Compute full folder paths from raw metadata (`folder_id → (name, parent_ids)`),
+/// writing resolved paths into `cache` (`folder_id → full_path`).
+///
+/// Iterates to a fixpoint: folders whose first parent is already cached (or is
+/// root-level) get resolved each pass. After the fixpoint, any remaining
+/// folders (whose parents were deleted / inaccessible) are resolved as
+/// root-level so their files still get a path rather than `None`.
+///
+/// Pure (no I/O) — extracted from [`GoogleDriveClient::resolve_folder_paths`]
+/// for unit testing.
+fn compute_folder_paths(
+    meta: &HashMap<String, (String, Vec<String>)>,
+    cache: &mut HashMap<String, String>,
+) {
+    loop {
+        let mut progress = false;
+        for (id, (name, parent_ids)) in meta {
+            if cache.contains_key(id) {
+                continue;
+            }
+            let parent_known = parent_ids
+                .first()
+                .map_or(true, |pid| cache.contains_key(pid));
+            if !parent_known {
+                continue;
+            }
+            let path = match parent_ids.first().and_then(|pid| cache.get(pid)) {
+                Some(parent_path) => format!("{parent_path}/{name}"),
+                None => format!("/{name}"),
+            };
+            cache.insert(id.clone(), path);
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    // Resolve any stragglers (deleted/inaccessible parents) as root-level.
+    for (id, (name, _)) in meta {
+        if !cache.contains_key(id) {
+            cache.insert(id.clone(), format!("/{name}"));
+        }
+    }
+}
+
+impl GoogleDriveClient {
+    /// Batch-fetch folder metadata (`id`, `name`, `parents`) for the given IDs
+    /// via a single `files.list` query with an `id = '…' or …` predicate.
+    /// Chunks at `FOLDER_QUERY_CHUNK` IDs per request to stay within URL limits.
+    async fn fetch_folder_metadata(
+        &self,
+        access_token: &str,
+        ids: &[String],
+    ) -> ProviderResult<Vec<DriveFolderMeta>> {
+        const FOLDER_QUERY_CHUNK: usize = 50;
+        let mut all = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(FOLDER_QUERY_CHUNK) {
+            let q = format!(
+                "({})",
+                chunk
+                    .iter()
+                    .map(|id| format!("id = '{id}'"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            );
+            let mut page_token: Option<String> = None;
+            loop {
+                let mut query: Vec<(&str, &str)> = vec![
+                    ("q", q.as_str()),
+                    ("fields", "files(id,name,parents),nextPageToken"),
+                    ("pageSize", "100"),
+                ];
+                let token;
+                if let Some(t) = &page_token {
+                    token = t.to_string();
+                    query.push(("pageToken", token.as_str()));
+                }
+                let resp = self
+                    .http
+                    .get(DRIVE_FILES_URL)
+                    .bearer_auth(access_token)
+                    .query(&query)
+                    .send()
+                    .await
+                    .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                if status.as_u16() == 401 {
+                    return Err(ProviderError::Unauthorized);
+                }
+                if status.as_u16() == 429 || status.as_u16() == 503 {
+                    return Err(ProviderError::RateLimited {
+                        retry_after_secs: None,
+                    });
+                }
+                if !status.is_success() {
+                    return Err(ProviderError::Api {
+                        status: status.as_u16(),
+                        body,
+                    });
+                }
+
+                let response: DriveFolderListResponse = serde_json::from_str(&body)?;
+                all.extend(response.files);
+                match response.next_page_token {
+                    Some(t) => page_token = Some(t),
+                    None => break,
+                }
+            }
+        }
+        Ok(all)
     }
 
     /// Download the first 4 MB of a Drive file and compute its SHA-256 hash.
@@ -385,23 +563,94 @@ impl GoogleDriveClient {
         hasher.update(&bytes);
         Ok(Some(to_hex(&hasher.finalize())))
     }
-}
 
-fn to_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(&mut s, "{b:02x}").unwrap();
+    /// Fetch a poster thumbnail for a Drive file. Resolves the file's
+    /// `thumbnailLink` (a short-lived pre-signed CDN URL), then downloads the
+    /// image. Returns `NotFound` when Drive has no thumbnail for the file.
+    pub async fn fetch_thumbnail(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<ThumbnailData> {
+        let url = format!("{DRIVE_FILES_URL}/{file_id}?fields=thumbnailLink");
+        let resp = self
+            .http
+            .get(&url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let body = resp.text().await.unwrap_or_default();
+        let response: DriveThumbnailResponse = serde_json::from_str(&body)?;
+        let thumbnail_link = response.thumbnail_link.ok_or_else(|| {
+            ProviderError::NotFound(format!("no thumbnailLink for Google Drive file {file_id}"))
+        })?;
+
+        // thumbnailLink is a pre-signed CDN URL — no bearer auth required.
+        let img_resp = self
+            .http
+            .get(&thumbnail_link)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let img_status = img_resp.status();
+        if !img_status.is_success() {
+            return Err(ProviderError::Api {
+                status: img_status.as_u16(),
+                body: format!("thumbnail download failed: {img_status}"),
+            });
+        }
+
+        let mime_type = infer_image_mime(
+            img_resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg"),
+        )
+        .to_string();
+
+        let bytes = img_resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?
+            .to_vec();
+
+        Ok(ThumbnailData { bytes, mime_type })
     }
-    s
 }
 
 // ── Provider trait implementation ────────────────────────────────────
 
 /// A Google Drive provider holding a valid access token for API calls.
+///
+/// `folder_cache` is a scan-local cache of resolved folder paths (folder_id →
+/// full path), shared across pages within a single scan to avoid re-fetching
+/// folder metadata. It starts empty (provider is created fresh per scan) and
+/// grows as pages are listed.
 pub struct GoogleDriveProvider {
     client: GoogleDriveClient,
     token: TokenBundle,
+    folder_cache: Mutex<HashMap<String, String>>,
 }
 
 #[async_trait::async_trait]
@@ -411,14 +660,21 @@ impl crate::provider::Provider for GoogleDriveProvider {
     }
 
     async fn list_videos(&self, cursor: Option<&str>) -> ProviderResult<ListPage> {
+        let mut cache = self.folder_cache.lock().await;
         self.client
-            .list_drive_videos(&self.token.access_token, cursor)
+            .list_drive_videos(&self.token.access_token, cursor, &mut cache)
             .await
     }
 
     async fn fetch_prefix_hash(&self, file_id: &str, size: i64) -> ProviderResult<Option<String>> {
         self.client
             .fetch_drive_prefix_hash(&self.token.access_token, file_id, size)
+            .await
+    }
+
+    async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData> {
+        self.client
+            .fetch_thumbnail(&self.token.access_token, file_id)
             .await
     }
 
@@ -447,6 +703,7 @@ impl crate::provider::ProviderFactory for GoogleDriveFactory {
         Ok(Box::new(GoogleDriveProvider {
             client: GoogleDriveClient::new(self.config.clone()),
             token: token_bundle.clone(),
+            folder_cache: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -471,6 +728,29 @@ impl crate::provider::ProviderFactory for GoogleDriveFactory {
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
         let client = GoogleDriveClient::new(self.config.clone());
         client.revoke_token(&token_bundle.access_token).await
+    }
+
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
+        GoogleDriveClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle> {
+        let client = GoogleDriveClient::new(self.config.clone());
+        client.exchange_code(code, verifier, redirect_uri).await
+    }
+
+    async fn fetch_user_info(
+        &self,
+        token_bundle: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        let client = GoogleDriveClient::new(self.config.clone());
+        let info = client.fetch_user_info(&token_bundle.access_token).await?;
+        Ok((Some(info.id), info.email))
     }
 }
 
@@ -513,34 +793,6 @@ mod tests {
                 && granted.contains("https://www.googleapis.com/auth/drive.readonly"),
             "missing required scopes, got: {scope}"
         );
-    }
-
-    #[test]
-    fn token_response_expires_at_has_buffer() {
-        let resp = TokenResponse {
-            access_token: "ya29.test".into(),
-            refresh_token: Some("refresh".into()),
-            expires_in: Some(3600),
-            token_type: "Bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.expires_at.is_some());
-        // The expires_at should be 3600 - 60 = 3540 seconds from now.
-    }
-
-    #[test]
-    fn token_response_without_refresh_token() {
-        let resp = TokenResponse {
-            access_token: "ya29.test".into(),
-            refresh_token: None,
-            expires_in: None,
-            token_type: "Bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.refresh_token.is_none());
-        assert!(bundle.expires_at.is_none());
     }
 
     #[test]
@@ -591,6 +843,93 @@ mod tests {
         assert_eq!(f1.size.as_deref(), Some("10485760"));
         assert!(f1.sha256_checksum.is_some());
         assert!(f1.video_media_metadata.is_some());
+        // file-1 has no parents in the JSON → defaults to None.
+        assert!(f1.parents.is_none());
+        // file-2 also has no parents.
+        assert!(response.files[1].parents.is_none());
+    }
+
+    #[test]
+    fn drive_file_parses_parents() {
+        let json = r#"{
+            "files": [{
+                "id": "f1", "name": "v.mp4", "mimeType": "video/mp4",
+                "parents": ["folder-1", "folder-2"]
+            }]
+        }"#;
+        let response: DriveListResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            response.files[0].parents.as_deref(),
+            Some(["folder-1".to_string(), "folder-2".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn drive_folder_meta_parses() {
+        let json = r#"{
+            "files": [
+                { "id": "f1", "name": "Movies", "parents": ["root-folder"] },
+                { "id": "f2", "name": "Action", "parents": ["f1"] }
+            ]
+        }"#;
+        let response: DriveFolderListResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.files.len(), 2);
+        assert_eq!(response.files[0].name, "Movies");
+        assert_eq!(
+            response.files[0].parents.as_deref(),
+            Some(["root-folder".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn compute_folder_paths_resolves_nested_chain() {
+        let mut meta = HashMap::new();
+        meta.insert("root".into(), ("My Drive".into(), vec![]));
+        meta.insert("f1".into(), ("Movies".into(), vec!["root".into()]));
+        meta.insert(
+            "f2".into(),
+            ("Action".into(), vec!["f1".into()]),
+        );
+        let mut cache = HashMap::new();
+        compute_folder_paths(&meta, &mut cache);
+        assert_eq!(cache["root"], "/My Drive");
+        assert_eq!(cache["f1"], "/My Drive/Movies");
+        assert_eq!(cache["f2"], "/My Drive/Movies/Action");
+    }
+
+    #[test]
+    fn compute_folder_paths_root_level_folder() {
+        let mut meta = HashMap::new();
+        meta.insert("f1".into(), ("Videos".into(), vec![]));
+        let mut cache = HashMap::new();
+        compute_folder_paths(&meta, &mut cache);
+        assert_eq!(cache["f1"], "/Videos");
+    }
+
+    #[test]
+    fn compute_folder_paths_respects_existing_cache() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "f2".into(),
+            ("Action".into(), vec!["f1".into()]),
+        );
+        let mut cache = HashMap::new();
+        cache.insert("f1".into(), "/Movies".into());
+        compute_folder_paths(&meta, &mut cache);
+        assert_eq!(cache["f2"], "/Movies/Action");
+    }
+
+    #[test]
+    fn compute_folder_paths_deleted_parent_becomes_root() {
+        // f1's parent "ghost" is not in meta (deleted) → f1 resolved as root.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "f1".into(),
+            ("Orphaned".into(), vec!["ghost".into()]),
+        );
+        let mut cache = HashMap::new();
+        compute_folder_paths(&meta, &mut cache);
+        assert_eq!(cache["f1"], "/Orphaned");
     }
 
     #[test]
@@ -627,9 +966,22 @@ mod tests {
     }
 
     #[test]
-    fn to_hex_produces_lowercase_hex() {
-        let bytes = [0x01, 0x23, 0xab, 0xff];
-        assert_eq!(to_hex(&bytes), "0123abff");
+    fn drive_thumbnail_response_parses_present_link() {
+        let json = r#"{ "thumbnailLink": "https://lh3.googleusercontent.com/thumb=s220" }"#;
+        let response: DriveThumbnailResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            response.thumbnail_link.as_deref(),
+            Some("https://lh3.googleusercontent.com/thumb=s220")
+        );
+    }
+
+    #[test]
+    fn drive_thumbnail_response_absent_link_is_none() {
+        // Drive omits thumbnailLink (or returns an empty object) when no
+        // thumbnail exists for the file.
+        let json = r#"{}"#;
+        let response: DriveThumbnailResponse = serde_json::from_str(json).unwrap();
+        assert!(response.thumbnail_link.is_none());
     }
 
     #[tokio::test]

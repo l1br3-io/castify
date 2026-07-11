@@ -1,4 +1,5 @@
 pub mod app;
+pub mod auth;
 pub mod cookies;
 pub mod dto;
 pub mod error;

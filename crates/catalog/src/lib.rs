@@ -12,8 +12,9 @@ pub use model::{
     ScanStatus, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
 };
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
-pub use provider::{ProviderError, ProviderFactory, ProviderResult};
+pub use provider::{ProviderError, ProviderFactory, ProviderResult, ThumbnailData};
 pub use providers::dropbox::{DropboxClient, DropboxConfig, DropboxUserInfo};
 pub use providers::google_drive::{GoogleDriveClient, GoogleDriveConfig, GoogleUserInfo};
 pub use providers::onedrive::{OneDriveClient, OneDriveConfig, OneDriveUserInfo};
-pub use repository::{CatalogError, CatalogRepository, CatalogResult};
+pub use providers::ProviderRegistry;
+pub use repository::{CatalogError, CatalogRepository, CatalogResult, FolderCount};

@@ -90,4 +90,4 @@ Revisited once the core hub is shipped and adopted:
 
 ## Status
 
-Greenfield — no source yet. [`VISION.md`](./VISION.md) holds the problem and goals; this roadmap is directional and will be updated as milestones ship and PRDs land under `docs/prds/`.
+**M0 (Foundation) and M1 (Connect & Catalog) are complete.** M2 (Browse) PRD is approved and task breakdown is ready for execution. PRDs live under [`docs/prds/`](./prds/); task breakdown in [`tasks/plan.md`](../tasks/plan.md).

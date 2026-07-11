@@ -4,22 +4,22 @@ use sha2::{Digest, Sha256};
 use crate::crypto::TokenBundle;
 use crate::model::{DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult};
+use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
+use crate::providers::common::{
+    classify_token_error, has_video_extension, infer_image_mime, infer_mime_type, to_hex,
+    TokenResponse,
+};
 
 const AUTH_URL: &str = "https://www.dropbox.com/oauth2/authorize";
 const TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_folder";
 const LIST_FOLDER_CONTINUE_URL: &str = "https://api.dropboxapi.com/2/files/list_folder/continue";
 const DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/download";
+const THUMBNAIL_URL: &str = "https://content.dropboxapi.com/2/files/get_thumbnail_v2";
 const TOKEN_REVOKE_URL: &str = "https://api.dropboxapi.com/2/auth/token_revoke";
 const GET_ACCOUNT_URL: &str = "https://api.dropboxapi.com/2/users/get_current_account";
 const SCOPE: &str = "files.metadata.read files.content.read";
-const TOKEN_BUFFER_SECS: i64 = 60;
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
-
-const VIDEO_EXTENSIONS: &[&str] = &[
-    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv", ".flv",
-];
 
 /// Configuration for the Dropbox OAuth client. Derived from `Config`.
 #[derive(Debug, Clone)]
@@ -169,53 +169,6 @@ impl DropboxClient {
     }
 }
 
-/// Raw token response from Dropbox's token endpoint. The refresh response
-/// omits `refresh_token` (Dropbox refresh tokens are long-lived and don't
-/// rotate); the factory carries the old one forward.
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-    #[serde(default)]
-    expires_in: Option<i64>,
-    token_type: String,
-    #[serde(default)]
-    scope: Option<String>,
-}
-
-impl TokenResponse {
-    fn into_bundle(self) -> TokenBundle {
-        let expires_at = self.expires_in.map(|secs| {
-            let now = chrono::Utc::now();
-            let expiry = now + chrono::Duration::seconds(secs - TOKEN_BUFFER_SECS);
-            expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-        });
-        TokenBundle {
-            access_token: self.access_token,
-            refresh_token: self.refresh_token,
-            expires_at,
-            token_type: self.token_type,
-            scope: self.scope,
-        }
-    }
-}
-
-fn classify_token_error(status: u16, body: &str) -> ProviderError {
-    if status == 401 {
-        ProviderError::Unauthorized
-    } else if status == 429 || status == 503 {
-        ProviderError::RateLimited {
-            retry_after_secs: None,
-        }
-    } else {
-        ProviderError::Api {
-            status,
-            body: body.to_string(),
-        }
-    }
-}
-
 // ── list_folder response types ──────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -302,11 +255,6 @@ fn is_video_entry(entry: &DropboxEntry) -> bool {
     has_video_extension(&entry.name)
 }
 
-fn has_video_extension(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    VIDEO_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
-}
-
 /// Extract (width, height, duration_ms) from media_info if it's video metadata.
 fn extract_video_dims(media_info: &Option<MediaInfo>) -> (Option<i64>, Option<i64>, Option<i64>) {
     if let Some(mi) = media_info {
@@ -386,13 +334,14 @@ impl DropboxClient {
             .map(|e| {
                 let (width, height, duration_ms) = extract_video_dims(&e.media_info);
                 let native_hash_algo = e.content_hash.as_ref().map(|_| "content_hash".to_string());
+                let mime_type = infer_mime_type(&e.name);
                 DiscoveredVideo {
                     provider_file_id: e.id,
                     name: e.name,
                     path: e.path_display,
                     size_bytes: e.size.unwrap_or(0),
-                    // Dropbox doesn't provide MIME types.
-                    mime_type: None,
+                    // Dropbox doesn't return a MIME type; infer from extension.
+                    mime_type,
                     duration_ms,
                     width,
                     height,
@@ -467,15 +416,69 @@ impl DropboxClient {
         hasher.update(&bytes);
         Ok(Some(to_hex(&hasher.finalize())))
     }
-}
 
-fn to_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(&mut s, "{b:02x}").unwrap();
+    /// Fetch a poster thumbnail for a Dropbox file via `get_thumbnail_v2`.
+    /// `file_id` is the stored `provider_file_id` (Dropbox `id:…` ID, which
+    /// the API also accepts in the `path` field). Returns `NotFound` when the
+    /// file has no thumbnail (API responds 409).
+    pub async fn fetch_thumbnail(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<ThumbnailData> {
+        let arg = serde_json::json!({
+            "resource": { ".tag": "path", "path": file_id },
+            "format": "jpeg",
+            "size": "w640h480"
+        });
+        let resp = self
+            .http
+            .post(THUMBNAIL_URL)
+            .bearer_auth(access_token)
+            .header("Dropbox-API-Arg", arg.to_string())
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        // 409: no thumbnail available / unsupported file type / invalid path.
+        if status.as_u16() == 409 {
+            return Err(ProviderError::NotFound(format!(
+                "no thumbnail available for Dropbox file {file_id}"
+            )));
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let mime_type = infer_image_mime(
+            resp.headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/jpeg"),
+        )
+        .to_string();
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?
+            .to_vec();
+
+        Ok(ThumbnailData { bytes, mime_type })
     }
-    s
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -501,6 +504,12 @@ impl crate::provider::Provider for DropboxProvider {
     async fn fetch_prefix_hash(&self, file_id: &str, size: i64) -> ProviderResult<Option<String>> {
         self.client
             .fetch_dropbox_prefix_hash(&self.token.access_token, file_id, size)
+            .await
+    }
+
+    async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData> {
+        self.client
+            .fetch_thumbnail(&self.token.access_token, file_id)
             .await
     }
 
@@ -554,6 +563,29 @@ impl crate::provider::ProviderFactory for DropboxFactory {
         let client = DropboxClient::new(self.config.clone());
         client.revoke_token(&token_bundle.access_token).await
     }
+
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
+        DropboxClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle> {
+        let client = DropboxClient::new(self.config.clone());
+        client.exchange_code(code, verifier, redirect_uri).await
+    }
+
+    async fn fetch_user_info(
+        &self,
+        token_bundle: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        let client = DropboxClient::new(self.config.clone());
+        let info = client.fetch_user_info(&token_bundle.access_token).await?;
+        Ok((info.account_id, info.email))
+    }
 }
 
 #[cfg(test)]
@@ -586,34 +618,6 @@ mod tests {
         // Scope includes the read-only file access.
         assert!(url.contains("files.metadata.read"));
         assert!(url.contains("files.content.read"));
-    }
-
-    #[test]
-    fn token_response_expires_at_has_buffer() {
-        let resp = TokenResponse {
-            access_token: "sl.test".into(),
-            refresh_token: Some("refresh".into()),
-            expires_in: Some(14400),
-            token_type: "bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.expires_at.is_some());
-        assert!(bundle.refresh_token.is_some());
-    }
-
-    #[test]
-    fn token_response_without_refresh_token() {
-        let resp = TokenResponse {
-            access_token: "sl.test".into(),
-            refresh_token: None,
-            expires_in: None,
-            token_type: "bearer".into(),
-            scope: None,
-        };
-        let bundle = resp.into_bundle();
-        assert!(bundle.refresh_token.is_none());
-        assert!(bundle.expires_at.is_none());
     }
 
     #[test]
@@ -746,21 +750,6 @@ mod tests {
         assert_eq!(w, None);
         assert_eq!(h, None);
         assert_eq!(d, None);
-    }
-
-    #[test]
-    fn has_video_extension_matches_case_insensitive() {
-        assert!(has_video_extension("video.MP4"));
-        assert!(has_video_extension("clip.WEBM"));
-        assert!(has_video_extension("a.b.c.mkv"));
-        assert!(!has_video_extension("photo.jpg"));
-        assert!(!has_video_extension("noext"));
-    }
-
-    #[test]
-    fn to_hex_produces_lowercase_hex() {
-        let bytes = [0x01, 0x23, 0xab, 0xff];
-        assert_eq!(to_hex(&bytes), "0123abff");
     }
 
     #[test]

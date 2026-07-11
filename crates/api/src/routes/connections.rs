@@ -17,17 +17,12 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use castify_auth::AuthError;
 use castify_catalog::provider::ProviderFactory;
-use castify_catalog::providers::dropbox::{DropboxClient, DropboxConfig};
-use castify_catalog::providers::google_drive::{GoogleDriveClient, GoogleDriveConfig};
-use castify_catalog::providers::onedrive::{OneDriveClient, OneDriveConfig};
 use castify_catalog::{
-    redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider, TokenBundle,
+    redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider,
 };
 
-use crate::cookies::extract_session_id;
-use crate::dto::OwnerDto;
+use crate::auth::resolve_owner;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -116,11 +111,11 @@ pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Connectio
 }
 
 pub async fn available(State(state): State<AppState>) -> Json<AvailableProviders> {
-    let config = state.config();
+    let reg = state.provider_registry();
     Json(AvailableProviders {
-        google_drive: config.google_oauth.is_some(),
-        dropbox: config.dropbox_oauth.is_some(),
-        onedrive: config.microsoft_oauth.is_some(),
+        google_drive: reg.is_configured(Provider::GoogleDrive),
+        dropbox: reg.is_configured(Provider::Dropbox),
+        onedrive: reg.is_configured(Provider::OneDrive),
     })
 }
 
@@ -130,7 +125,10 @@ pub async fn start(
     Path(provider_str): Path<String>,
 ) -> ApiResult<Json<StartResponse>> {
     let provider = parse_provider(&provider_str)?;
-    ensure_provider_configured(provider, state.config())?;
+    let factory = state
+        .provider_registry()
+        .factory_for(provider)
+        .ok_or_else(|| not_configured(provider))?;
     let base_url = state.config().app_base_url.as_deref().ok_or_else(|| {
         ApiError::ServiceUnavailable("CASTIFY_APP_BASE_URL is required for OAuth".into())
     })?;
@@ -141,13 +139,7 @@ pub async fn start(
     let state_param = castify_catalog::oauth::generate_state();
     let redir = redirect_uri(base_url, &provider);
 
-    let auth_url = build_auth_url(
-        provider,
-        state.config(),
-        &redir,
-        &state_param,
-        &pkce.challenge,
-    )?;
+    let auth_url = factory.authorization_url(&redir, &state_param, &pkce.challenge);
 
     state.oauth_store().insert(
         state_param,
@@ -216,9 +208,18 @@ async fn callback_inner(
         .ok_or("CASTIFY_APP_BASE_URL not set")?;
 
     let redir = redirect_uri(base_url, &provider);
-    let (token_bundle, account_id, account_email) =
-        exchange_and_fetch_account(provider, state.config(), code, &entry.pkce_verifier, &redir)
-            .await?;
+    let factory = state
+        .provider_registry()
+        .factory_for(provider)
+        .ok_or_else(|| format!("{provider} credentials no longer configured"))?;
+    let token_bundle = factory
+        .exchange_code(code, &entry.pkce_verifier, &redir)
+        .await
+        .map_err(|e| format!("token exchange failed: {e}"))?;
+    let (account_id, account_email) = factory
+        .fetch_user_info(&token_bundle)
+        .await
+        .map_err(|e| format!("failed to fetch user info: {e}"))?;
 
     let conn = state
         .catalog_repository()
@@ -248,7 +249,9 @@ pub async fn disconnect(
         .ok_or(ApiError::NotFound)?;
 
     if let Some(bundle) = repo.fetch_token_bundle(&id).await? {
-        revoke_provider_token(conn.provider, state.config(), &bundle.access_token).await;
+        if let Some(factory) = state.provider_registry().factory_for(conn.provider) {
+            let _ = factory.revoke(&bundle).await;
+        }
     }
 
     repo.delete_connection(&conn.id).await?;
@@ -308,148 +311,8 @@ fn parse_provider(s: &str) -> ApiResult<Provider> {
     Provider::parse(s).map_err(|e| ApiError::Validation { detail: e })
 }
 
-fn get_google_config(config: &castify_core::Config) -> Option<GoogleDriveConfig> {
-    config.google_oauth.as_ref().map(|oauth| GoogleDriveConfig {
-        client_id: oauth.client_id.clone(),
-        client_secret: oauth.client_secret.clone(),
-    })
-}
-
-fn get_dropbox_config(config: &castify_core::Config) -> Option<DropboxConfig> {
-    config.dropbox_oauth.as_ref().map(|oauth| DropboxConfig {
-        client_id: oauth.client_id.clone(),
-        client_secret: oauth.client_secret.clone(),
-    })
-}
-
-fn get_onedrive_config(config: &castify_core::Config) -> Option<OneDriveConfig> {
-    config.microsoft_oauth.as_ref().map(|oauth| OneDriveConfig {
-        client_id: oauth.client_id.clone(),
-        client_secret: oauth.client_secret.clone(),
-    })
-}
-
 fn not_configured(provider: Provider) -> ApiError {
     ApiError::ServiceUnavailable(format!("{provider} not configured"))
-}
-
-/// Validate that the provider's OAuth credentials are present. Called early
-/// in the connect flow so the "not configured" error surfaces before other
-/// configuration issues (e.g. missing base URL).
-fn ensure_provider_configured(provider: Provider, config: &castify_core::Config) -> ApiResult<()> {
-    let configured = match provider {
-        Provider::GoogleDrive => get_google_config(config).is_some(),
-        Provider::Dropbox => get_dropbox_config(config).is_some(),
-        Provider::OneDrive => get_onedrive_config(config).is_some(),
-    };
-    if !configured {
-        return Err(not_configured(provider));
-    }
-    Ok(())
-}
-
-/// Build the OAuth authorization URL for the given provider.
-fn build_auth_url(
-    provider: Provider,
-    config: &castify_core::Config,
-    redirect_uri: &str,
-    state: &str,
-    challenge: &str,
-) -> ApiResult<String> {
-    match provider {
-        Provider::GoogleDrive => {
-            let cfg = get_google_config(config).ok_or_else(|| not_configured(provider))?;
-            Ok(GoogleDriveClient::new(cfg).authorization_url(redirect_uri, state, challenge))
-        }
-        Provider::Dropbox => {
-            let cfg = get_dropbox_config(config).ok_or_else(|| not_configured(provider))?;
-            Ok(DropboxClient::new(cfg).authorization_url(redirect_uri, state, challenge))
-        }
-        Provider::OneDrive => {
-            let cfg = get_onedrive_config(config).ok_or_else(|| not_configured(provider))?;
-            Ok(OneDriveClient::new(cfg).authorization_url(redirect_uri, state, challenge))
-        }
-    }
-}
-
-/// Exchange the authorization code for tokens and fetch the provider account
-/// info (ID + email). Returns `(token_bundle, account_id, account_email)`.
-async fn exchange_and_fetch_account(
-    provider: Provider,
-    config: &castify_core::Config,
-    code: &str,
-    verifier: &str,
-    redirect_uri: &str,
-) -> Result<(TokenBundle, Option<String>, Option<String>), String> {
-    match provider {
-        Provider::GoogleDrive => {
-            let cfg = get_google_config(config)
-                .ok_or_else(|| format!("{provider} credentials no longer configured"))?;
-            let client = GoogleDriveClient::new(cfg);
-            let token = client
-                .exchange_code(code, verifier, redirect_uri)
-                .await
-                .map_err(|e| format!("token exchange failed: {e}"))?;
-            let info = client
-                .fetch_user_info(&token.access_token)
-                .await
-                .map_err(|e| format!("failed to fetch user info: {e}"))?;
-            Ok((token, Some(info.id), info.email))
-        }
-        Provider::Dropbox => {
-            let cfg = get_dropbox_config(config)
-                .ok_or_else(|| format!("{provider} credentials no longer configured"))?;
-            let client = DropboxClient::new(cfg);
-            let token = client
-                .exchange_code(code, verifier, redirect_uri)
-                .await
-                .map_err(|e| format!("token exchange failed: {e}"))?;
-            let info = client
-                .fetch_user_info(&token.access_token)
-                .await
-                .map_err(|e| format!("failed to fetch user info: {e}"))?;
-            Ok((token, info.account_id, info.email))
-        }
-        Provider::OneDrive => {
-            let cfg = get_onedrive_config(config)
-                .ok_or_else(|| format!("{provider} credentials no longer configured"))?;
-            let client = OneDriveClient::new(cfg);
-            let token = client
-                .exchange_code(code, verifier, redirect_uri)
-                .await
-                .map_err(|e| format!("token exchange failed: {e}"))?;
-            let info = client
-                .fetch_user_info(&token.access_token)
-                .await
-                .map_err(|e| format!("failed to fetch user info: {e}"))?;
-            Ok((token, info.account_id, info.email))
-        }
-    }
-}
-
-/// Revoke a provider token (best-effort — network failure is swallowed).
-async fn revoke_provider_token(
-    provider: Provider,
-    config: &castify_core::Config,
-    access_token: &str,
-) {
-    match provider {
-        Provider::GoogleDrive => {
-            if let Some(cfg) = get_google_config(config) {
-                let _ = GoogleDriveClient::new(cfg).revoke_token(access_token).await;
-            }
-        }
-        Provider::Dropbox => {
-            if let Some(cfg) = get_dropbox_config(config) {
-                let _ = DropboxClient::new(cfg).revoke_token(access_token).await;
-            }
-        }
-        Provider::OneDrive => {
-            if let Some(cfg) = get_onedrive_config(config) {
-                let _ = OneDriveClient::new(cfg).revoke_token(access_token).await;
-            }
-        }
-    }
 }
 
 fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
@@ -478,48 +341,9 @@ fn build_factory(_state: &AppState, provider: Provider) -> Option<Box<dyn Provid
 
 #[cfg(not(feature = "e2e"))]
 fn build_factory(state: &AppState, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
-    use castify_catalog::providers::dropbox::DropboxFactory;
-    use castify_catalog::providers::google_drive::GoogleDriveFactory;
-    use castify_catalog::providers::onedrive::OneDriveFactory;
-
-    match provider {
-        Provider::GoogleDrive => {
-            let oauth = match get_google_config(state.config()) {
-                Some(cfg) => cfg,
-                None => {
-                    tracing::warn!("google_drive not configured, skipping scan");
-                    return None;
-                }
-            };
-            Some(Box::new(GoogleDriveFactory::new(oauth)))
-        }
-        Provider::Dropbox => {
-            let oauth = match get_dropbox_config(state.config()) {
-                Some(cfg) => cfg,
-                None => {
-                    tracing::warn!("dropbox not configured, skipping scan");
-                    return None;
-                }
-            };
-            Some(Box::new(DropboxFactory::new(oauth)))
-        }
-        Provider::OneDrive => {
-            let oauth = match get_onedrive_config(state.config()) {
-                Some(cfg) => cfg,
-                None => {
-                    tracing::warn!("onedrive not configured, skipping scan");
-                    return None;
-                }
-            };
-            Some(Box::new(OneDriveFactory::new(oauth)))
-        }
+    let factory = state.provider_registry().factory_for(provider);
+    if factory.is_none() {
+        tracing::warn!("{provider} not configured, skipping scan");
     }
-}
-
-async fn resolve_owner(state: &AppState, jar: &CookieJar) -> ApiResult<OwnerDto> {
-    let session_id = extract_session_id(jar, state.session_secret())
-        .ok_or(ApiError::Auth(AuthError::InvalidSession))?;
-    let owner_id = state.repository().validate_session(&session_id).await?;
-    let owner = state.repository().fetch_owner_by_id(&owner_id).await?;
-    Ok(OwnerDto::from_owner(&owner))
+    factory
 }

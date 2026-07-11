@@ -21,7 +21,7 @@ use axum::extract::State;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use castify_catalog::provider::{ProviderFactory, ProviderResult};
+use castify_catalog::provider::{ProviderError, ProviderFactory, ProviderResult, ThumbnailData};
 use castify_catalog::{DiscoveredVideo, ListPage, NewConnection, Provider, TokenBundle};
 
 use crate::error::{ApiError, ApiResult};
@@ -54,6 +54,12 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
 
     async fn fetch_prefix_hash(&self, file_id: &str, _size: i64) -> ProviderResult<Option<String>> {
         Ok(self.prefix_hashes.get(file_id).cloned())
+    }
+
+    async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+        Err(ProviderError::Other(
+            "e2e mock: fetch_thumbnail not supported".into(),
+        ))
     }
 
     async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {
@@ -136,6 +142,21 @@ impl ProviderFactory for E2eMockFactory {
 
     async fn revoke(&self, _token: &TokenBundle) -> ProviderResult<()> {
         Ok(())
+    }
+
+    fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+        String::new()
+    }
+
+    async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
+        Err(ProviderError::Other("e2e mock: no OAuth flow".into()))
+    }
+
+    async fn fetch_user_info(
+        &self,
+        _: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        Ok((Some("e2e-account".into()), Some("e2e@example.com".into())))
     }
 }
 

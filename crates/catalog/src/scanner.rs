@@ -289,7 +289,7 @@ mod tests {
     use super::*;
     use crate::crypto::{TokenBundle, TokenKey};
     use crate::model::{DiscoveredVideo, ListPage, Provider};
-    use crate::provider::ProviderResult;
+    use crate::provider::{ProviderResult, ThumbnailData};
     use crate::repository::CatalogRepository;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -317,6 +317,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS owners (id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, display_name TEXT)",
             "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
             include_str!("../../storage/migrations/0003_connect_catalog.sql"),
+            include_str!("../../storage/migrations/0004_browse.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -374,6 +375,12 @@ mod tests {
             Ok(self.prefix_hashes.get(file_id).cloned())
         }
 
+        async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+            Err(ProviderError::Other(
+                "mock: fetch_thumbnail not supported".into(),
+            ))
+        }
+
         async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
             Ok(())
         }
@@ -409,6 +416,21 @@ mod tests {
 
         async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
             Ok(())
+        }
+
+        fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+            String::new()
+        }
+
+        async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
+            Err(ProviderError::Other("mock: exchange_code not supported".into()))
+        }
+
+        async fn fetch_user_info(
+            &self,
+            _: &TokenBundle,
+        ) -> ProviderResult<(Option<String>, Option<String>)> {
+            Err(ProviderError::Other("mock: fetch_user_info not supported".into()))
         }
     }
 
@@ -503,6 +525,23 @@ mod tests {
             }
             async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
                 Ok(())
+            }
+            fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+                String::new()
+            }
+            async fn exchange_code(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> ProviderResult<TokenBundle> {
+                Err(ProviderError::Other("mock".into()))
+            }
+            async fn fetch_user_info(
+                &self,
+                _: &TokenBundle,
+            ) -> ProviderResult<(Option<String>, Option<String>)> {
+                Err(ProviderError::Other("mock".into()))
             }
         }
 

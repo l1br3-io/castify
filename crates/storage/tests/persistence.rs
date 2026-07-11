@@ -261,3 +261,221 @@ async fn migration_0003_unique_constraints() {
         "duplicate connection_id+provider_file_id must reject"
     );
 }
+
+// ---- Migration 0004: Browse ----
+
+async fn seed_owner_connection_video(pool: &sqlx::SqlitePool) {
+    sqlx::query("INSERT INTO owners (id, created_at) VALUES ('owner-x', '2026-01-01T00:00:00Z')")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO provider_connections (id, provider, token_bundle, provider_account_id, \
+         connected_at) VALUES ('conn-x', 'google_drive', X'aa', 'acct-1', '2026-01-01T00:00:00Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    // Name + path use disjoint tokens so FTS5 update/delete trigger tests can
+    // observe a name-only token leaving the index without path-column aliasing.
+    sqlx::query(
+        "INSERT INTO videos (id, connection_id, provider, provider_file_id, name, path, \
+         size_bytes, scanned_at, created_at) \
+         VALUES ('vid-x', 'conn-x', 'google_drive', 'file-x', 'concert.mp4', '/Library/footage', \
+         100, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn migration_0004_creates_browse_tables() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO video_favorites (owner_id, video_id, created_at) \
+         VALUES ('owner-x', 'vid-x', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+         VALUES ('owner-x', 'vid-x', 4, '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let fav_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_favorites")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(fav_count, 1);
+
+    let rating: i64 = sqlx::query_scalar("SELECT rating FROM video_ratings WHERE video_id = 'vid-x'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rating, 4);
+}
+
+#[tokio::test]
+async fn migration_0004_thumbnail_status_defaults_to_pending() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+
+    // Insert a video without specifying thumbnail_status.
+    seed_owner_connection_video(&pool).await;
+
+    let status: String =
+        sqlx::query_scalar("SELECT thumbnail_status FROM videos WHERE id = 'vid-x'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+}
+
+#[tokio::test]
+async fn migration_0004_rating_check_constraint_rejects_out_of_range() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    let too_low = sqlx::query(
+        "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+         VALUES ('owner-x', 'vid-x', 0, '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(too_low.is_err(), "rating = 0 must be rejected by CHECK");
+
+    let too_high = sqlx::query(
+        "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+         VALUES ('owner-x', 'vid-x', 6, '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(too_high.is_err(), "rating = 6 must be rejected by CHECK");
+
+    // Boundary values 1 and 5 are accepted.
+    sqlx::query(
+        "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+         VALUES ('owner-x', 'vid-x', 1, '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn migration_0004_cascade_deletes_favorites_and_ratings() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO video_favorites (owner_id, video_id, created_at) \
+         VALUES ('owner-x', 'vid-x', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+         VALUES ('owner-x', 'vid-x', 5, '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Deleting the video cascades to its favorites + ratings.
+    sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let favs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_favorites")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(favs, 0, "favorites should cascade-delete with video");
+
+    let ratings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_ratings")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ratings, 0, "ratings should cascade-delete with video");
+}
+
+#[tokio::test]
+async fn migration_0004_fts5_triggers_keep_index_in_sync() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+
+    // Empty index to start.
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'concert'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+
+    // Insert a video — the AFTER INSERT trigger indexes name + path.
+    seed_owner_connection_video(&pool).await;
+
+    let name_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'concert'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(name_hits, 1, "FTS5 should index the video name");
+
+    // Path tokens are indexed too (case-folded; /Library -> 'library').
+    let path_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'library'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(path_hits, 1, "FTS5 should index the video path (case-insensitive)");
+
+    // Update the name — AFTER UPDATE trigger re-indexes. 'concert' was only in
+    // the name (not the path), so it must leave the index entirely.
+    sqlx::query("UPDATE videos SET name = 'symphony.mkv' WHERE id = 'vid-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let old_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'concert'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(old_hits, 0, "old name token should leave the index after update");
+    let new_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'symphony'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(new_hits, 1, "new name token should enter the index after update");
+
+    // Delete the video — AFTER DELETE trigger removes it.
+    sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let final_hits: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'symphony'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(final_hits, 0, "FTS5 index should be empty after video deletion");
+}

@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use castify_auth::{AuthRepository, SessionSecret};
-use castify_catalog::{CatalogRepository, OAuthStateStore, TokenKey};
+use castify_catalog::providers::dropbox::DropboxConfig;
+use castify_catalog::providers::google_drive::GoogleDriveConfig;
+use castify_catalog::providers::onedrive::OneDriveConfig;
+use castify_catalog::{CatalogRepository, OAuthStateStore, ProviderRegistry, TokenKey};
 use castify_core::Config;
 use sqlx::SqlitePool;
 
@@ -19,6 +22,7 @@ struct AppStateInner {
     catalog_repository: CatalogRepository,
     oauth_store: OAuthStateStore,
     session_secret: SessionSecret,
+    provider_registry: ProviderRegistry,
 }
 
 impl AppState {
@@ -31,6 +35,20 @@ impl AppState {
         let repository = AuthRepository::new(pool.clone());
         let catalog_repository = CatalogRepository::new(pool.clone(), token_key);
         let oauth_store = OAuthStateStore::new();
+        let provider_registry = ProviderRegistry::new(
+            config.google_oauth.as_ref().map(|o| GoogleDriveConfig {
+                client_id: o.client_id.clone(),
+                client_secret: o.client_secret.clone(),
+            }),
+            config.dropbox_oauth.as_ref().map(|o| DropboxConfig {
+                client_id: o.client_id.clone(),
+                client_secret: o.client_secret.clone(),
+            }),
+            config.microsoft_oauth.as_ref().map(|o| OneDriveConfig {
+                client_id: o.client_id.clone(),
+                client_secret: o.client_secret.clone(),
+            }),
+        );
         Self {
             inner: Arc::new(AppStateInner {
                 config,
@@ -40,6 +58,7 @@ impl AppState {
                 catalog_repository,
                 oauth_store,
                 session_secret,
+                provider_registry,
             }),
         }
     }
@@ -70,5 +89,12 @@ impl AppState {
 
     pub fn session_secret(&self) -> &SessionSecret {
         &self.inner.session_secret
+    }
+
+    /// The configured provider factories — the single dispatch point over the
+    /// `Provider` enum. Handlers resolve a factory via
+    /// `registry.factory_for(provider)` rather than `match provider {}`.
+    pub fn provider_registry(&self) -> &ProviderRegistry {
+        &self.inner.provider_registry
     }
 }

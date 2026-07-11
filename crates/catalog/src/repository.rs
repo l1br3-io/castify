@@ -23,6 +23,73 @@ pub enum CatalogError {
 
 pub type CatalogResult<T> = Result<T, CatalogError>;
 
+/// A folder with its dedup-aware video count, returned by `fetch_folders`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderCount {
+    pub folder: String,
+    pub video_count: i64,
+}
+
+/// Push the shared WHERE predicates (provider, search, duration, resolution,
+/// folder, favorites, rating) onto the representative subquery builder. The
+/// predicates reference the un-aliased `videos` table (the subquery scope).
+///
+/// Empty/None predicates are skipped. Duration predicates automatically
+/// exclude null-duration rows (NULL comparisons yield false in SQL).
+fn push_video_predicates(qb: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, filter: &VideoFilter) {
+    if let Some(p) = &filter.provider {
+        qb.push(" AND provider = ");
+        qb.push_bind(p.as_str());
+    }
+    if let Some(q) = &filter.q {
+        let trimmed = q.trim();
+        if !trimmed.is_empty() {
+            // Wrap each whitespace-separated token in double quotes so FTS5
+            // treats them as string literals (immune to syntax errors from
+            // special characters). Multiple tokens are implicit AND.
+            let sanitized: String = trimmed
+                .split_whitespace()
+                .map(|w| format!("\"{}\"", w.replace('"', "")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !sanitized.is_empty() {
+                qb.push(" AND rowid IN (SELECT rowid FROM videos_fts WHERE videos_fts MATCH ");
+                qb.push_bind(sanitized);
+                qb.push(")");
+            }
+        }
+    }
+    if let Some(min) = filter.duration_min {
+        qb.push(" AND duration_ms >= ");
+        qb.push_bind(min);
+    }
+    if let Some(max) = filter.duration_max {
+        qb.push(" AND duration_ms <= ");
+        qb.push_bind(max);
+    }
+    if let Some(h) = filter.min_height {
+        qb.push(" AND height >= ");
+        qb.push_bind(h);
+    }
+    if let Some(folder) = &filter.folder {
+        // Top-level segment: match paths starting with /{folder}/.
+        qb.push(" AND path LIKE ");
+        qb.push_bind(format!("/{folder}/%"));
+    }
+    if filter.favorites_only {
+        qb.push(" AND EXISTS (SELECT 1 FROM video_favorites vf WHERE vf.video_id = videos.id AND vf.owner_id = ");
+        qb.push_bind(filter.owner_id.clone());
+        qb.push(")");
+    }
+    if let Some(min_r) = filter.min_rating {
+        qb.push(" AND EXISTS (SELECT 1 FROM video_ratings vr WHERE vr.video_id = videos.id AND vr.owner_id = ");
+        qb.push_bind(filter.owner_id.clone());
+        qb.push(" AND vr.rating >= ");
+        qb.push_bind(min_r);
+        qb.push(")");
+    }
+}
+
 /// Data access for `provider_connections`, `videos`, and `scan_state`.
 /// Holds the encryption key so token bundles are transparently
 /// encrypted/decrypted at the repository boundary.
@@ -266,88 +333,61 @@ impl CatalogRepository {
 
     /// Fetch a deduplicated, paginated page of videos across all active
     /// connections. Videos sharing a `dedup_group` appear as one entry with
-    /// multiple `sources`.
+    /// multiple `sources`. Supports FTS5 search, filters, and owner-scoped
+    /// favorites/ratings enrichment (PRD FR-2/FR-3/FR-4/FR-5/FR-6).
+    ///
+    /// The representative subquery (`MIN(id) … GROUP BY dedup_group` unioned
+    /// with ungrouped ids) receives the objective predicates (provider, search,
+    /// duration, resolution, folder, favorites, rating). The outer query LEFT
+    /// JOINs `video_favorites` / `video_ratings` for enrichment and applies
+    /// `ORDER BY` / `LIMIT` / `OFFSET`.
     pub async fn fetch_video_page(&self, filter: &VideoFilter) -> CatalogResult<VideoPage> {
         let offset = (filter.page - 1) * filter.limit;
         let order = filter.sort.order_clause();
 
-        // Build conditional provider filter for both subquery and count.
-        let (count_sql, rep_sql, provider_bindings): (&str, String, Vec<&str>) = match &filter
-            .provider
-        {
-            Some(p) => {
-                let cs = "SELECT COUNT(*) FROM ( \
-                        SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL AND provider = ? GROUP BY dedup_group \
-                        UNION ALL \
-                        SELECT id FROM videos WHERE dedup_group IS NULL AND provider = ? \
-                    )";
-                let rs = format!(
-                        "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
-                                v.duration_ms, v.width, v.height, v.dedup_group, \
-                                v.connection_id, v.provider_file_id \
-                         FROM videos v \
-                         WHERE v.id IN ( \
-                             SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL AND provider = ? GROUP BY dedup_group \
-                             UNION ALL \
-                             SELECT id FROM videos WHERE dedup_group IS NULL AND provider = ? \
-                         ) \
-                         ORDER BY v.{order} \
-                         LIMIT ? OFFSET ?"
-                    );
-                (cs, rs, vec![p.as_str(), p.as_str()])
-            }
-            None => {
-                let cs = "SELECT COUNT(*) FROM ( \
-                        SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL GROUP BY dedup_group \
-                        UNION ALL \
-                        SELECT id FROM videos WHERE dedup_group IS NULL \
-                    )";
-                let rs = format!(
-                        "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
-                                v.duration_ms, v.width, v.height, v.dedup_group, \
-                                v.connection_id, v.provider_file_id \
-                         FROM videos v \
-                         WHERE v.id IN ( \
-                             SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL GROUP BY dedup_group \
-                             UNION ALL \
-                             SELECT id FROM videos WHERE dedup_group IS NULL \
-                         ) \
-                         ORDER BY v.{order} \
-                         LIMIT ? OFFSET ?"
-                    );
-                (cs, rs, vec![])
-            }
-        };
+        // ── Count query ───────────────────────────────────────────────
+        let mut count_qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT COUNT(*) FROM (SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL",
+        );
+        push_video_predicates(&mut count_qb, filter);
+        count_qb.push(
+            " GROUP BY dedup_group UNION ALL SELECT id FROM videos WHERE dedup_group IS NULL",
+        );
+        push_video_predicates(&mut count_qb, filter);
+        count_qb.push(")");
+        let total: i64 = count_qb
+            .build_query_scalar::<i64>()
+            .fetch_one(&self.pool)
+            .await?;
 
-        // 1. Total count.
-        let total: i64 = if provider_bindings.is_empty() {
-            sqlx::query_scalar(count_sql).fetch_one(&self.pool).await?
-        } else {
-            sqlx::query_scalar(count_sql)
-                .bind(provider_bindings[0])
-                .bind(provider_bindings[1])
-                .fetch_one(&self.pool)
-                .await?
-        };
+        // ── Page query ────────────────────────────────────────────────
+        let mut page_qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
+                    v.duration_ms, v.width, v.height, v.dedup_group, \
+                    v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating \
+             FROM videos v \
+             LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ",
+        );
+        page_qb.push_bind(filter.owner_id.clone());
+        page_qb.push(" LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ");
+        page_qb.push_bind(filter.owner_id.clone());
+        page_qb.push(
+            " WHERE v.id IN (SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL",
+        );
+        push_video_predicates(&mut page_qb, filter);
+        page_qb.push(" GROUP BY dedup_group UNION ALL SELECT id FROM videos WHERE dedup_group IS NULL");
+        push_video_predicates(&mut page_qb, filter);
+        page_qb.push(") ORDER BY ");
+        page_qb.push(order);
+        page_qb.push(" LIMIT ");
+        page_qb.push_bind(filter.limit);
+        page_qb.push(" OFFSET ");
+        page_qb.push_bind(offset);
 
-        // 2. Representatives for this page.
-        let rep_rows = if provider_bindings.is_empty() {
-            sqlx::query(&rep_sql)
-                .bind(filter.limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await?
-        } else {
-            sqlx::query(&rep_sql)
-                .bind(provider_bindings[0])
-                .bind(provider_bindings[1])
-                .bind(filter.limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await?
-        };
+        let rep_rows = page_qb.build().fetch_all(&self.pool).await?;
 
-        // 3. Batch-fetch sources for all dedup groups in this page.
+        // ── Batch-fetch sources for dedup groups on this page ─────────
         let dedup_groups: Vec<String> = rep_rows
             .iter()
             .filter_map(|r| sqlx::Row::get::<Option<String>, _>(r, "dedup_group"))
@@ -359,7 +399,7 @@ impl CatalogRepository {
             self.fetch_sources_by_groups(&dedup_groups).await?
         };
 
-        // 4. Assemble summaries.
+        // ── Assemble summaries ────────────────────────────────────────
         let videos = rep_rows
             .iter()
             .map(|row| {
@@ -388,6 +428,11 @@ impl CatalogRepository {
                     width: sqlx::Row::get(row, "width"),
                     height: sqlx::Row::get(row, "height"),
                     sources,
+                    created_at: sqlx::Row::get(row, "created_at"),
+                    path: sqlx::Row::get(row, "path"),
+                    is_favorite: sqlx::Row::get(row, "is_favorite"),
+                    my_rating: sqlx::Row::get(row, "my_rating"),
+                    thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
                 }
             })
             .collect();
@@ -398,6 +443,42 @@ impl CatalogRepository {
             page: filter.page,
             limit: filter.limit,
         })
+    }
+
+    /// Enumerate top-level folder paths with dedup-aware video counts
+    /// (PRD FR-7). Videos with a `NULL` path are grouped under `"(Unsorted)"`;
+    /// root-level files (`/filename.ext`, no directory) under `"(Root)"`.
+    /// Sorted by `video_count` descending.
+    pub async fn fetch_folders(&self) -> CatalogResult<Vec<FolderCount>> {
+        let rows = sqlx::query(
+            "SELECT \
+                CASE \
+                    WHEN path IS NULL THEN '(Unsorted)' \
+                    WHEN substr(path, 2) LIKE '%/%' \
+                        THEN substr(path, 2, instr(substr(path, 2), '/') - 1) \
+                    ELSE '(Root)' \
+                END AS folder, \
+                COUNT(*) AS video_count \
+             FROM ( \
+                SELECT path FROM videos WHERE id IN ( \
+                    SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL GROUP BY dedup_group \
+                    UNION ALL \
+                    SELECT id FROM videos WHERE dedup_group IS NULL \
+                ) \
+             ) \
+             GROUP BY folder \
+             ORDER BY video_count DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| FolderCount {
+                folder: sqlx::Row::get(r, "folder"),
+                video_count: sqlx::Row::get(r, "video_count"),
+            })
+            .collect())
     }
 
     /// Fetch all source copies for a set of dedup groups.
@@ -542,6 +623,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS owners (id TEXT PRIMARY KEY NOT NULL, created_at TEXT NOT NULL, display_name TEXT)",
             "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
             include_str!("../../storage/migrations/0003_connect_catalog.sql"),
+            include_str!("../../storage/migrations/0004_browse.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }

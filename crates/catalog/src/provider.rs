@@ -22,6 +22,14 @@ pub enum ProviderError {
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// Raw thumbnail image bytes plus their MIME type. Providers return this from
+/// [`Provider::fetch_thumbnail`]; the API layer caches and serves it.
+#[derive(Debug, Clone)]
+pub struct ThumbnailData {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+}
+
 /// Abstraction over a cloud storage provider's video listing and file access.
 ///
 /// Each provider (Google Drive, Dropbox, OneDrive) implements this trait. The
@@ -43,6 +51,12 @@ pub trait Provider: Send + Sync {
     /// file. `size` is the full file size in bytes.
     async fn fetch_prefix_hash(&self, file_id: &str, size: i64) -> ProviderResult<Option<String>>;
 
+    /// Fetch a poster thumbnail for `file_id`. Returns [`ProviderError::NotFound`]
+    /// when the provider has no thumbnail for the file (e.g. unsupported type or
+    /// not yet generated). Each implementation owns its provider-specific
+    /// thumbnail endpoint; no shared thumbnail logic lives outside the trait.
+    async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData>;
+
     /// Revoke the provider token (best-effort — network failure should not
     /// prevent local connection deletion).
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()>;
@@ -50,6 +64,11 @@ pub trait Provider: Send + Sync {
 
 /// Builder that creates a boxed `Provider` instance from a token bundle and
 /// provider-specific configuration. Each provider registers its own builder.
+///
+/// The factory owns the provider's full OAuth lifecycle: authorization URL
+/// construction, code exchange, user-info fetch, token refresh, and revocation.
+/// Shared code (e.g. `connections.rs`) dispatches through this trait rather
+/// than `match provider {}` blocks.
 #[async_trait::async_trait]
 pub trait ProviderFactory: Send + Sync {
     /// Create a provider instance authenticated with the given token bundle.
@@ -60,4 +79,24 @@ pub trait ProviderFactory: Send + Sync {
 
     /// Revoke the provider token (best-effort).
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()>;
+
+    /// Build the OAuth authorization URL with PKCE. Infallible — pure string
+    /// construction from the configured client id.
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String;
+
+    /// Exchange the authorization code for a token bundle.
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle>;
+
+    /// Fetch the authenticated user's account info. Returns
+    /// `(provider_account_id, provider_account_email)` — both optional since
+    /// providers differ on what they expose and whether the user has an email.
+    async fn fetch_user_info(
+        &self,
+        token_bundle: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)>;
 }
