@@ -19,11 +19,9 @@ use serde::{Deserialize, Serialize};
 
 use castify_auth::AuthError;
 use castify_catalog::provider::ProviderFactory;
-use castify_catalog::providers::dropbox::{DropboxClient, DropboxConfig, DropboxFactory};
-use castify_catalog::providers::google_drive::{
-    GoogleDriveClient, GoogleDriveConfig, GoogleDriveFactory,
-};
-use castify_catalog::providers::onedrive::{OneDriveClient, OneDriveConfig, OneDriveFactory};
+use castify_catalog::providers::dropbox::{DropboxClient, DropboxConfig};
+use castify_catalog::providers::google_drive::{GoogleDriveClient, GoogleDriveConfig};
+use castify_catalog::providers::onedrive::{OneDriveClient, OneDriveConfig};
 use castify_catalog::{
     redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider, TokenBundle,
 };
@@ -458,42 +456,64 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     let repo = state.catalog_repository().clone();
     let conn_id = connection_id.to_string();
 
-    let factory: Box<dyn ProviderFactory> = match provider {
+    let factory = match build_factory(state, provider) {
+        Some(f) => f,
+        None => return,
+    };
+
+    tokio::spawn(async move {
+        castify_catalog::scanner::run_scan(repo, conn_id, provider, factory).await;
+    });
+}
+
+/// Construct the provider factory for a scan task.
+///
+/// When the `e2e` feature is enabled, returns a mock factory that serves
+/// canned video listings — allowing the full scan → catalog → dedup pipeline
+/// to run without real OAuth credentials or external API access.
+#[cfg(feature = "e2e")]
+fn build_factory(_state: &AppState, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
+    Some(Box::new(crate::e2e::E2eMockFactory::new(provider)))
+}
+
+#[cfg(not(feature = "e2e"))]
+fn build_factory(state: &AppState, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
+    use castify_catalog::providers::dropbox::DropboxFactory;
+    use castify_catalog::providers::google_drive::GoogleDriveFactory;
+    use castify_catalog::providers::onedrive::OneDriveFactory;
+
+    match provider {
         Provider::GoogleDrive => {
             let oauth = match get_google_config(state.config()) {
                 Some(cfg) => cfg,
                 None => {
                     tracing::warn!("google_drive not configured, skipping scan");
-                    return;
+                    return None;
                 }
             };
-            Box::new(GoogleDriveFactory::new(oauth))
+            Some(Box::new(GoogleDriveFactory::new(oauth)))
         }
         Provider::Dropbox => {
             let oauth = match get_dropbox_config(state.config()) {
                 Some(cfg) => cfg,
                 None => {
                     tracing::warn!("dropbox not configured, skipping scan");
-                    return;
+                    return None;
                 }
             };
-            Box::new(DropboxFactory::new(oauth))
+            Some(Box::new(DropboxFactory::new(oauth)))
         }
         Provider::OneDrive => {
             let oauth = match get_onedrive_config(state.config()) {
                 Some(cfg) => cfg,
                 None => {
                     tracing::warn!("onedrive not configured, skipping scan");
-                    return;
+                    return None;
                 }
             };
-            Box::new(OneDriveFactory::new(oauth))
+            Some(Box::new(OneDriveFactory::new(oauth)))
         }
-    };
-
-    tokio::spawn(async move {
-        castify_catalog::scanner::run_scan(repo, conn_id, provider, factory).await;
-    });
+    }
 }
 
 async fn resolve_owner(state: &AppState, jar: &CookieJar) -> ApiResult<OwnerDto> {

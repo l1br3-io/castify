@@ -10,7 +10,7 @@ use crate::spa::spa_handler;
 use crate::state::AppState;
 
 pub fn build_app(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/api/health", axum::routing::get(health::health))
         .route("/api/csrf", axum::routing::get(csrf::get_csrf))
         .route(
@@ -44,7 +44,15 @@ pub fn build_app(state: AppState) -> Router {
             "/api/connections/{id}/scan",
             axum::routing::post(connections::trigger_rescan).get(connections::scan_status),
         )
-        .route("/api/videos", axum::routing::get(videos::list_videos))
+        .route("/api/videos", axum::routing::get(videos::list_videos));
+
+    #[cfg(feature = "e2e")]
+    let router = router.route(
+        "/api/__e2e/seed-connection",
+        axum::routing::post(crate::e2e::seed_connection),
+    );
+
+    router
         .fallback(spa_handler)
         .with_state(state.clone())
         // Layer order is outermost-first: trace logs every request, CSRF runs

@@ -18,7 +18,14 @@ ENV CASTIFY_SKIP_FRONTEND_BUILD=1
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
-RUN cargo build --release -p castify-api && \
+# E2E=true builds with the `e2e` cargo feature, which enables test-only mock
+# provider factories and seed endpoints. Production builds leave it false.
+ARG E2E=false
+RUN if [ "$E2E" = "true" ]; then \
+      cargo build --release -p castify-api --features e2e; \
+    else \
+      cargo build --release -p castify-api; \
+    fi && \
     strip target/release/castify
 
 # Create /data owned by nonroot (uid 65532 in distroless) so Docker named

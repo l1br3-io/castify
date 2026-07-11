@@ -9,4 +9,7 @@ pub mod spa;
 pub mod state;
 pub mod tracing_init;
 
+#[cfg(feature = "e2e")]
+pub mod e2e;
+
 pub use castify_core::Config;

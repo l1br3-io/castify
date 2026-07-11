@@ -70,7 +70,7 @@ e2e:
             echo "== teardown skipped (CASTIFY_E2E_REUSE=1) =="
         else
             echo "== docker: teardown =="
-            docker compose down -v --remove-orphans 2>/dev/null || true
+            docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
         fi
     }
     trap cleanup EXIT
@@ -85,9 +85,9 @@ e2e:
         ( cd e2e && npx playwright install chromium )
     fi
 
-    echo "== docker: cold boot (fresh volume) =="
-    docker compose down -v --remove-orphans 2>/dev/null || true
-    docker compose up --build -d
+    echo "== docker: cold boot (fresh volume, e2e build) =="
+    docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+    docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
 
     echo "== waiting for health on :8427 =="
     ready=0
@@ -99,7 +99,7 @@ e2e:
     done
     if [ "$ready" = 0 ]; then
         echo "error: stack did not become healthy within 120s" >&2
-        docker compose logs --tail=50
+        docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=50
         exit 1
     fi
     echo "stack healthy"

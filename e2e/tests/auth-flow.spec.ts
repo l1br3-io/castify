@@ -31,12 +31,12 @@ test.describe("Auth lifecycle (cold boot)", () => {
     // ── 3. Authenticated landing on / ───────────────────────────────
     await expect(page).toHaveURL(/\/$/);
 
-    // Health probe rendered with a successful status (proves SPA ↔ API
-    // connectivity through the embedded single-binary server).
+    // First-run guide rendered (proves SPA ↔ API connectivity through
+    // the embedded single-binary server — the guide only appears after
+    // `GET /api/connections` returns an empty array successfully).
     await expect(
-      page.getByRole("heading", { name: "Backend health" }),
+      page.getByRole("heading", { name: "Connect your first cloud" }),
     ).toBeVisible();
-    await expect(page.getByText("ok", { exact: true })).toBeVisible();
 
     // Header reflects the authenticated session. Use exact match on the
     // display name — the wrapping span also contains it as a substring.

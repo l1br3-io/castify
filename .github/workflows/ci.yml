@@ -67,10 +67,10 @@ jobs:
       - name: Install Playwright browsers
         working-directory: e2e
         run: npx playwright install --with-deps chromium
-      - name: Build and start Docker stack (cold boot)
+      - name: Build and start Docker stack (cold boot, e2e build)
         run: |
-          docker compose down -v --remove-orphans || true
-          docker compose up --build -d
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans || true
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
       - name: Wait for health
         run: |
           ready=0
@@ -82,7 +82,7 @@ jobs:
           done
           if [ "$ready" = 0 ]; then
             echo "::error::Stack did not become healthy within 120s"
-            docker compose logs --tail=50
+            docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --tail=50
             exit 1
           fi
       - name: Run Playwright tests
@@ -97,4 +97,4 @@ jobs:
           retention-days: 7
       - name: Tear down Docker stack
         if: always()
-        run: docker compose down -v --remove-orphans
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v --remove-orphans

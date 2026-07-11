@@ -1,0 +1,14 @@
+# Compose override for e2e tests.
+#
+# Builds the binary with the `e2e` cargo feature, which enables test-only
+# mock provider factories and a seed endpoint (`POST /api/__e2e/seed-connection`).
+# These endpoints are NOT present in production builds.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
+
+services:
+  castify:
+    build:
+      args:
+        E2E: "true"

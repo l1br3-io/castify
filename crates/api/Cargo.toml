@@ -12,8 +12,12 @@ authors.workspace = true
 name = "castify"
 path = "src/main.rs"
 
+[features]
+e2e = []
+
 [dependencies]
 anyhow = "1.0.103"
+async-trait = "0.1.89"
 axum = { version = "0.8.9", features = ["macros"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 base64 = "0.22.1"
