@@ -1,5 +1,6 @@
 ---
 description: Snapshot of project state — milestone, task progress, resume notes, working tree, with the next task front and center. Add "verify" to also run cargo test + build.
+model: opencode/big-pickle
 ---
 
 # /status

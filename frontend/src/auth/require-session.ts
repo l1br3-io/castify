@@ -14,6 +14,7 @@
 
 import { redirect } from "react-router-dom";
 
+import { fetchCsrfToken, getCsrfToken } from "../api/client";
 import { fetchSetupStatus } from "../api/setup";
 import { fetchSession } from "../api/session";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
@@ -28,6 +29,17 @@ export async function requireSessionLoader(): Promise<null> {
   });
 
   if (session !== null) {
+    // Bootstrap the CSRF token on cold loads (e.g. after OAuth callback
+    // redirect). The module variable is lost on full page reload; without
+    // this, mutations 403 and must rely on the apiFetch retry path.
+    if (getCsrfToken() === null) {
+      try {
+        await fetchCsrfToken();
+      } catch {
+        // CSRF bootstrap is best-effort — the 403-retry in apiFetch is the
+        // fallback. Don't block the page from rendering.
+      }
+    }
     return null;
   }
 

@@ -15,7 +15,27 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const USERINFO_URL: &str = "https://www.googleapis.com/oauth2/v2/userinfo";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly openid email profile";
+const REQUIRED_DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
+
+/// Verify the token response includes the Drive scope. Google silently drops
+/// `drive.readonly` when the OAuth consent screen or GCP project isn't
+/// configured for it — the connection appears to succeed but every Drive API
+/// call fails with a cryptic `ACCESS_TOKEN_SCOPE_INSUFFICIENT` 403.
+fn validate_drive_scopes(granted: &str) -> ProviderResult<()> {
+    if granted
+        .split(' ')
+        .any(|s| s == REQUIRED_DRIVE_SCOPE)
+    {
+        return Ok(());
+    }
+    Err(ProviderError::Other(format!(
+        "Google did not grant the required scope '{REQUIRED_DRIVE_SCOPE}'. \
+         Granted: '{granted}'. Ensure the Drive API is enabled and \
+         drive.readonly is added to the OAuth consent screen scopes \
+         in your Google Cloud project."
+    )))
+}
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Configuration for the Google Drive OAuth client. Derived from `Config`.
@@ -99,7 +119,9 @@ impl GoogleDriveClient {
         }
 
         let token: TokenResponse = serde_json::from_str(&body)?;
-        Ok(token.into_bundle())
+        let bundle = token.into_bundle();
+        validate_drive_scopes(bundle.scope.as_deref().unwrap_or(""))?;
+        Ok(bundle)
     }
 
     /// Refresh an expired access token.
@@ -209,14 +231,6 @@ struct DriveFolderMeta {
     parents: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DriveFolderListResponse {
-    #[serde(default)]
-    files: Vec<DriveFolderMeta>,
-    next_page_token: Option<String>,
-}
-
 /// Response from `GET /drive/v3/files/{id}?fields=thumbnailLink`. The field is
 /// absent when Drive has no thumbnail for the file.
 #[derive(Debug, Deserialize)]
@@ -247,6 +261,8 @@ impl GoogleDriveClient {
             ),
             ("pageSize", "1000"),
             ("orderBy", "folder,modifiedTime desc,name"),
+            ("supportsAllDrives", "true"),
+            ("includeItemsFromAllDrives", "true"),
         ];
 
         let cursor_owned;
@@ -276,9 +292,14 @@ impl GoogleDriveClient {
             });
         }
         if !status.is_success() {
+            tracing::warn!(
+                status = status.as_u16(),
+                "list_drive_videos query failed: q={:?}",
+                query.iter().filter(|(k, _)| *k == "q").map(|(_, v)| *v).collect::<Vec<_>>()
+            );
             return Err(ProviderError::Api {
                 status: status.as_u16(),
-                body,
+                body: format!("list_drive_videos: {body}"),
             });
         }
 
@@ -448,9 +469,8 @@ fn compute_folder_paths(
 }
 
 impl GoogleDriveClient {
-    /// Batch-fetch folder metadata (`id`, `name`, `parents`) for the given IDs
-    /// via a single `files.list` query with an `id = '…' or …` predicate.
-    /// Chunks at `FOLDER_QUERY_CHUNK` IDs per request to stay within URL limits.
+    /// Fetch folder metadata (`id`, `name`, `parents`) for the given IDs via
+    /// concurrent `files.get` requests. Chunked to limit in-flight requests.
     async fn fetch_folder_metadata(
         &self,
         access_token: &str,
@@ -459,57 +479,54 @@ impl GoogleDriveClient {
         const FOLDER_QUERY_CHUNK: usize = 50;
         let mut all = Vec::with_capacity(ids.len());
         for chunk in ids.chunks(FOLDER_QUERY_CHUNK) {
-            let q = format!(
-                "({})",
-                chunk
-                    .iter()
-                    .map(|id| format!("id = '{id}'"))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            );
-            let mut page_token: Option<String> = None;
-            loop {
-                let mut query: Vec<(&str, &str)> = vec![
-                    ("q", q.as_str()),
-                    ("fields", "files(id,name,parents),nextPageToken"),
-                    ("pageSize", "100"),
-                ];
-                let token;
-                if let Some(t) = &page_token {
-                    token = t.to_string();
-                    query.push(("pageToken", token.as_str()));
+            let mut tasks = tokio::task::JoinSet::new();
+            for id in chunk {
+                if id.is_empty() {
+                    continue;
                 }
-                let resp = self
-                    .http
-                    .get(DRIVE_FILES_URL)
-                    .bearer_auth(access_token)
-                    .query(&query)
-                    .send()
-                    .await
-                    .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                if status.as_u16() == 401 {
-                    return Err(ProviderError::Unauthorized);
-                }
-                if status.as_u16() == 429 || status.as_u16() == 503 {
-                    return Err(ProviderError::RateLimited {
-                        retry_after_secs: None,
-                    });
-                }
-                if !status.is_success() {
-                    return Err(ProviderError::Api {
-                        status: status.as_u16(),
-                        body,
-                    });
-                }
-
-                let response: DriveFolderListResponse = serde_json::from_str(&body)?;
-                all.extend(response.files);
-                match response.next_page_token {
-                    Some(t) => page_token = Some(t),
-                    None => break,
+                let client = self.http.clone();
+                let token = access_token.to_string();
+                let fid = id.to_string();
+                tasks.spawn(async move {
+                    let url = format!("{DRIVE_FILES_URL}/{fid}?fields=id,name,parents&supportsAllDrives=true");
+                    let resp = client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .send()
+                        .await
+                        .map_err(|e| ProviderError::Network(e.to_string()))?;
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    if status.as_u16() == 401 {
+                        return Err(ProviderError::Unauthorized);
+                    }
+                    if status.as_u16() == 429 || status.as_u16() == 503 {
+                        return Err(ProviderError::RateLimited {
+                            retry_after_secs: None,
+                        });
+                    }
+                    if !status.is_success() {
+                        return Err(ProviderError::Api {
+                            status: status.as_u16(),
+                            body: format!("fetch_folder_metadata ({}): {}", fid, body),
+                        });
+                    }
+                    let meta: DriveFolderMeta = serde_json::from_str(&body)?;
+                    Ok(meta)
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(Ok(meta)) => all.push(meta),
+                    Ok(Err(e)) => return Err(e),
+                    Err(join_err) if join_err.is_panic() => {
+                        std::panic::resume_unwind(join_err.into_panic());
+                    }
+                    Err(join_err) => {
+                        return Err(ProviderError::Other(format!(
+                            "fetch_folder_metadata task cancelled: {join_err}"
+                        )));
+                    }
                 }
             }
         }
@@ -527,7 +544,7 @@ impl GoogleDriveClient {
             return Ok(None);
         }
 
-        let url = format!("{DRIVE_FILES_URL}/{file_id}?alt=media");
+        let url = format!("{DRIVE_FILES_URL}/{file_id}?alt=media&supportsAllDrives=true");
         let resp = self
             .http
             .get(&url)
@@ -572,7 +589,7 @@ impl GoogleDriveClient {
         access_token: &str,
         file_id: &str,
     ) -> ProviderResult<ThumbnailData> {
-        let url = format!("{DRIVE_FILES_URL}/{file_id}?fields=thumbnailLink");
+        let url = format!("{DRIVE_FILES_URL}/{file_id}?fields=thumbnailLink&supportsAllDrives=true");
         let resp = self
             .http
             .get(&url)
@@ -866,17 +883,11 @@ mod tests {
 
     #[test]
     fn drive_folder_meta_parses() {
-        let json = r#"{
-            "files": [
-                { "id": "f1", "name": "Movies", "parents": ["root-folder"] },
-                { "id": "f2", "name": "Action", "parents": ["f1"] }
-            ]
-        }"#;
-        let response: DriveFolderListResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.files.len(), 2);
-        assert_eq!(response.files[0].name, "Movies");
+        let json = r#"{ "id": "f1", "name": "Movies", "parents": ["root-folder"] }"#;
+        let meta: DriveFolderMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.name, "Movies");
         assert_eq!(
-            response.files[0].parents.as_deref(),
+            meta.parents.as_deref(),
             Some(["root-folder".to_string()].as_slice())
         );
     }
@@ -1033,5 +1044,29 @@ mod tests {
             bundle.scope.as_deref(),
             Some("https://www.googleapis.com/auth/drive.metadata.readonly")
         );
+    }
+
+    #[test]
+    fn validate_scopes_rejects_missing_drive_scope() {
+        let result = validate_drive_scopes("openid email profile");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("drive.readonly"));
+    }
+
+    #[test]
+    fn validate_scopes_rejects_empty() {
+        assert!(validate_drive_scopes("").is_err());
+    }
+
+    #[test]
+    fn validate_scopes_accepts_drive_readonly() {
+        let scopes = "https://www.googleapis.com/auth/drive.readonly openid email profile";
+        assert!(validate_drive_scopes(scopes).is_ok());
+    }
+
+    #[test]
+    fn validate_scopes_accepts_drive_readonly_alone() {
+        assert!(validate_drive_scopes("https://www.googleapis.com/auth/drive.readonly").is_ok());
     }
 }
