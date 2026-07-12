@@ -423,14 +423,18 @@ mod tests {
         }
 
         async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
-            Err(ProviderError::Other("mock: exchange_code not supported".into()))
+            Err(ProviderError::Other(
+                "mock: exchange_code not supported".into(),
+            ))
         }
 
         async fn fetch_user_info(
             &self,
             _: &TokenBundle,
         ) -> ProviderResult<(Option<String>, Option<String>)> {
-            Err(ProviderError::Other("mock: fetch_user_info not supported".into()))
+            Err(ProviderError::Other(
+                "mock: fetch_user_info not supported".into(),
+            ))
         }
     }
 

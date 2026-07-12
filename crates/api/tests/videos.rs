@@ -10,8 +10,15 @@ use castify_catalog::{CatalogRepository, NewConnection, NewVideo, Provider, Toke
 
 const PASSWORD: &str = "correct horse battery staple";
 
-async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempPath) {
+async fn boot_and_setup_full() -> (
+    axum::Router,
+    String,
+    CatalogRepository,
+    std::path::PathBuf,
+    tempfile::TempPath,
+) {
     let (state, guard, _path) = common::fresh_state().await;
+    let data_dir = state.config().data_dir.clone();
     let repo = state.catalog_repository().clone();
     let app = castify_api::app::build_app(state);
     let response = app
@@ -37,6 +44,11 @@ async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile:
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .expect("session cookie");
+    (app, cookie, repo, data_dir, guard)
+}
+
+async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempPath) {
+    let (app, cookie, repo, _dir, guard) = boot_and_setup_full().await;
     (app, cookie, repo, guard)
 }
 
@@ -53,6 +65,29 @@ async fn get_json(app: axum::Router, uri: &str, cookie: Option<&str>) -> (Status
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, value)
+}
+
+async fn get_thumbnail_bytes(
+    app: axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+) -> (StatusCode, Vec<u8>, Option<String>) {
+    let mut builder = Request::builder().method("GET").uri(uri);
+    if let Some(c) = cookie {
+        builder = builder.header("cookie", c);
+    }
+    let response = app
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, bytes.to_vec(), content_type)
 }
 
 fn sample_bundle() -> TokenBundle {
@@ -439,8 +474,28 @@ async fn search_finds_by_path() {
 async fn empty_search_returns_all() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "a.mp4", None, None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "b.mp4", None, None, None).await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "a.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "b.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let (status, body) = get_json(app, "/api/videos?q=", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
@@ -453,11 +508,30 @@ async fn empty_search_returns_all() {
 async fn duration_filter_excludes_outside_range() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "short", "s.mp4", None, Some(30_000), None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "long", "l.mp4", None, Some(600_000), None).await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "short",
+        "s.mp4",
+        None,
+        Some(30_000),
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "long",
+        "l.mp4",
+        None,
+        Some(600_000),
+        None,
+    )
+    .await;
 
-    let (status, body) =
-        get_json(app, "/api/videos?duration_min=60000", Some(&cookie)).await;
+    let (status, body) = get_json(app, "/api/videos?duration_min=60000", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], 1, "only the long video (>= 1 min)");
     assert_eq!(body["videos"][0]["name"], "l.mp4");
@@ -467,8 +541,28 @@ async fn duration_filter_excludes_outside_range() {
 async fn resolution_filter() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "sd", "sd.mp4", None, None, Some(480)).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "hd", "hd.mp4", None, None, Some(720)).await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "sd",
+        "sd.mp4",
+        None,
+        None,
+        Some(480),
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "hd",
+        "hd.mp4",
+        None,
+        None,
+        Some(720),
+    )
+    .await;
 
     let (status, body) = get_json(app, "/api/videos?min_height=720", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
@@ -515,21 +609,69 @@ async fn folder_filter_matches_top_level_segment() {
 async fn folder_enumeration_returns_counts() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "a.mp4", Some("/Movies/a.mp4"), None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "b.mp4", Some("/Movies/b.mp4"), None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f3", "c.mp4", Some("/TV/c.mp4"), None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f4", "d.mp4", None, None, None).await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "a.mp4",
+        Some("/Movies/a.mp4"),
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "b.mp4",
+        Some("/Movies/b.mp4"),
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f3",
+        "c.mp4",
+        Some("/TV/c.mp4"),
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f4",
+        "d.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     let (status, body) = get_json(app, "/api/videos/folders", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     let folders = body.as_array().unwrap();
     let by_folder: std::collections::HashMap<String, i64> = folders
         .iter()
-        .map(|f| (f["folder"].as_str().unwrap().to_string(), f["video_count"].as_i64().unwrap()))
+        .map(|f| {
+            (
+                f["folder"].as_str().unwrap().to_string(),
+                f["video_count"].as_i64().unwrap(),
+            )
+        })
         .collect();
     assert_eq!(by_folder["Movies"], 2);
     assert_eq!(by_folder["TV"], 1);
-    assert_eq!(by_folder["(Unsorted)"], 1, "null path grouped under Unsorted");
+    assert_eq!(
+        by_folder["(Unsorted)"], 1,
+        "null path grouped under Unsorted"
+    );
     // Sorted by count desc → Movies first.
     assert_eq!(folders[0]["folder"], "Movies");
 }
@@ -541,7 +683,17 @@ async fn sort_by_name_ascending() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
     for name in ["zebra.mp4", "alpha.mp4", "mango.mp4"] {
-        seed_full_video(&repo, &conn, Provider::GoogleDrive, name, name, None, None, None).await;
+        seed_full_video(
+            &repo,
+            &conn,
+            Provider::GoogleDrive,
+            name,
+            name,
+            None,
+            None,
+            None,
+        )
+        .await;
     }
 
     let (status, body) = get_json(app, "/api/videos?sort=name", Some(&cookie)).await;
@@ -559,16 +711,44 @@ async fn sort_by_name_ascending() {
 async fn sort_by_size_descending() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
-    repo.upsert_video(&conn, Provider::GoogleDrive, &NewVideo {
-        provider_file_id: "small".into(), name: "small.mp4".into(), path: None,
-        size_bytes: 100, mime_type: None, duration_ms: None, width: None, height: None,
-        native_hash: None, native_hash_algo: None, provider_modified_at: None,
-    }).await.unwrap();
-    repo.upsert_video(&conn, Provider::GoogleDrive, &NewVideo {
-        provider_file_id: "big".into(), name: "big.mp4".into(), path: None,
-        size_bytes: 999_999, mime_type: None, duration_ms: None, width: None, height: None,
-        native_hash: None, native_hash_algo: None, provider_modified_at: None,
-    }).await.unwrap();
+    repo.upsert_video(
+        &conn,
+        Provider::GoogleDrive,
+        &NewVideo {
+            provider_file_id: "small".into(),
+            name: "small.mp4".into(),
+            path: None,
+            size_bytes: 100,
+            mime_type: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    repo.upsert_video(
+        &conn,
+        Provider::GoogleDrive,
+        &NewVideo {
+            provider_file_id: "big".into(),
+            name: "big.mp4".into(),
+            path: None,
+            size_bytes: 999_999,
+            mime_type: None,
+            duration_ms: None,
+            width: None,
+            height: None,
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
 
     let (status, body) = get_json(app, "/api/videos?sort=size", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
@@ -583,9 +763,39 @@ async fn favorites_and_ratings_appear_in_summary() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
     let owner = owner_id(&repo).await;
-    let v1 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "fav.mp4", None, None, None).await;
-    let v2 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "rated.mp4", None, None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f3", "plain.mp4", None, None, None).await;
+    let v1 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "fav.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let v2 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "rated.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f3",
+        "plain.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
 
     set_favorite(&repo, &owner, &v1).await;
     set_rating(&repo, &owner, &v2, 4).await;
@@ -611,12 +821,31 @@ async fn favorites_only_filter() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
     let owner = owner_id(&repo).await;
-    let v1 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "fav.mp4", None, None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "nofav.mp4", None, None, None).await;
+    let v1 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "fav.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "nofav.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
     set_favorite(&repo, &owner, &v1).await;
 
-    let (status, body) =
-        get_json(app, "/api/videos?favorites_only=true", Some(&cookie)).await;
+    let (status, body) = get_json(app, "/api/videos?favorites_only=true", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], 1, "only the favorited video");
     assert_eq!(body["videos"][0]["name"], "fav.mp4");
@@ -627,9 +856,39 @@ async fn min_rating_filter() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
     let owner = owner_id(&repo).await;
-    let v1 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "high.mp4", None, None, None).await;
-    let v2 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "low.mp4", None, None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f3", "unrated.mp4", None, None, None).await;
+    let v1 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "high.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let v2 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "low.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f3",
+        "unrated.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
     set_rating(&repo, &owner, &v1, 5).await;
     set_rating(&repo, &owner, &v2, 2).await;
 
@@ -644,9 +903,39 @@ async fn rating_sort_orders_by_my_rating() {
     let (app, cookie, repo, _guard) = boot_and_setup().await;
     let conn = seed_connection(&repo, Provider::GoogleDrive).await;
     let owner = owner_id(&repo).await;
-    let v1 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f1", "top.mp4", None, None, None).await;
-    let v2 = seed_full_video(&repo, &conn, Provider::GoogleDrive, "f2", "mid.mp4", None, None, None).await;
-    seed_full_video(&repo, &conn, Provider::GoogleDrive, "f3", "unrated.mp4", None, None, None).await;
+    let v1 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "top.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let v2 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f2",
+        "mid.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f3",
+        "unrated.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
     set_rating(&repo, &owner, &v1, 5).await;
     set_rating(&repo, &owner, &v2, 3).await;
 
@@ -660,4 +949,602 @@ async fn rating_sort_orders_by_my_rating() {
         .collect();
     // Highest rated first; unrated (NULLS LAST) at the end.
     assert_eq!(names, vec!["top.mp4", "mid.mp4", "unrated.mp4"]);
+}
+
+// ── Thumbnail proxy (T5) ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn thumbnail_video_not_found_returns_404() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _, _) =
+        get_thumbnail_bytes(app, "/api/videos/nonexistent/thumbnail", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn thumbnail_unauthenticated_returns_401() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _, _) = get_thumbnail_bytes(app, "/api/videos/some-id/thumbnail", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn thumbnail_unsupported_returns_404() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "v.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    repo.update_thumbnail_status(&vid, "unsupported")
+        .await
+        .unwrap();
+
+    let (status, _, _) =
+        get_thumbnail_bytes(app, &format!("/api/videos/{vid}/thumbnail"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn thumbnail_cached_serves_from_disk() {
+    let (app, cookie, repo, data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "f1",
+        "v.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // Seed the cache: write a test PNG and mark the video as cached.
+    let cache_dir = data_dir.join("thumbnails");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let test_png = b"\x89PNG\r\n\x1a\n test thumbnail";
+    std::fs::write(cache_dir.join(&vid), test_png).unwrap();
+    repo.update_thumbnail_status(&vid, "cached").await.unwrap();
+
+    let (status, bytes, content_type) =
+        get_thumbnail_bytes(app, &format!("/api/videos/{vid}/thumbnail"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/png"));
+    assert_eq!(bytes, test_png);
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn thumbnail_fetches_caches_and_serves() {
+    let (app, cookie, repo, data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-vacation",
+        "vacation.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // First request — fetches from mock provider, caches, serves.
+    let (status, bytes, content_type) =
+        get_thumbnail_bytes(app, &format!("/api/videos/{vid}/thumbnail"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("image/png"));
+    assert!(!bytes.is_empty());
+
+    // Cache file written to disk.
+    let cache_path = data_dir.join("thumbnails").join(&vid);
+    assert!(cache_path.exists(), "cache file should exist");
+
+    // thumbnail_status updated to "cached" in DB.
+    let db_status: String = sqlx::query_scalar("SELECT thumbnail_status FROM videos WHERE id = ?")
+        .bind(&vid)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(db_status, "cached");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn thumbnail_second_request_serves_from_cache() {
+    let (app, cookie, repo, _data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-concert",
+        "concert.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // First request — fetches and caches.
+    let (status1, bytes1, _) = get_thumbnail_bytes(
+        app.clone(),
+        &format!("/api/videos/{vid}/thumbnail"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status1, StatusCode::OK);
+
+    // Second request — serves from cache (same bytes).
+    let (status2, bytes2, _) =
+        get_thumbnail_bytes(app, &format!("/api/videos/{vid}/thumbnail"), Some(&cookie)).await;
+    assert_eq!(status2, StatusCode::OK);
+    assert_eq!(bytes1, bytes2, "second request should serve same bytes");
+
+    // Confirm status is cached.
+    let db_status: String = sqlx::query_scalar("SELECT thumbnail_status FROM videos WHERE id = ?")
+        .bind(&vid)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(db_status, "cached");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn thumbnail_provider_not_found_sets_unsupported() {
+    let (app, cookie, repo, _data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    // "no-thumb-" prefix makes the e2e mock return ProviderError::NotFound.
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "no-thumb-1",
+        "nothumb.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, _, _) =
+        get_thumbnail_bytes(app, &format!("/api/videos/{vid}/thumbnail"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let db_status: String = sqlx::query_scalar("SELECT thumbnail_status FROM videos WHERE id = ?")
+        .bind(&vid)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(db_status, "unsupported");
+}
+
+// ── Favorites + ratings CRUD (T6) ─────────────────────────────────────
+
+/// Fetch a CSRF token + cookie via an authenticated `GET /api/csrf`.
+/// Returns `(header_token, cookie_string)` where `cookie_string` is the
+/// `castify_csrf=…` value to join into the request Cookie header.
+async fn get_csrf(app: &axum::Router, session_cookie: &str) -> (String, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/csrf")
+                .header("cookie", session_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csrf_cookie = response
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').find(|c| c.starts_with("castify_csrf=")))
+        .unwrap()
+        .to_string();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let token = value["token"].as_str().unwrap().to_string();
+    (token, csrf_cookie)
+}
+
+/// Generic authenticated mutation (POST/PUT/DELETE) with double-submit CSRF.
+/// `body` is sent as JSON; pass `vec![]` for bodyless methods (POST favorite,
+/// DELETE). `csrf_header` / `csrf_cookie` are `None` to test CSRF rejection.
+async fn mutate(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    body: Vec<u8>,
+    cookie: Option<&str>,
+    csrf_header: Option<&str>,
+    csrf_cookie: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if !body.is_empty() {
+        builder = builder.header("content-type", "application/json");
+    }
+    let mut cookie_parts: Vec<String> = Vec::new();
+    if let Some(c) = cookie {
+        cookie_parts.push(c.to_string());
+    }
+    if let Some(c) = csrf_cookie {
+        cookie_parts.push(c.to_string());
+    }
+    if !cookie_parts.is_empty() {
+        builder = builder.header("cookie", cookie_parts.join("; "));
+    }
+    if let Some(h) = csrf_header {
+        builder = builder.header("x-csrf-token", h);
+    }
+    let response = app
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+/// Boot, setup, and return everything T6 mutation tests need: the app, the
+/// session cookie, a CSRF (token, cookie) pair, the repo, a seeded connection,
+/// and one seeded video id.
+async fn boot_with_csrf_and_video() -> (
+    axum::Router,
+    String,
+    String,
+    String,
+    CatalogRepository,
+    String,
+    tempfile::TempPath,
+) {
+    let (app, cookie, repo, guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "fav-1",
+        "favoriteable.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    (app, cookie, csrf_token, csrf_cookie, repo, vid, guard)
+}
+
+// ── Favorites ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn favorite_set_echoes_true_and_appears_in_list() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, body) = mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/favorite"),
+        vec![],
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_favorite"].as_bool(), Some(true));
+
+    // Read-after-write: GET /api/videos reflects the new favorite state.
+    let (status, body) = get_json(app, "/api/videos", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["videos"][0]["is_favorite"].as_bool(), Some(true));
+}
+
+#[tokio::test]
+async fn favorite_set_is_idempotent() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let uri = format!("/api/videos/{vid}/favorite");
+
+    for _ in 0..2 {
+        let (status, body) = mutate(
+            app.clone(),
+            "POST",
+            &uri,
+            vec![],
+            Some(&cookie),
+            Some(&csrf_token),
+            Some(&csrf_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["is_favorite"].as_bool(), Some(true));
+    }
+}
+
+#[tokio::test]
+async fn favorite_unset_echoes_false_and_disappears_from_list() {
+    let (app, cookie, csrf_token, csrf_cookie, repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let owner = owner_id(&repo).await;
+    let uri = format!("/api/videos/{vid}/favorite");
+
+    // Seed a favorite via the repo, then unset via the API.
+    set_favorite(&repo, &owner, &vid).await;
+
+    let (status, body) = mutate(
+        app.clone(),
+        "DELETE",
+        &uri,
+        vec![],
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_favorite"].as_bool(), Some(false));
+
+    let (status, body) = get_json(app, "/api/videos", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["videos"][0]["is_favorite"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn favorite_unset_is_idempotent() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let uri = format!("/api/videos/{vid}/favorite");
+
+    for _ in 0..2 {
+        let (status, body) = mutate(
+            app.clone(),
+            "DELETE",
+            &uri,
+            vec![],
+            Some(&cookie),
+            Some(&csrf_token),
+            Some(&csrf_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["is_favorite"].as_bool(), Some(false));
+    }
+}
+
+#[tokio::test]
+async fn favorite_missing_video_returns_404() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, _vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _body) = mutate(
+        app,
+        "POST",
+        "/api/videos/no-such-video/favorite",
+        vec![],
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn favorite_and_rating_reject_unauthenticated() {
+    let (app, _cookie, _csrf_token, _csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _) = mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/favorite"),
+        vec![],
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = mutate(
+        app,
+        "PUT",
+        &format!("/api/videos/{vid}/rating"),
+        serde_json::json!({"rating": 3}).to_string().into_bytes(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn favorite_and_rating_reject_missing_csrf() {
+    let (app, cookie, _csrf_token, _csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    // Authenticated session but no CSRF header/cookie.
+    let (status, _) = mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/favorite"),
+        vec![],
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = mutate(
+        app,
+        "PUT",
+        &format!("/api/videos/{vid}/rating"),
+        serde_json::json!({"rating": 3}).to_string().into_bytes(),
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ── Ratings ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn rating_set_and_update_round_trip() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let uri = format!("/api/videos/{vid}/rating");
+
+    // Initial set.
+    let (status, body) = mutate(
+        app.clone(),
+        "PUT",
+        &uri,
+        serde_json::json!({"rating": 3}).to_string().into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["my_rating"].as_i64(), Some(3));
+
+    // Update existing.
+    let (status, body) = mutate(
+        app.clone(),
+        "PUT",
+        &uri,
+        serde_json::json!({"rating": 5}).to_string().into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["my_rating"].as_i64(), Some(5));
+
+    // Read-after-write.
+    let (status, body) = get_json(app, "/api/videos", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["videos"][0]["my_rating"].as_i64(), Some(5));
+}
+
+#[tokio::test]
+async fn rating_out_of_range_returns_400() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let uri = format!("/api/videos/{vid}/rating");
+
+    for invalid in [0, 6] {
+        let (status, body) = mutate(
+            app.clone(),
+            "PUT",
+            &uri,
+            serde_json::json!({"rating": invalid})
+                .to_string()
+                .into_bytes(),
+            Some(&cookie),
+            Some(&csrf_token),
+            Some(&csrf_cookie),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "rating={invalid} should 400"
+        );
+        assert!(
+            body.get("message").is_some(),
+            "error body should have message"
+        );
+    }
+}
+
+#[tokio::test]
+async fn rating_unset_echoes_null_and_clears_in_list() {
+    let (app, cookie, csrf_token, csrf_cookie, repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let owner = owner_id(&repo).await;
+    let uri = format!("/api/videos/{vid}/rating");
+
+    // Seed a rating via the repo, then clear via the API.
+    set_rating(&repo, &owner, &vid, 4).await;
+
+    let (status, body) = mutate(
+        app.clone(),
+        "DELETE",
+        &uri,
+        vec![],
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["my_rating"].is_null());
+
+    let (status, body) = get_json(app, "/api/videos", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["videos"][0]["my_rating"].is_null());
+}
+
+#[tokio::test]
+async fn rating_unset_is_idempotent() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let uri = format!("/api/videos/{vid}/rating");
+
+    for _ in 0..2 {
+        let (status, body) = mutate(
+            app.clone(),
+            "DELETE",
+            &uri,
+            vec![],
+            Some(&cookie),
+            Some(&csrf_token),
+            Some(&csrf_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["my_rating"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn rating_missing_video_returns_404() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, _vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _body) = mutate(
+        app,
+        "PUT",
+        "/api/videos/no-such-video/rating",
+        serde_json::json!({"rating": 3}).to_string().into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

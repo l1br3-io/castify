@@ -48,6 +48,18 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/videos/folders",
             axum::routing::get(videos::list_folders),
+        )
+        .route(
+            "/api/videos/{id}/favorite",
+            axum::routing::post(videos::set_favorite).delete(videos::delete_favorite),
+        )
+        .route(
+            "/api/videos/{id}/rating",
+            axum::routing::put(videos::set_rating).delete(videos::delete_rating),
+        )
+        .route(
+            "/api/videos/{id}/thumbnail",
+            axum::routing::get(videos::get_thumbnail),
         );
 
     #[cfg(feature = "e2e")]

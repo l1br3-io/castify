@@ -34,6 +34,11 @@ use crate::state::AppState;
 /// tier-2 dedup assigns them the same `dedup_group`.
 const SHARED_PREFIX_HASH: &str = "e2e-shared-hash";
 
+/// Minimal test image (PNG signature + filler) returned by the e2e mock's
+/// `fetch_thumbnail`. Only the magic bytes matter — the proxy's MIME
+/// detection checks the PNG signature, and tests compare raw bytes.
+const TEST_THUMBNAIL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n test thumbnail";
+
 struct E2eMockProvider {
     videos: Vec<DiscoveredVideo>,
     prefix_hashes: HashMap<String, String>,
@@ -56,10 +61,14 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
         Ok(self.prefix_hashes.get(file_id).cloned())
     }
 
-    async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
-        Err(ProviderError::Other(
-            "e2e mock: fetch_thumbnail not supported".into(),
-        ))
+    async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData> {
+        if file_id.starts_with("no-thumb-") {
+            return Err(ProviderError::NotFound(file_id.into()));
+        }
+        Ok(ThumbnailData {
+            bytes: TEST_THUMBNAIL_PNG.to_vec(),
+            mime_type: "image/png".into(),
+        })
     }
 
     async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {

@@ -17,10 +17,7 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use castify_catalog::provider::ProviderFactory;
-use castify_catalog::{
-    redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider,
-};
+use castify_catalog::{redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider};
 
 use crate::auth::resolve_owner;
 use crate::error::{ApiError, ApiResult};
@@ -319,31 +316,15 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     let repo = state.catalog_repository().clone();
     let conn_id = connection_id.to_string();
 
-    let factory = match build_factory(state, provider) {
+    let factory = match state.factory_for(provider) {
         Some(f) => f,
-        None => return,
+        None => {
+            tracing::warn!("{provider} not configured, skipping scan");
+            return;
+        }
     };
 
     tokio::spawn(async move {
         castify_catalog::scanner::run_scan(repo, conn_id, provider, factory).await;
     });
-}
-
-/// Construct the provider factory for a scan task.
-///
-/// When the `e2e` feature is enabled, returns a mock factory that serves
-/// canned video listings — allowing the full scan → catalog → dedup pipeline
-/// to run without real OAuth credentials or external API access.
-#[cfg(feature = "e2e")]
-fn build_factory(_state: &AppState, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
-    Some(Box::new(crate::e2e::E2eMockFactory::new(provider)))
-}
-
-#[cfg(not(feature = "e2e"))]
-fn build_factory(state: &AppState, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
-    let factory = state.provider_registry().factory_for(provider);
-    if factory.is_none() {
-        tracing::warn!("{provider} not configured, skipping scan");
-    }
-    factory
 }

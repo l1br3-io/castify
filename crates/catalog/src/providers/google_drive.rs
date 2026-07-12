@@ -23,10 +23,7 @@ const DRIVE_FILES_URL: &str = "https://www.googleapis.com/drive/v3/files";
 /// configured for it — the connection appears to succeed but every Drive API
 /// call fails with a cryptic `ACCESS_TOKEN_SCOPE_INSUFFICIENT` 403.
 fn validate_drive_scopes(granted: &str) -> ProviderResult<()> {
-    if granted
-        .split(' ')
-        .any(|s| s == REQUIRED_DRIVE_SCOPE)
-    {
+    if granted.split(' ').any(|s| s == REQUIRED_DRIVE_SCOPE) {
         return Ok(());
     }
     Err(ProviderError::Other(format!(
@@ -295,7 +292,11 @@ impl GoogleDriveClient {
             tracing::warn!(
                 status = status.as_u16(),
                 "list_drive_videos query failed: q={:?}",
-                query.iter().filter(|(k, _)| *k == "q").map(|(_, v)| *v).collect::<Vec<_>>()
+                query
+                    .iter()
+                    .filter(|(k, _)| *k == "q")
+                    .map(|(_, v)| *v)
+                    .collect::<Vec<_>>()
             );
             return Err(ProviderError::Api {
                 status: status.as_u16(),
@@ -402,9 +403,7 @@ impl GoogleDriveClient {
                 let parents = folder.parents.unwrap_or_default();
                 // Queue any unknown parents for the next round.
                 for pid in &parents {
-                    if !cache.contains_key(pid)
-                        && !queried.contains(pid)
-                        && !pending.contains(pid)
+                    if !cache.contains_key(pid) && !queried.contains(pid) && !pending.contains(pid)
                     {
                         pending.insert(pid.clone());
                     }
@@ -488,7 +487,9 @@ impl GoogleDriveClient {
                 let token = access_token.to_string();
                 let fid = id.to_string();
                 tasks.spawn(async move {
-                    let url = format!("{DRIVE_FILES_URL}/{fid}?fields=id,name,parents&supportsAllDrives=true");
+                    let url = format!(
+                        "{DRIVE_FILES_URL}/{fid}?fields=id,name,parents&supportsAllDrives=true"
+                    );
                     let resp = client
                         .get(&url)
                         .bearer_auth(&token)
@@ -589,7 +590,8 @@ impl GoogleDriveClient {
         access_token: &str,
         file_id: &str,
     ) -> ProviderResult<ThumbnailData> {
-        let url = format!("{DRIVE_FILES_URL}/{file_id}?fields=thumbnailLink&supportsAllDrives=true");
+        let url =
+            format!("{DRIVE_FILES_URL}/{file_id}?fields=thumbnailLink&supportsAllDrives=true");
         let resp = self
             .http
             .get(&url)
@@ -748,7 +750,11 @@ impl crate::provider::ProviderFactory for GoogleDriveFactory {
     }
 
     fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
-        GoogleDriveClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
+        GoogleDriveClient::new(self.config.clone()).authorization_url(
+            redirect_uri,
+            state,
+            challenge,
+        )
     }
 
     async fn exchange_code(
@@ -897,10 +903,7 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("root".into(), ("My Drive".into(), vec![]));
         meta.insert("f1".into(), ("Movies".into(), vec!["root".into()]));
-        meta.insert(
-            "f2".into(),
-            ("Action".into(), vec!["f1".into()]),
-        );
+        meta.insert("f2".into(), ("Action".into(), vec!["f1".into()]));
         let mut cache = HashMap::new();
         compute_folder_paths(&meta, &mut cache);
         assert_eq!(cache["root"], "/My Drive");
@@ -920,10 +923,7 @@ mod tests {
     #[test]
     fn compute_folder_paths_respects_existing_cache() {
         let mut meta = HashMap::new();
-        meta.insert(
-            "f2".into(),
-            ("Action".into(), vec!["f1".into()]),
-        );
+        meta.insert("f2".into(), ("Action".into(), vec!["f1".into()]));
         let mut cache = HashMap::new();
         cache.insert("f1".into(), "/Movies".into());
         compute_folder_paths(&meta, &mut cache);
@@ -934,10 +934,7 @@ mod tests {
     fn compute_folder_paths_deleted_parent_becomes_root() {
         // f1's parent "ghost" is not in meta (deleted) → f1 resolved as root.
         let mut meta = HashMap::new();
-        meta.insert(
-            "f1".into(),
-            ("Orphaned".into(), vec!["ghost".into()]),
-        );
+        meta.insert("f1".into(), ("Orphaned".into(), vec!["ghost".into()]));
         let mut cache = HashMap::new();
         compute_folder_paths(&meta, &mut cache);
         assert_eq!(cache["f1"], "/Orphaned");

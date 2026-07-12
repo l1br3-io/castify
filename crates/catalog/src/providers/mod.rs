@@ -55,21 +55,18 @@ impl ProviderRegistry {
     /// themselves.
     pub fn factory_for(&self, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
         match provider {
-            Provider::GoogleDrive => {
-                self.google
-                    .clone()
-                    .map(|cfg| Box::new(GoogleDriveFactory::new(cfg)) as Box<dyn ProviderFactory>)
-            }
-            Provider::Dropbox => {
-                self.dropbox
-                    .clone()
-                    .map(|cfg| Box::new(DropboxFactory::new(cfg)) as Box<dyn ProviderFactory>)
-            }
-            Provider::OneDrive => {
-                self.onedrive
-                    .clone()
-                    .map(|cfg| Box::new(OneDriveFactory::new(cfg)) as Box<dyn ProviderFactory>)
-            }
+            Provider::GoogleDrive => self
+                .google
+                .clone()
+                .map(|cfg| Box::new(GoogleDriveFactory::new(cfg)) as Box<dyn ProviderFactory>),
+            Provider::Dropbox => self
+                .dropbox
+                .clone()
+                .map(|cfg| Box::new(DropboxFactory::new(cfg)) as Box<dyn ProviderFactory>),
+            Provider::OneDrive => self
+                .onedrive
+                .clone()
+                .map(|cfg| Box::new(OneDriveFactory::new(cfg)) as Box<dyn ProviderFactory>),
         }
     }
 }
@@ -125,11 +122,7 @@ mod tests {
             Some(dropbox_cfg()),
             Some(onedrive_cfg()),
         );
-        for p in [
-            Provider::GoogleDrive,
-            Provider::Dropbox,
-            Provider::OneDrive,
-        ] {
+        for p in [Provider::GoogleDrive, Provider::Dropbox, Provider::OneDrive] {
             assert!(reg.is_configured(p), "{p:?} should be configured");
             assert!(
                 reg.factory_for(p).is_some(),

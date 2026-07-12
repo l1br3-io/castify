@@ -5,7 +5,9 @@ use castify_auth::{AuthRepository, SessionSecret};
 use castify_catalog::providers::dropbox::DropboxConfig;
 use castify_catalog::providers::google_drive::GoogleDriveConfig;
 use castify_catalog::providers::onedrive::OneDriveConfig;
-use castify_catalog::{CatalogRepository, OAuthStateStore, ProviderRegistry, TokenKey};
+use castify_catalog::{
+    CatalogRepository, OAuthStateStore, Provider, ProviderFactory, ProviderRegistry, TokenKey,
+};
 use castify_core::Config;
 use sqlx::SqlitePool;
 
@@ -96,5 +98,19 @@ impl AppState {
     /// `registry.factory_for(provider)` rather than `match provider {}`.
     pub fn provider_registry(&self) -> &ProviderRegistry {
         &self.inner.provider_registry
+    }
+
+    /// Resolve a provider factory for the given provider. Under the `e2e`
+    /// cargo feature this returns an `E2eMockFactory`; in production builds it
+    /// delegates to the [`ProviderRegistry`]. Returns `None` when the provider
+    /// is not configured (no OAuth credentials).
+    #[cfg(feature = "e2e")]
+    pub fn factory_for(&self, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
+        Some(Box::new(crate::e2e::E2eMockFactory::new(provider)))
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    pub fn factory_for(&self, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
+        self.inner.provider_registry.factory_for(provider)
     }
 }

@@ -17,4 +17,6 @@ pub use providers::dropbox::{DropboxClient, DropboxConfig, DropboxUserInfo};
 pub use providers::google_drive::{GoogleDriveClient, GoogleDriveConfig, GoogleUserInfo};
 pub use providers::onedrive::{OneDriveClient, OneDriveConfig, OneDriveUserInfo};
 pub use providers::ProviderRegistry;
-pub use repository::{CatalogError, CatalogRepository, CatalogResult, FolderCount};
+pub use repository::{
+    CatalogError, CatalogRepository, CatalogResult, FolderCount, VideoThumbnailInfo,
+};

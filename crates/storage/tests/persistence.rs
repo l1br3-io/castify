@@ -318,10 +318,11 @@ async fn migration_0004_creates_browse_tables() {
         .unwrap();
     assert_eq!(fav_count, 1);
 
-    let rating: i64 = sqlx::query_scalar("SELECT rating FROM video_ratings WHERE video_id = 'vid-x'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let rating: i64 =
+        sqlx::query_scalar("SELECT rating FROM video_ratings WHERE video_id = 'vid-x'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(rating, 4);
 }
 
@@ -446,7 +447,10 @@ async fn migration_0004_fts5_triggers_keep_index_in_sync() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(path_hits, 1, "FTS5 should index the video path (case-insensitive)");
+    assert_eq!(
+        path_hits, 1,
+        "FTS5 should index the video path (case-insensitive)"
+    );
 
     // Update the name — AFTER UPDATE trigger re-indexes. 'concert' was only in
     // the name (not the path), so it must leave the index entirely.
@@ -459,13 +463,19 @@ async fn migration_0004_fts5_triggers_keep_index_in_sync() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(old_hits, 0, "old name token should leave the index after update");
+    assert_eq!(
+        old_hits, 0,
+        "old name token should leave the index after update"
+    );
     let new_hits: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH 'symphony'")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(new_hits, 1, "new name token should enter the index after update");
+    assert_eq!(
+        new_hits, 1,
+        "new name token should enter the index after update"
+    );
 
     // Delete the video — AFTER DELETE trigger removes it.
     sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
@@ -477,5 +487,8 @@ async fn migration_0004_fts5_triggers_keep_index_in_sync() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(final_hits, 0, "FTS5 index should be empty after video deletion");
+    assert_eq!(
+        final_hits, 0,
+        "FTS5 index should be empty after video deletion"
+    );
 }

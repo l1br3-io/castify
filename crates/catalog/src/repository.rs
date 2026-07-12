@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::crypto::{TokenBundle, TokenKey};
@@ -28,6 +28,18 @@ pub type CatalogResult<T> = Result<T, CatalogError>;
 pub struct FolderCount {
     pub folder: String,
     pub video_count: i64,
+}
+
+/// Minimal video fields needed by the thumbnail proxy endpoint. Avoids the
+/// full [`VideoSummary`] with its joins — just enough to resolve the
+/// connection, provider, and file ID for `Provider::fetch_thumbnail`.
+#[derive(Debug, Clone)]
+pub struct VideoThumbnailInfo {
+    pub id: String,
+    pub connection_id: String,
+    pub provider: Provider,
+    pub provider_file_id: String,
+    pub thumbnail_status: String,
 }
 
 /// Push the shared WHERE predicates (provider, search, duration, resolution,
@@ -331,6 +343,48 @@ impl CatalogRepository {
         )
     }
 
+    /// Fetch the minimal fields needed by the thumbnail proxy: connection_id
+    /// (to resolve the token), provider + provider_file_id (to call
+    /// `fetch_thumbnail`), and thumbnail_status (to check the cache state).
+    pub async fn fetch_video_thumbnail_info(
+        &self,
+        video_id: &str,
+    ) -> CatalogResult<Option<VideoThumbnailInfo>> {
+        let row = sqlx::query(
+            "SELECT id, connection_id, provider, provider_file_id, thumbnail_status \
+             FROM videos WHERE id = ?",
+        )
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => {
+                let provider_str: String = row.get("provider");
+                Ok(Some(VideoThumbnailInfo {
+                    id: row.get("id"),
+                    connection_id: row.get("connection_id"),
+                    provider: Provider::parse(&provider_str).map_err(CatalogError::Other)?,
+                    provider_file_id: row.get("provider_file_id"),
+                    thumbnail_status: row.get("thumbnail_status"),
+                }))
+            }
+        }
+    }
+
+    /// Update the thumbnail cache state for a video. The caller is responsible
+    /// for passing one of the four convention values: `"pending"`, `"cached"`,
+    /// `"failed"`, `"unsupported"`.
+    pub async fn update_thumbnail_status(&self, video_id: &str, status: &str) -> CatalogResult<()> {
+        sqlx::query("UPDATE videos SET thumbnail_status = ? WHERE id = ?")
+            .bind(status)
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Fetch a deduplicated, paginated page of videos across all active
     /// connections. Videos sharing a `dedup_group` appear as one entry with
     /// multiple `sources`. Supports FTS5 search, filters, and owner-scoped
@@ -372,11 +426,11 @@ impl CatalogRepository {
         page_qb.push_bind(filter.owner_id.clone());
         page_qb.push(" LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ");
         page_qb.push_bind(filter.owner_id.clone());
-        page_qb.push(
-            " WHERE v.id IN (SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL",
-        );
+        page_qb.push(" WHERE v.id IN (SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL");
         push_video_predicates(&mut page_qb, filter);
-        page_qb.push(" GROUP BY dedup_group UNION ALL SELECT id FROM videos WHERE dedup_group IS NULL");
+        page_qb.push(
+            " GROUP BY dedup_group UNION ALL SELECT id FROM videos WHERE dedup_group IS NULL",
+        );
         push_video_predicates(&mut page_qb, filter);
         page_qb.push(") ORDER BY ");
         page_qb.push(order);
@@ -479,6 +533,78 @@ impl CatalogRepository {
                 video_count: sqlx::Row::get(r, "video_count"),
             })
             .collect())
+    }
+
+    /// Returns true if a video row with the given id exists. Used by mutation
+    /// handlers to map a missing-video write attempt to 404 rather than letting
+    /// the FK constraint surface as a generic 500.
+    pub async fn video_exists(&self, video_id: &str) -> CatalogResult<bool> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?)")
+            .bind(video_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(exists)
+    }
+
+    /// Mark a video as favorited by `owner_id` (PRD FR-5.1). Idempotent —
+    /// `INSERT OR IGNORE` is a no-op if the row already exists.
+    pub async fn set_favorite(&self, owner_id: &str, video_id: &str) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO video_favorites (owner_id, video_id, created_at) \
+             VALUES (?, ?, ?)",
+        )
+        .bind(owner_id)
+        .bind(video_id)
+        .bind(iso_now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove the owner's favorite for a video (PRD FR-5.2). Idempotent —
+    /// deleting a non-existent row is a no-op (0 rows affected).
+    pub async fn delete_favorite(&self, owner_id: &str, video_id: &str) -> CatalogResult<()> {
+        sqlx::query("DELETE FROM video_favorites WHERE owner_id = ? AND video_id = ?")
+            .bind(owner_id)
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Set or update the owner's rating for a video (PRD FR-6.1). The caller
+    /// MUST validate `1 <= rating <= 5` (FR-6.4) — the DB CHECK is a backstop
+    /// and would surface as a generic 500 if hit. Upsert via composite PK.
+    pub async fn upsert_rating(
+        &self,
+        owner_id: &str,
+        video_id: &str,
+        rating: i32,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT (owner_id, video_id) DO UPDATE \
+             SET rating = excluded.rating, updated_at = excluded.updated_at",
+        )
+        .bind(owner_id)
+        .bind(video_id)
+        .bind(rating)
+        .bind(iso_now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Clear the owner's rating for a video (PRD FR-6.2). Idempotent — deleting
+    /// a non-existent row is a no-op (0 rows affected).
+    pub async fn delete_rating(&self, owner_id: &str, video_id: &str) -> CatalogResult<()> {
+        sqlx::query("DELETE FROM video_ratings WHERE owner_id = ? AND video_id = ?")
+            .bind(owner_id)
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Fetch all source copies for a set of dedup groups.
@@ -903,5 +1029,159 @@ mod tests {
         assert_eq!(state.status, ScanStatus::Scanning);
         assert_eq!(state.cursor.as_deref(), Some("page3"));
         assert_eq!(state.videos_found, 42);
+    }
+
+    /// Seed an owner, a connection, and a single video. Returns the
+    /// `(owner_id, connection_id, video_id)` triple needed by the
+    /// favorites/ratings tests (the `video_favorites` / `video_ratings` FKs
+    /// require both rows to exist before any insert).
+    async fn seed_owner_conn_video(repo: &CatalogRepository) -> (String, String, String) {
+        let pool = repo.pool().clone();
+        sqlx::query(
+            "INSERT INTO owners (id, created_at) VALUES ('owner-x', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("a1".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        repo.upsert_video(
+            &conn.id,
+            Provider::GoogleDrive,
+            &NewVideo {
+                provider_file_id: "file-1".into(),
+                name: "v1.mp4".into(),
+                path: Some("/Videos".into()),
+                size_bytes: 1000,
+                mime_type: Some("video/mp4".into()),
+                duration_ms: None,
+                width: None,
+                height: None,
+                native_hash: None,
+                native_hash_algo: None,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let video_id: String = sqlx::query_scalar(
+            "SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = ?",
+        )
+        .bind(&conn.id)
+        .bind("file-1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        ("owner-x".into(), conn.id, video_id)
+    }
+
+    async fn favorite_count(repo: &CatalogRepository, owner_id: &str, video_id: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM video_favorites WHERE owner_id = ? AND video_id = ?",
+        )
+        .bind(owner_id)
+        .bind(video_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn fetch_rating(repo: &CatalogRepository, owner_id: &str, video_id: &str) -> Option<i32> {
+        sqlx::query_scalar("SELECT rating FROM video_ratings WHERE owner_id = ? AND video_id = ?")
+            .bind(owner_id)
+            .bind(video_id)
+            .fetch_optional(repo.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn video_exists_reflects_presence() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, _conn, video_id) = seed_owner_conn_video(&repo).await;
+
+        assert!(repo.video_exists(&video_id).await.unwrap());
+        assert!(!repo.video_exists("does-not-exist").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn favorite_round_trips_and_is_idempotent() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (owner, _conn, video) = seed_owner_conn_video(&repo).await;
+
+        // Set, then set again — both succeed, exactly one row.
+        repo.set_favorite(&owner, &video).await.unwrap();
+        repo.set_favorite(&owner, &video).await.unwrap();
+        assert_eq!(favorite_count(&repo, &owner, &video).await, 1);
+
+        // Delete, then delete again — both succeed, zero rows.
+        repo.delete_favorite(&owner, &video).await.unwrap();
+        repo.delete_favorite(&owner, &video).await.unwrap();
+        assert_eq!(favorite_count(&repo, &owner, &video).await, 0);
+    }
+
+    #[tokio::test]
+    async fn rating_upserts_and_clears() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (owner, _conn, video) = seed_owner_conn_video(&repo).await;
+
+        // Initial set.
+        repo.upsert_rating(&owner, &video, 3).await.unwrap();
+        assert_eq!(fetch_rating(&repo, &owner, &video).await, Some(3));
+
+        // Update existing.
+        repo.upsert_rating(&owner, &video, 5).await.unwrap();
+        assert_eq!(fetch_rating(&repo, &owner, &video).await, Some(5));
+
+        // Clear, then clear again (idempotent).
+        repo.delete_rating(&owner, &video).await.unwrap();
+        repo.delete_rating(&owner, &video).await.unwrap();
+        assert_eq!(fetch_rating(&repo, &owner, &video).await, None);
+    }
+
+    #[tokio::test]
+    async fn favorite_and_rating_cascade_with_video_delete() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (owner, conn, video) = seed_owner_conn_video(&repo).await;
+
+        repo.set_favorite(&owner, &video).await.unwrap();
+        repo.upsert_rating(&owner, &video, 4).await.unwrap();
+        assert_eq!(favorite_count(&repo, &owner, &video).await, 1);
+        assert_eq!(fetch_rating(&repo, &owner, &video).await, Some(4));
+
+        // Deleting the connection cascades to videos → favorites/ratings.
+        assert!(repo.delete_connection(&conn).await.unwrap());
+
+        let total_favs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_favorites")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let total_ratings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_ratings")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            total_favs, 0,
+            "favorites should cascade-delete with the video"
+        );
+        assert_eq!(
+            total_ratings, 0,
+            "ratings should cascade-delete with the video"
+        );
     }
 }
