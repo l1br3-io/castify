@@ -23,12 +23,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
 import { disconnectConnection, startConnect, triggerRescan } from "../api/connections";
-import { ApiError } from "../api/client";
 import {
   AVAILABLE_PROVIDERS_QUERY_KEY,
   useAvailableProviders,
 } from "../hooks/use-available-providers";
 import { CONNECTIONS_QUERY_KEY, useConnections } from "../hooks/use-connections";
+import { describeError } from "../lib/format";
 import {
   PROVIDER_LABELS,
   PROVIDERS,
@@ -357,13 +357,6 @@ function Banner({
       </button>
     </div>
   );
-}
-
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.message;
-  }
-  return "Something went wrong. Please try again.";
 }
 
 function formatDate(iso: string): string {

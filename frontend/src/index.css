@@ -24,3 +24,12 @@ body {
   background-color: var(--color-castify-canvas);
   color: var(--color-castify-text);
 }
+
+/* Hide scrollbar on horizontal shelf containers while keeping scroll
+   functional (trackpad, swipe, shift+wheel). T8 shelves use this. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

@@ -50,6 +50,11 @@ const SAMPLE_VIDEO_PAGE = {
           provider_file_id: "gd-1",
         },
       ],
+      created_at: "2026-01-01T00:00:00Z",
+      path: "/Movies/sample.mp4",
+      is_favorite: false,
+      my_rating: null,
+      thumbnail_status: "pending",
     },
   ],
   total: 1,
@@ -66,6 +71,7 @@ function fetchFor(
     const url = String(input);
     if (url === "/api/connections") return jsonResponse(connectionsResponse);
     if (url === "/api/connections/available") return jsonResponse(available);
+    if (url.startsWith("/api/videos/folders")) return jsonResponse([]);
     if (url.startsWith("/api/videos")) return jsonResponse(videoPage);
     return jsonError(404, "unmocked");
   };
@@ -102,8 +108,9 @@ describe("HomePage", () => {
       fetchImplementation: fetchFor([SAMPLE_CONNECTION]),
     });
 
-    expect(await screen.findByText("Your library")).toBeInTheDocument();
-    expect(await screen.findByText("sample.mp4")).toBeInTheDocument();
+    expect(await screen.findByText("All Videos")).toBeInTheDocument();
+    // "sample.mp4" appears in the hero, Recently Added shelf, and grid.
+    expect((await screen.findAllByText("sample.mp4")).length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows a loading state while connections resolve", () => {

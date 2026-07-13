@@ -1,5 +1,5 @@
 // Home page (`/`): first-run connection guide, setup-required notice, or the
-// video library.
+// browse experience.
 //
 // Per FR-9.1, on first visit after login with zero connections the page shows a
 // "Connect your first cloud" guide linking to `/connections`. If no providers
@@ -10,15 +10,16 @@
 // connections-empty check alone is the gate — no separate `/api/videos` probe
 // needed.
 //
-// Once at least one connection exists, the video library (`VideoList`) takes
-// over. The M0 health-probe placeholder was removed — `/api/health` remains
+// Once at least one connection exists, the browse page (`BrowsePage`, M2 T7)
+// takes over — poster grid with thumbnails, replacing M1's flat `VideoList`.
+// The M0 health-probe placeholder was removed — `/api/health` remains
 // available as an API endpoint and via logs.
 
 import { Link } from "react-router-dom";
 
 import { useAvailableProviders } from "../hooks/use-available-providers";
 import { useConnections } from "../hooks/use-connections";
-import { VideoList } from "./videos";
+import { BrowsePage } from "./browse";
 
 export function HomePage() {
   const connections = useConnections();
@@ -40,7 +41,7 @@ export function HomePage() {
     }
     return <FirstRunGuide />;
   }
-  return <VideoList />;
+  return <BrowsePage />;
 }
 
 function SetupRequired() {
