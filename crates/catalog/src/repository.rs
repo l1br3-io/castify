@@ -750,6 +750,7 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
             include_str!("../../storage/migrations/0003_connect_catalog.sql"),
             include_str!("../../storage/migrations/0004_browse.sql"),
+            include_str!("../../storage/migrations/0005_browse_perf.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }

@@ -104,7 +104,7 @@ describe("PosterCard", () => {
     expect(screen.getByRole("button", { name: "♡" })).toBeInTheDocument();
   });
 
-  it("renders bottomOverlaySlot and suppresses duration/resolution badges when provided", () => {
+  it("renders bottomOverlaySlot alongside duration/resolution badges (T11)", () => {
     const { container } = renderWithProviders(
       <PosterCard
         video={VIDEO}
@@ -117,9 +117,10 @@ describe("PosterCard", () => {
 
     // Slot is present.
     expect(screen.getByTestId("rating-slot")).toBeInTheDocument();
-    // Badges are suppressed even though the img is loaded.
-    expect(screen.queryByText("2:00")).not.toBeInTheDocument();
-    expect(screen.queryByText("1080p")).not.toBeInTheDocument();
+    // Badges ALSO render (T11 deviation from T7 #38: the slot overlays the
+    // badges via absolute positioning + its own hover-gated visibility).
+    expect(screen.getByText("2:00")).toBeInTheDocument();
+    expect(screen.getByText("1080p")).toBeInTheDocument();
   });
 
   it("omits the resolution badge for heights below 360 after load", () => {

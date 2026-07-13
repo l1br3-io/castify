@@ -16,7 +16,9 @@
 // without a meaningful "all" view).
 
 import type { VideoSummaryDto } from "../api/types";
+import { FavoriteToggle } from "./favorite-toggle";
 import { PosterCard } from "./poster-card";
+import { RatingStars } from "./rating-stars";
 
 type ShelfProps = {
   title: string;
@@ -49,7 +51,11 @@ export function Shelf({ title, videos, onViewAll }: ShelfProps) {
             className="w-[200px] flex-shrink-0"
             style={{ scrollSnapAlign: "start" }}
           >
-            <PosterCard video={video} />
+            <PosterCard
+              video={video}
+              topRightSlot={<FavoriteToggle video={video} />}
+              bottomOverlaySlot={<RatingStars video={video} />}
+            />
           </div>
         ))}
       </div>

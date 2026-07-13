@@ -93,29 +93,45 @@ impl E2eMockFactory {
                 mock_video(
                     "gd-vacation",
                     "vacation.mp4",
+                    "/Movies/vacation.mp4",
                     5_000_000,
                     Some("hash-gd-vacation"),
                 ),
                 mock_video(
                     "gd-concert",
                     "concert.mp4",
+                    "/Movies/concert.mp4",
                     6_000_000,
                     Some("hash-gd-concert"),
                 ),
-                mock_video("gd-shared", "shared-doc.mp4", 5_000_000, None),
+                mock_video(
+                    "gd-shared",
+                    "shared-doc.mp4",
+                    "/Movies/shared-doc.mp4",
+                    5_000_000,
+                    None,
+                ),
             ],
             Provider::Dropbox => vec![
                 mock_video(
                     "db-screenshots",
                     "screenshots.mp4",
+                    "/Photos/screenshots.mp4",
                     3_000_000,
                     Some("hash-db-screenshots"),
                 ),
-                mock_video("db-shared", "shared-doc.mp4", 5_000_000, None),
+                mock_video(
+                    "db-shared",
+                    "shared-doc.mp4",
+                    "/Movies/shared-doc.mp4",
+                    5_000_000,
+                    None,
+                ),
             ],
             Provider::OneDrive => vec![mock_video(
                 "od-clip",
                 "onedrive-clip.mp4",
+                "/Clips/onedrive-clip.mp4",
                 7_000_000,
                 Some("hash-od-clip"),
             )],
@@ -169,11 +185,17 @@ impl ProviderFactory for E2eMockFactory {
     }
 }
 
-fn mock_video(id: &str, name: &str, size: i64, native_hash: Option<&str>) -> DiscoveredVideo {
+fn mock_video(
+    id: &str,
+    name: &str,
+    path: &str,
+    size: i64,
+    native_hash: Option<&str>,
+) -> DiscoveredVideo {
     DiscoveredVideo {
         provider_file_id: id.to_string(),
         name: name.to_string(),
-        path: None,
+        path: Some(path.to_string()),
         size_bytes: size,
         mime_type: Some("video/mp4".to_string()),
         duration_ms: Some(120_000),

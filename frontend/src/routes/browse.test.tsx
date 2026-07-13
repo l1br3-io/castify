@@ -868,4 +868,74 @@ describe("BrowsePage", () => {
       expect(within(gridSection as HTMLElement).getByText("Favorites")).toBeInTheDocument();
     });
   });
+
+  // --- T11 personalization integration ---
+
+  it("favorite toggle on a grid card fires POST /favorite", async () => {
+    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections") return jsonResponse(NO_CONNECTIONS);
+        if (url.startsWith("/api/videos/folders")) return jsonResponse([]);
+        if (url === "/api/videos/v1/favorite" && method === "POST")
+          return jsonResponse({ is_favorite: true });
+        return browseFetch()(input);
+      },
+    });
+
+    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+
+    // Scope to the grid section — the hero + Recently Added shelf also have
+    // favorite toggles for v1.
+    const gridSection = container.querySelector("#all-videos")!;
+    const gridFavoriteBtns = within(gridSection as HTMLElement).getAllByRole("button", {
+      name: /add to favorites/i,
+    });
+    expect(gridFavoriteBtns.length).toBeGreaterThan(0);
+    fireEvent.click(gridFavoriteBtns[0]);
+
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/videos/v1/favorite" &&
+          (init as RequestInit)?.method === "POST",
+      );
+      expect(call).toBeDefined();
+    });
+  });
+
+  it("rating star click on a grid card fires PUT /rating", async () => {
+    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections") return jsonResponse(NO_CONNECTIONS);
+        if (url.startsWith("/api/videos/folders")) return jsonResponse([]);
+        if (url === "/api/videos/v1/rating" && method === "PUT")
+          return jsonResponse({ my_rating: 4 });
+        return browseFetch()(input);
+      },
+    });
+
+    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+
+    const gridSection = container.querySelector("#all-videos")!;
+    const gridStarBtns = within(gridSection as HTMLElement).getAllByRole("radio", {
+      name: "4 stars",
+    });
+    expect(gridStarBtns.length).toBeGreaterThan(0);
+    fireEvent.click(gridStarBtns[0]);
+
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/videos/v1/rating" &&
+          (init as RequestInit)?.method === "PUT",
+      );
+      expect(call).toBeDefined();
+      const body = (call![1] as RequestInit).body;
+      expect(body).toBe(JSON.stringify({ rating: 4 }));
+    });
+  });
 });

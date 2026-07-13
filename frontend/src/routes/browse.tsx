@@ -33,8 +33,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { FilterPanel } from "../components/filter-panel";
+import { FavoriteToggle } from "../components/favorite-toggle";
 import { HeroShowcase, HeroSkeleton } from "../components/hero-showcase";
 import { PosterCard } from "../components/poster-card";
+import { RatingStars } from "../components/rating-stars";
 import { SearchBar } from "../components/search-bar";
 import { Shelf } from "../components/shelf";
 import { useConnections } from "../hooks/use-connections";
@@ -175,7 +177,11 @@ export function BrowsePage() {
       {/* Hero + shelves — hidden during active search (focused results mode) */}
       {!isSearching && (
         <>
-          <HeroShowcase video={heroVideo} />
+          <HeroShowcase
+            video={heroVideo}
+            favoriteSlot={<FavoriteToggle video={heroVideo} variant="hero" />}
+            ratingSlot={<RatingStars video={heroVideo} variant="hero" />}
+          />
 
           {/* Shelves */}
           <div className="space-y-6">
@@ -405,7 +411,12 @@ function BrowseGrid({
       </p>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
         {data.videos.map((video: VideoSummaryDto) => (
-          <PosterCard key={video.id} video={video} />
+          <PosterCard
+            key={video.id}
+            video={video}
+            topRightSlot={<FavoriteToggle video={video} />}
+            bottomOverlaySlot={<RatingStars video={video} />}
+          />
         ))}
       </div>
       {totalPages > 1 && (

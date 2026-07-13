@@ -117,6 +117,86 @@ e2e:
     echo "== playwright: running e2e tests =="
     ( cd e2e && npx playwright test )
 
+# --- Performance benchmark (T13) ---
+
+# Full performance benchmark: build release, boot API, seed 10K videos,
+# run HTTP latency checks, tear down. Override the data dir or URL via
+# CASTIFY_BENCH_DIR / CASTIFY_BENCH_URL. Pass CASTIFY_BENCH_DEV=1 to use
+# debug builds (faster compile, pessimistic numbers).
+bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    BENCH_DIR="${CASTIFY_BENCH_DIR:-/tmp/castify-bench}"
+    BASE_URL="${CASTIFY_BENCH_URL:-http://localhost:8427}"
+
+    if [ -n "${CASTIFY_BENCH_DEV:-}" ]; then
+        PROFILE_DIR="debug"
+        BUILD_ARGS=""
+    else
+        PROFILE_DIR="release"
+        BUILD_ARGS="--release"
+    fi
+
+    echo "== bench: building ($PROFILE_DIR) =="
+    cargo build -p castify-api $BUILD_ARGS --quiet
+    cargo build -p castify-bench $BUILD_ARGS --quiet
+
+    echo "== bench: fresh data dir ($BENCH_DIR) =="
+    rm -rf "$BENCH_DIR" && mkdir -p "$BENCH_DIR"
+
+    echo "== bench: starting API =="
+    CASTIFY_DATA_DIR="$BENCH_DIR" CASTIFY_LOG=warn \
+        ./target/$PROFILE_DIR/castify &
+    API_PID=$!
+
+    cleanup() {
+        echo "== bench: stopping API =="
+        kill "$API_PID" 2>/dev/null || true
+        wait "$API_PID" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    echo "== bench: waiting for health =="
+    ready=0
+    for _ in $(seq 1 120); do
+        if curl -sf "$BASE_URL/api/health" >/dev/null 2>&1; then
+            ready=1; break
+        fi
+        sleep 0.5
+    done
+    [ "$ready" = 1 ] || { echo "error: API not healthy within 60s" >&2; exit 1; }
+    echo "  healthy"
+
+    echo "== bench: setup (create owner) =="
+    curl -sf -c "$BENCH_DIR/cookies.txt" \
+        -X POST "$BASE_URL/api/setup" \
+        -H "Content-Type: application/json" \
+        -d '{"display_name":"Bench","password":"benchpass123"}' >/dev/null
+    SESSION=$(awk '$6=="castify_session"{print $7}' "$BENCH_DIR/cookies.txt")
+    [ -n "$SESSION" ] || { echo "error: no session cookie" >&2; exit 1; }
+
+    echo "== bench: seeding 10K catalog =="
+    CASTIFY_DATA_DIR="$BENCH_DIR" ./target/$PROFILE_DIR/bench-seed
+
+    echo
+    echo "== bench: HTTP latency benchmark =="
+    ./target/$PROFILE_DIR/bench-run --base-url "$BASE_URL" --session "$SESSION"
+
+# Seed 10K benchmark videos into CASTIFY_DATA_DIR (assumes API is already
+# running and POST /api/setup has been called).
+bench-seed:
+    cargo run -p castify-bench --bin bench-seed
+
+# Run HTTP latency benchmark against a running API. Requires BENCH_SESSION
+# (the castify_session cookie value).
+bench-run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p castify-bench --bin bench-run -- \
+        --session "${BENCH_SESSION:?BENCH_SESSION is required (castify_session cookie)}" \
+        --base-url "${CASTIFY_BENCH_URL:-http://localhost:8427}"
+
 # --- Docker stack (prod-like; reads the same .env as the recipes above) ---
 
 # Start the Docker stack in the background.

@@ -313,6 +313,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "castify-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "castify-storage",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "castify-catalog"
 version = "0.1.0"
 dependencies = [

@@ -13,12 +13,17 @@
 //   name (2-line clamp)
 //   [Provider] [Also in: …]
 //
-// T11 reservation contract:
+// T11 slot reservation contract (revised):
 //   * `topRightSlot`        — absolute top-right corner; renders above the img.
-//   * `bottomOverlaySlot`   — absolute bottom strip; when present, the
-//     duration/resolution badges are suppressed (T11's rating stars replace
-//     them rather than overlapping).
-// T7 itself renders nothing into either slot; T11 passes its controls.
+//   * `bottomOverlaySlot`   — absolute bottom strip; T11's rating stars.
+//
+// T11 deviation from T7 #38: badges (duration/resolution) now *always*
+// render, regardless of `bottomOverlaySlot`. The slot is rendered on top
+// of the badges and is responsible for its own hover visibility (the
+// RatingStars component uses `opacity-0 group-hover:opacity-100` with a
+// solid `bg-black/70` backdrop so it cleanly covers the badges while
+// interacting). PRD FR-9.1 requires always-on badges; FR-9.2 requires
+// hover-revealed rating — both are satisfied.
 //
 // Thumbnail state machine (PRD FR-1.4 / FR-9.3 / FR-9.4):
 //   * `loading` → pulsing skeleton behind a transparent `<img>` (img becomes
@@ -44,7 +49,8 @@ type PosterCardProps = {
   video: VideoSummaryDto;
   /** Top-right corner slot — T11 FavoriteToggle. */
   topRightSlot?: ReactNode;
-  /** Bottom-overlay slot — T11 RatingStars. Suppresses duration/resolution badges. */
+  /** Bottom-overlay slot — T11 RatingStars. Renders on top of the duration/
+   *  resolution badges; the slot itself controls its hover visibility. */
   bottomOverlaySlot?: ReactNode;
 };
 
@@ -134,9 +140,10 @@ function Thumbnail({ video, topRightSlot, bottomOverlaySlot }: ThumbnailProps) {
         />
       )}
 
-      {/* Metadata badges — only when the image is loaded AND no bottom
-          overlay slot is provided (T11's rating stars replace them). */}
-      {state === "loaded" && !bottomOverlaySlot && (
+      {/* Metadata badges — render when the image is loaded. Always visible;
+          the bottomOverlaySlot (when present) sits on top via absolute
+          positioning + its own hover-gated visibility. */}
+      {state === "loaded" && (
         <>
           {video.duration_ms !== null && (
             <span className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium text-white">
