@@ -25,6 +25,7 @@
 //   * `error`   → deterministic gradient fallback via hashHue.
 
 import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 import type { VideoSummaryDto } from "../api/types";
 import { DedupBadge, ProviderBadge } from "./badges";
@@ -38,30 +39,53 @@ import { otherProviders } from "../lib/video";
 
 type HeroShowcaseProps = {
   video: VideoSummaryDto | undefined;
+  /**
+   * Optional sibling video IDs for the ephemeral play queue (M3 T11).
+   * Typically the Recently Added list the hero was drawn from, so clicking
+   * the hero enters the queue at the featured video's position. Omitted
+   * when the hero is shown without a browse context.
+   */
+  queue?: string[];
   /** T11 FavoriteToggle slot. */
   favoriteSlot?: ReactNode;
   /** T11 RatingStars slot. */
   ratingSlot?: ReactNode;
 };
 
-export function HeroShowcase({ video, favoriteSlot, ratingSlot }: HeroShowcaseProps) {
+export function HeroShowcase({
+  video,
+  queue,
+  favoriteSlot,
+  ratingSlot,
+}: HeroShowcaseProps) {
   if (!video) {
     return <HeroSkeleton />;
   }
   return (
-    <HeroBackdrop video={video} favoriteSlot={favoriteSlot} ratingSlot={ratingSlot} />
+    <HeroBackdrop
+      video={video}
+      queue={queue}
+      favoriteSlot={favoriteSlot}
+      ratingSlot={ratingSlot}
+    />
   );
 }
 
 type HeroBackdropProps = {
   video: VideoSummaryDto;
+  queue?: string[];
   favoriteSlot?: ReactNode;
   ratingSlot?: ReactNode;
 };
 
 type BackdropState = "loading" | "loaded" | "error";
 
-function HeroBackdrop({ video, favoriteSlot, ratingSlot }: HeroBackdropProps) {
+function HeroBackdrop({
+  video,
+  queue,
+  favoriteSlot,
+  ratingSlot,
+}: HeroBackdropProps) {
   const [state, setState] = useState<BackdropState>("loading");
   const hue = hashHue(video.id);
   const others = otherProviders(video);
@@ -103,8 +127,19 @@ function HeroBackdrop({ video, favoriteSlot, ratingSlot }: HeroBackdropProps) {
       {/* Gradient overlay for text legibility — dark at the bottom. */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
 
+      {/* Stretched link — covers the hero background area. The content
+          overlay sits at z-10 above it so the title/metadata doesn't navigate;
+          the favorite/rating slots are above the link and receive clicks. */}
+      <Link
+        to={`/watch/${video.id}`}
+        state={queue ? { queue } : undefined}
+        className="absolute inset-0 z-0 rounded-xl"
+        aria-label={`Play ${video.name}`}
+        tabIndex={-1}
+      />
+
       {/* Content overlay — bottom-aligned for a cinematic feel. */}
-      <div className="relative flex h-full flex-col justify-end gap-2 p-6 sm:p-8">
+      <div className="relative z-10 flex h-full flex-col justify-end gap-2 p-6 sm:p-8">
         <h2 className="text-2xl font-bold tracking-tight drop-shadow-lg sm:text-3xl">
           {video.name}
         </h2>

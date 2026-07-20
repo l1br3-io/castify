@@ -22,8 +22,6 @@ M1 turns Castify from a foundation into a media hub: the owner connects cloud st
 
 - Browse experience — hero showcase, poster grid, rows, search, filters, favorites, ratings (M2).
 - Video playback — streaming, seeking, subtitles, resume (M3).
-- Guest share links (M4).
-- Hosted multi-tenant deployment (M5).
 - Full-file content hashing (Tier 3 dedup) — prefix hash is sufficient for M1.
 - Thumbnails / poster image generation (M2).
 - Automatic background re-scan on a schedule (manual rescan only in M1).

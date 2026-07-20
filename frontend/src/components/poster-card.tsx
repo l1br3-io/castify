@@ -34,6 +34,7 @@
 //     page load remounts the img and retries.
 
 import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 import type { VideoSummaryDto } from "../api/types";
 import {
@@ -47,6 +48,18 @@ import { DedupBadge, ProviderBadge } from "./badges";
 
 type PosterCardProps = {
   video: VideoSummaryDto;
+  /** Optional link target — renders a stretched Link overlay for click-to-navigate. */
+  href?: string;
+  /**
+   * Optional sibling video IDs for the ephemeral play queue (M3 T11).
+   * When provided, the stretched `<Link>` carries `{ queue }` in router
+   * state. The parent (BrowseGrid, Shelf, HeroShowcase) computes the
+   * sibling list from its current result set and passes it here. The
+   * watch page reads it via `location.state.queue` to enable next/prev
+   * skip + auto-advance. Omit when there is no browse context (e.g. a
+   * standalone card on a future detail page).
+   */
+  queue?: string[];
   /** Top-right corner slot — T11 FavoriteToggle. */
   topRightSlot?: ReactNode;
   /** Bottom-overlay slot — T11 RatingStars. Renders on top of the duration/
@@ -56,6 +69,8 @@ type PosterCardProps = {
 
 export function PosterCard({
   video,
+  href,
+  queue,
   topRightSlot,
   bottomOverlaySlot,
 }: PosterCardProps) {
@@ -64,7 +79,16 @@ export function PosterCard({
   const others = otherProviders(video);
 
   return (
-    <article className="group flex flex-col gap-2 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-2 transition hover:border-white/20">
+    <article className="relative group flex flex-col gap-2 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-2 transition hover:border-white/20">
+      {href && (
+        <Link
+          to={href}
+          state={queue ? { queue } : undefined}
+          className="absolute inset-0 rounded-lg z-0"
+          aria-label={`Play ${video.name}`}
+          tabIndex={-1}
+        />
+      )}
       <Thumbnail
         video={video}
         topRightSlot={topRightSlot}
@@ -159,10 +183,12 @@ function Thumbnail({ video, topRightSlot, bottomOverlaySlot }: ThumbnailProps) {
       )}
 
       {topRightSlot && (
-        <div className="absolute right-1 top-1">{topRightSlot}</div>
+        <div className="absolute right-1 top-1 z-10">{topRightSlot}</div>
       )}
       {bottomOverlaySlot && (
-        <div className="absolute inset-x-1 bottom-1">{bottomOverlaySlot}</div>
+        <div className="absolute inset-x-1 bottom-1 z-10">
+          {bottomOverlaySlot}
+        </div>
       )}
     </div>
   );

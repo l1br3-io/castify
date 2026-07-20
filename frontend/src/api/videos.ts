@@ -14,8 +14,13 @@ import { apiFetch } from "./client";
 import type {
   FavoriteResponseDto,
   FolderDto,
+  PlaybackProgressDto,
+  ProgressRequestDto,
   RatingRequestDto,
   RatingResponseDto,
+  StreamUrlDto,
+  SubtitleTrackDto,
+  VideoDetailDto,
   VideoPageDto,
   VideoSortKey,
 } from "./types";
@@ -39,7 +44,9 @@ export interface VideoListParams {
  * `GET /api/videos` — paginated, deduplicated video catalog.
  * Composable filters + search + sort (see PRD FR-2/FR-3/FR-4).
  */
-export function fetchVideos(params: VideoListParams = {}): Promise<VideoPageDto> {
+export function fetchVideos(
+  params: VideoListParams = {},
+): Promise<VideoPageDto> {
   const search = new URLSearchParams();
   if (params.page !== undefined) search.set("page", String(params.page));
   if (params.limit !== undefined) search.set("limit", String(params.limit));
@@ -71,12 +78,17 @@ export function fetchFolders(): Promise<FolderDto[]> {
 }
 
 /**
+ * `GET /api/videos/{id}` — full video metadata for the player page (FR-4.1).
+ */
+export function fetchVideoDetail(videoId: string): Promise<VideoDetailDto> {
+  return apiFetch<VideoDetailDto>(`/api/videos/${encodeURIComponent(videoId)}`);
+}
+
+/**
  * `POST /api/videos/{id}/favorite` — idempotent favorite add (CSRF).
  * Returns the post-mutation state (`{ is_favorite: true }`).
  */
-export function setFavorite(
-  videoId: string,
-): Promise<FavoriteResponseDto> {
+export function setFavorite(videoId: string): Promise<FavoriteResponseDto> {
   return apiFetch<FavoriteResponseDto>(
     `/api/videos/${encodeURIComponent(videoId)}/favorite`,
     { method: "POST" },
@@ -87,9 +99,7 @@ export function setFavorite(
  * `DELETE /api/videos/{id}/favorite` — idempotent favorite remove (CSRF).
  * Returns the post-mutation state (`{ is_favorite: false }`).
  */
-export function unsetFavorite(
-  videoId: string,
-): Promise<FavoriteResponseDto> {
+export function unsetFavorite(videoId: string): Promise<FavoriteResponseDto> {
   return apiFetch<FavoriteResponseDto>(
     `/api/videos/${encodeURIComponent(videoId)}/favorite`,
     { method: "DELETE" },
@@ -114,11 +124,77 @@ export function setRating(
  * `DELETE /api/videos/{id}/rating` — idempotent rating clear (CSRF).
  * Returns `{ my_rating: null }`.
  */
-export function unsetRating(
-  videoId: string,
-): Promise<RatingResponseDto> {
+export function unsetRating(videoId: string): Promise<RatingResponseDto> {
   return apiFetch<RatingResponseDto>(
     `/api/videos/${encodeURIComponent(videoId)}/rating`,
     { method: "DELETE" },
   );
+}
+
+// ---------------------------------------------------------------------------
+// M3 — Play: progress, subtitles, stream/download URLs.
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/videos/{id}/progress` — upsert saved playback position (FR-3.1).
+ * CSRF-protected mutation. The backend re-fetches the row to return the
+ * authoritative `updated_at`.
+ */
+export function saveProgress(
+  videoId: string,
+  body: ProgressRequestDto,
+): Promise<PlaybackProgressDto> {
+  return apiFetch<PlaybackProgressDto>(
+    `/api/videos/${encodeURIComponent(videoId)}/progress`,
+    { method: "POST", body: body satisfies ProgressRequestDto },
+  );
+}
+
+/**
+ * `GET /api/videos/{id}/subtitles` — list of detected sidecar subtitle tracks
+ * (FR-6.1). Returns an empty array when no subtitles were detected.
+ */
+export function fetchSubtitles(videoId: string): Promise<SubtitleTrackDto[]> {
+  return apiFetch<SubtitleTrackDto[]>(
+    `/api/videos/${encodeURIComponent(videoId)}/subtitles`,
+  );
+}
+
+/**
+ * Same-origin stream URL for a video's `<video src>` (FR-1.1). Not wrapped
+ * in `apiFetch` — the browser attaches the session cookie automatically and
+ * the response body is a byte stream, not JSON.
+ */
+export function streamUrl(videoId: string): string {
+  return `/api/videos/${encodeURIComponent(videoId)}/stream`;
+}
+
+/**
+ * `GET /api/videos/{id}/stream-url` — resolve where the browser should fetch
+ * video bytes from (T12 — direct CDN streaming). For OneDrive + Dropbox,
+ * returns a short-lived preauthenticated CDN URL the browser hits directly
+ * (no backend proxying of bytes). For Google Drive, returns the existing
+ * `/stream` endpoint as a fallback. The player sets `<video src={url}>` from
+ * this response and re-fetches on CDN URL expiry (T12.2).
+ */
+export function fetchStreamUrl(videoId: string): Promise<StreamUrlDto> {
+  return apiFetch<StreamUrlDto>(
+    `/api/videos/${encodeURIComponent(videoId)}/stream-url`,
+  );
+}
+
+/**
+ * Same-origin download URL with `Content-Disposition: attachment` (FR-1.8).
+ * Used by the unsupported-format fallback card.
+ */
+export function downloadUrl(videoId: string): string {
+  return `/api/videos/${encodeURIComponent(videoId)}/download`;
+}
+
+/**
+ * Same-origin subtitle track URL for `<track src>` (FR-6.2). The endpoint
+ * serves `text/vtt` with on-the-fly `.srt` → `.vtt` conversion.
+ */
+export function subtitleTrackUrl(videoId: string, trackId: string): string {
+  return `/api/videos/${encodeURIComponent(videoId)}/subtitles/${encodeURIComponent(trackId)}`;
 }

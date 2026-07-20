@@ -16,6 +16,10 @@ path = "src/bin/seed.rs"
 name = "bench-run"
 path = "src/bin/run.rs"
 
+[[bin]]
+name = "bench-stream"
+path = "src/bin/stream.rs"
+
 [dependencies]
 anyhow = "1.0.103"
 castify-storage.workspace = true

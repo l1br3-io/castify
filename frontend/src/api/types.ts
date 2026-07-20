@@ -133,6 +133,10 @@ export interface VideoSummaryDto {
   my_rating: number | null;
   // "pending" | "cached" | "failed" | "unsupported" — see PRD FR-1.4/1.5.
   thumbnail_status: string;
+  // Saved playback position in seconds, or null if no progress recorded.
+  position_seconds: number | null;
+  // Whether the owner has marked this video as completed (watched past 95%).
+  completed: boolean;
 }
 
 // Paginated response from `GET /api/videos` (`VideoPage` in the backend).
@@ -163,4 +167,74 @@ export interface RatingRequestDto {
 
 export interface RatingResponseDto {
   my_rating: number | null;
+}
+
+// --- M3 — Play DTOs ---
+
+export interface SubtitleTrackDto {
+  id: string;
+  language: string | null;
+  filename: string;
+  format: string;
+}
+
+export interface VideoDetailDto {
+  id: string;
+  name: string;
+  provider: ProviderKey;
+  size_bytes: number;
+  mime_type: string | null;
+  duration_ms: number | null;
+  width: number | null;
+  height: number | null;
+  sources: VideoSourceDto[];
+  created_at: string;
+  path: string | null;
+  is_favorite: boolean;
+  my_rating: number | null;
+  thumbnail_status: string;
+  position_seconds: number | null;
+  duration_seconds: number | null;
+  completed: boolean;
+  subtitle_tracks: SubtitleTrackDto[];
+}
+
+export interface PlaybackProgressDto {
+  position_seconds: number;
+  duration_seconds: number | null;
+  completed: boolean;
+  updated_at: string;
+}
+
+// Request body for `POST /api/videos/{id}/progress` (FR-3.1).
+// `duration_seconds` and `completed` are optional on the wire — the backend
+// upserts whatever is provided. The owner auto-mark-completed flag is set
+// here when the player crosses the 95% threshold (T10).
+export interface ProgressRequestDto {
+  position_seconds: number;
+  duration_seconds?: number | null;
+  completed?: boolean;
+}
+
+// Response from `GET /api/videos/{id}/stream-url` (T12 — direct CDN
+// streaming). Per-provider strategy picks the smoothest path:
+//
+// - OneDrive + Dropbox: short-lived preauthenticated CDN URL the browser hits
+//   directly (`strategy: "direct"`). Provider-native URLs are smooth.
+// - Google Drive: tries `?alt=media` redirect first; falls back to the
+//   `/stream` proxy (`strategy: "proxy"`) when Drive serves bytes inline.
+// - Hot video disk cache (M4): when the video has been cached to local disk,
+//   the strategy is `"cached"` and the URL points at `/cached-stream`.
+//
+// Self-hosted posture: pick the path that delivers best UX per provider, not
+// the path that minimizes server load. The proxy is a tool, not a last
+// resort. See `docs/prds/m3.5-streaming-posture-refactor.md` and
+// `docs/data-storage-principles.md` anti-pattern #2 for the rationale.
+//
+// `expires_at` is an ISO-8601 UTC string when known, else null — the
+// frontend uses it to pre-emptively refresh before a Direct URL expires.
+export interface StreamUrlDto {
+  url: string;
+  strategy: "direct" | "proxy" | "cached" | "transcode";
+  expires_at: string | null;
 }

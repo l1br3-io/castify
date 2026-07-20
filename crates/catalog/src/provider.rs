@@ -1,3 +1,8 @@
+use std::pin::Pin;
+
+use bytes::Bytes;
+use futures::Stream;
+
 use crate::crypto::TokenBundle;
 use crate::model::ListPage;
 
@@ -8,8 +13,18 @@ pub enum ProviderError {
     Network(String),
     #[error("rate limited; retry after {retry_after_secs:?} seconds")]
     RateLimited { retry_after_secs: Option<u64> },
+    /// The **access token** is expired/revoked, but a refresh may still
+    /// recover it. The caller should refresh once and retry.
     #[error("unauthorized: token may be expired or revoked")]
     Unauthorized,
+    /// The **refresh token/grant** is expired, revoked, or otherwise unusable.
+    /// Per [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc6749#section-5.2)
+    /// this is signalled by `error: "invalid_grant"` from the token endpoint.
+    /// No amount of retrying will recover it — the user must re-authenticate
+    /// (disconnect + reconnect). Surfaced to the client as
+    /// `401 code: "reauth_required"`.
+    #[error("refresh token revoked or expired; re-authentication required")]
+    ReauthRequired,
     #[error("not found: {0}")]
     NotFound(String),
     #[error("api error ({status}): {body}")]
@@ -21,6 +36,83 @@ pub enum ProviderError {
 }
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
+
+/// Streaming byte body for video playback. Providers return this from
+/// [`Provider::open_stream`]; the API layer forwards it to the browser via
+/// `axum::body::Body::from_stream`.
+pub type BodyStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
+
+/// A streaming video response from a cloud provider. The API layer converts
+/// this into an HTTP response with Range support (200 for full content, 206
+/// for partial content).
+pub struct StreamResponse {
+    /// HTTP status code: `200` (full content) or `206` (partial — Range honored).
+    pub status: u16,
+    /// MIME type of the video (e.g. `video/mp4`).
+    pub content_type: String,
+    /// Total or partial content length in bytes (from `Content-Length` header).
+    pub content_length: Option<u64>,
+    /// Content range for 206 responses (from `Content-Range` header).
+    pub content_range: Option<String>,
+    /// Streaming body — bytes are forwarded to the client as they arrive.
+    pub body: BodyStream,
+}
+
+/// A preauthenticated URL the browser can fetch directly, OR a signal that
+/// this provider can't direct-stream and the caller should fall back to
+/// [`Provider::open_stream`] through our backend proxy.
+///
+/// OneDrive and Dropbox can issue short-lived CDN URLs that the browser hits
+/// directly — the backend resolves the URL via one metadata call and hands it
+/// to the client, never touching a video byte. Google Drive's `?alt=media`
+/// endpoint 302-redirects to a short-lived pre-signed download URL (the
+/// hostname has changed over time — `*.googleusercontent.com`, then
+/// `drive.usercontent.google.com`); the backend follows the redirect once and
+/// hands the final URL to the client.
+///
+/// `expires_at` is an ISO-8601 UTC string (matching `TokenBundle::expires_at`'s
+/// format) — when known, the frontend uses it to pre-emptively refresh before
+/// the CDN URL stops working.
+#[derive(Debug, Clone)]
+pub enum StreamUrl {
+    /// Browser-fetchable CDN URL. No auth header required (the provider bakes
+    /// a short-lived token into the URL itself, or — for Google Drive —
+    /// responds to `?alt=media` with a 302 to a pre-signed download URL that
+    /// needs no auth).
+    Direct {
+        url: String,
+        expires_at: Option<String>,
+    },
+    /// No direct URL available — the caller should use the existing proxy
+    /// endpoint (`/api/videos/{id}/stream`).
+    Proxied,
+    /// The hot-video disk cache has this video (M4). The caller should use
+    /// the cached-stream endpoint (`/api/videos/{id}/cached-stream`). The
+    /// `path` field carries that URL for the frontend's `<video src>`.
+    Cached {
+        url: String,
+        size_bytes: u64,
+    },
+    /// The video's codec is browser-incompatible; the caller should use
+    /// the transcode endpoint (M6). The `master_url` points at the HLS
+    /// master playlist. Frontend uses hls.js (or native HLS on Safari)
+    /// to consume.
+    Transcode {
+        master_url: String,
+    },
+}
+
+impl std::fmt::Debug for StreamResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamResponse")
+            .field("status", &self.status)
+            .field("content_type", &self.content_type)
+            .field("content_length", &self.content_length)
+            .field("content_range", &self.content_range)
+            .field("body", &"<stream>")
+            .finish()
+    }
+}
 
 /// Raw thumbnail image bytes plus their MIME type. Providers return this from
 /// [`Provider::fetch_thumbnail`]; the API layer caches and serves it.
@@ -57,9 +149,61 @@ pub trait Provider: Send + Sync {
     /// thumbnail endpoint; no shared thumbnail logic lives outside the trait.
     async fn fetch_thumbnail(&self, file_id: &str) -> ProviderResult<ThumbnailData>;
 
+    /// Open a streaming download for `file_id`, forwarding the browser's
+    /// `Range` header (if any) to the provider. Returns a [`StreamResponse`]
+    /// whose body streams bytes directly from the provider to the client.
+    ///
+    /// `range` is the raw `Range` header value (e.g. `"bytes=0-1023"` or
+    /// `None` for a full-content request). The provider maps 401 to
+    /// [`ProviderError::Unauthorized`] so the caller can refresh the token
+    /// and retry.
+    async fn open_stream(
+        &self,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse>;
+
+    /// Resolve a browser-directable URL for `file_id` when the provider
+    /// supports it (OneDrive + Dropbox issue short-lived preauthenticated CDN
+    /// URLs). The default returns [`StreamUrl::Proxied`] — providers that
+    /// can't issue a direct URL fall back to the existing proxy path with no
+    /// new code.
+    ///
+    /// When `Proxied` is returned, the caller (`GET /api/videos/{id}/stream-url`)
+    /// signals the browser to use the existing `/api/videos/{id}/stream`
+    /// endpoint. When `Direct` is returned, the browser hits the CDN URL
+    /// itself and our backend never touches a video byte — the proxy stays
+    /// available as a fallback for providers like Google Drive that need
+    /// bearer headers on every download.
+    async fn open_stream_url(&self, _file_id: &str) -> ProviderResult<StreamUrl> {
+        Ok(StreamUrl::Proxied)
+    }
+
+    /// Fetch the full content of a subtitle file (buffered). Subtitle files are
+    /// small (typically < 100 KB), so the body is collected into a `Vec<u8>`
+    /// rather than streamed. The default implementation reuses
+    /// [`Provider::open_stream`] — provider download endpoints are generic file
+    /// download, not video-specific. Override only for test mocks that need
+    /// subtitle-specific canned content.
+    async fn fetch_subtitle_content(&self, file_id: &str) -> ProviderResult<Vec<u8>> {
+        let resp = self.open_stream(file_id, None).await?;
+        collect_body(resp.body).await
+    }
+
     /// Revoke the provider token (best-effort — network failure should not
     /// prevent local connection deletion).
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()>;
+}
+
+/// Collect a streaming body into a `Vec<u8>`. Used by the default
+/// `fetch_subtitle_content` implementation.
+async fn collect_body(mut body: BodyStream) -> ProviderResult<Vec<u8>> {
+    use futures::StreamExt;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.next().await {
+        bytes.extend_from_slice(&chunk.map_err(|e| ProviderError::Other(e.to_string()))?);
+    }
+    Ok(bytes)
 }
 
 /// Builder that creates a boxed `Provider` instance from a token bundle and

@@ -1,0 +1,19 @@
+[package]
+name = "castify-cache"
+description = "Reusable disk cache primitives for Castify (filesystem ops; SQL manifest stays in the caller)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1.0.103"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = ["full"] }

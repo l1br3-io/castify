@@ -5,10 +5,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
-use crate::providers::common::{classify_token_error, infer_image_mime, to_hex, TokenResponse};
+use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
+use crate::providers::common::{
+    classify_token_error, guess_language, has_subtitle_extension, infer_image_mime,
+    response_to_stream, to_hex, TokenResponse,
+};
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -47,6 +50,16 @@ pub struct GoogleDriveConfig {
 pub struct GoogleDriveClient {
     config: GoogleDriveConfig,
     http: reqwest::Client,
+    /// Separate client for file downloads — follows redirects to the CDN.
+    /// The main `http` client disables redirects (consistent with other
+    /// providers and safe for Drive API endpoints, which never redirect).
+    /// Drive's `alt=media` may 302 to a CDN URL, so `open_stream` uses this
+    /// client.
+    http_download: reqwest::Client,
+    /// Base URL for the Drive Files API. Defaults to the public Drive API
+    /// (`DRIVE_FILES_URL`); tests override to point at a local wiremock
+    /// server. All non-test code paths use the constant.
+    drive_files_base: String,
 }
 
 /// Account info returned by Google's userinfo endpoint.
@@ -62,7 +75,33 @@ impl GoogleDriveClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build reqwest client");
-        Self { config, http }
+        let http_download = reqwest::Client::builder()
+            .build()
+            .expect("failed to build reqwest download client");
+        Self {
+            config,
+            http,
+            http_download,
+            drive_files_base: DRIVE_FILES_URL.into(),
+        }
+    }
+
+    /// Test-only constructor: lets callers inject HTTP clients (so wiremock
+    /// can intercept) and override the Drive Files API base URL (so the
+    /// mock server's URL is used instead of `googleapis.com`).
+    #[cfg(test)]
+    pub fn new_for_testing(
+        config: GoogleDriveConfig,
+        http: reqwest::Client,
+        http_download: reqwest::Client,
+        drive_files_base: String,
+    ) -> Self {
+        Self {
+            config,
+            http,
+            http_download,
+            drive_files_base,
+        }
     }
 
     /// Build the redirect URI for this provider given the app base URL.
@@ -250,7 +289,7 @@ impl GoogleDriveClient {
         let mut query: Vec<(&str, &str)> = vec![
             (
                 "q",
-                "mimeType contains 'video/' and trashed=false",
+                "(mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed=false",
             ),
             (
                 "fields",
@@ -323,10 +362,27 @@ impl GoogleDriveClient {
                 .await?;
         }
 
-        let videos = response
-            .files
-            .into_iter()
-            .map(|f| {
+        // Single pass: partition files into videos and subtitles.
+        let mut videos = Vec::new();
+        let mut subtitles = Vec::new();
+
+        for f in response.files {
+            let path = f
+                .parents
+                .as_ref()
+                .and_then(|p| p.first())
+                .and_then(|pid| folder_cache.get(pid))
+                .map(|folder_path| format!("{folder_path}/{}", f.name));
+
+            if has_subtitle_extension(&f.name) {
+                let language = guess_language(&f.name);
+                subtitles.push(DiscoveredSubtitle {
+                    provider_file_id: f.id,
+                    name: f.name,
+                    path,
+                    language,
+                });
+            } else {
                 let native_hash = f.sha256_checksum.clone().or(f.md5_checksum.clone());
                 let native_hash_algo = if f.sha256_checksum.is_some() {
                     Some("sha256".to_string())
@@ -336,15 +392,7 @@ impl GoogleDriveClient {
                     None
                 };
 
-                // Resolve the full path using the first parent's folder path.
-                let path = f
-                    .parents
-                    .as_ref()
-                    .and_then(|p| p.first())
-                    .and_then(|pid| folder_cache.get(pid))
-                    .map(|folder_path| format!("{folder_path}/{}", f.name));
-
-                DiscoveredVideo {
+                videos.push(DiscoveredVideo {
                     provider_file_id: f.id,
                     name: f.name,
                     path,
@@ -360,12 +408,13 @@ impl GoogleDriveClient {
                     native_hash,
                     native_hash_algo,
                     provider_modified_at: f.modified_time,
-                }
-            })
-            .collect();
+                });
+            }
+        }
 
         Ok(ListPage {
             videos,
+            subtitles,
             next_cursor: response.next_page_token,
         })
     }
@@ -656,6 +705,188 @@ impl GoogleDriveClient {
 
         Ok(ThumbnailData { bytes, mime_type })
     }
+
+    /// Stream a Drive file's content via `?alt=media`. Forwards the browser's
+    /// `Range` header (if any) for seeking. Uses `http_download` (redirect-
+    /// following) because `alt=media` may 302 to a CDN URL.
+    pub async fn open_stream(
+        &self,
+        access_token: &str,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        let url = format!("{DRIVE_FILES_URL}/{file_id}?alt=media&supportsAllDrives=true");
+        let mut req = self.http_download.get(&url).bearer_auth(access_token);
+        if let Some(r) = range {
+            req = req.header("Range", r);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        response_to_stream(resp).await
+    }
+
+    /// Resolve a browser-directable CDN URL for a Drive file by following the
+    /// `?alt=media` redirect. Sends a 1-byte Range request with the bearer
+    /// token (which the redirect-following `http_download` client strips on
+    /// the cross-host hop), then captures the final URL from `Response::url()`.
+    /// That URL needs no auth header and can be set directly as `<video src>`.
+    ///
+    /// Detection is hostname-agnostic: any redirect from the `googleapis.com`
+    /// request URL proves Drive handed back a browser-directable CDN URL.
+    /// Hardcoding a hostname broke when Google moved downloads from
+    /// `*.googleusercontent.com` to `drive.usercontent.google.com` (note the
+    /// reversed word order) — the substring check silently failed and every
+    /// Drive video fell back to the bandwidth-heavy proxy path.
+    ///
+    /// # Strategy
+    ///
+    /// The probe URL carries `acknowledgeAbuse=true` — Drive sometimes
+    /// serves bytes inline (200/206) for files flagged for abuse review
+    /// (large files, flagged mimetypes); the parameter skips that review
+    /// and elicits the normal 302 redirect to a pre-signed CDN URL. When
+    /// Drive cooperates, the redirect target works in the browser with no
+    /// auth header — Drive bakes a short-lived token into the URL itself.
+    ///
+    /// When the probe doesn't redirect (Drive serves bytes inline), this
+    /// returns `Ok(None)` and the caller falls back to `StreamUrl::Proxied`
+    /// (the `/stream` endpoint). The proxy is slow but always works.
+    ///
+    /// Returns `Err(Unauthorized)` on 401 so the API layer can refresh the
+    /// token and retry once.
+    ///
+    /// # What was tried and removed: cookie-auth URL strategies
+    ///
+    /// Earlier versions of this function tried two additional strategies
+    /// when `?alt=media` didn't redirect:
+    ///
+    /// 1. **Direct probe of `drive.usercontent.google.com/download?id=…`** —
+    ///    Drive returned 200 to our server-side `reqwest` probe but 403 to
+    ///    the browser, because the URL requires a Google session cookie the
+    ///    server can't predict.
+    /// 2. **`webContentLink` from the Files resource** — Drive populates
+    ///    this field for many files (not just public ones, despite the docs
+    ///    implying otherwise). The returned URL `drive.google.com/uc?id=…`
+    ///    works **only with Google session cookies** — the browser gets 403
+    ///    if the user isn't signed into the right Google account.
+    ///
+    /// Both shared the same root cause: **the server cannot predict what
+    /// the browser will be able to access**. Cookie-authenticated URLs are
+    /// fundamentally unsuitable for handing to the browser, because the
+    /// server has no cookies and the browser's cookies are unknowable.
+    /// Only Drive's pre-signed 302 redirect target works reliably — the
+    /// auth is baked into the URL's query string.
+    ///
+    /// Lesson for future contributors: do not add strategies that return
+    /// URLs requiring cookies or session state. If `?alt=media` doesn't
+    /// redirect, the file genuinely cannot be direct-streamed and the
+    /// proxy is the correct fallback.
+    pub async fn resolve_direct_download_url(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<Option<String>> {
+        let probe_url = format!(
+            "{}/{file_id}?alt=media&supportsAllDrives=true&acknowledgeAbuse=true",
+            self.drive_files_base
+        );
+        match self.probe_redirect(&probe_url, access_token).await? {
+            ProbeOutcome::Redirected(final_url) => {
+                tracing::info!(
+                    file_id,
+                    strategy = "acknowledgeAbuse",
+                    "Drive redirected on probe; using direct URL"
+                );
+                return Ok(Some(final_url));
+            }
+            ProbeOutcome::ServedInline { status, content_type } => {
+                tracing::info!(
+                    file_id,
+                    status,
+                    content_type = %content_type.unwrap_or_default(),
+                    "Drive served bytes inline; falling back to /stream proxy"
+                );
+            }
+        }
+        Ok(None)
+    }
+
+    /// Send a 1-byte Range request with the bearer token; classify Drive's
+    /// response as `Redirected` (we captured a new URL via redirect-following),
+    /// `ServedInline` (Drive returned 200/206 with no redirect), or propagate
+    /// the usual errors (`Unauthorized`, `RateLimited`, `Api`).
+    async fn probe_redirect(
+        &self,
+        url: &str,
+        access_token: &str,
+    ) -> ProviderResult<ProbeOutcome> {
+        let resp = self
+            .http_download
+            .get(url)
+            .bearer_auth(access_token)
+            .header("Range", "bytes=0-0")
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        if !status.is_success() && status.as_u16() != 206 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let final_url = resp.url().to_string();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        if final_url == url {
+            Ok(ProbeOutcome::ServedInline {
+                status: status.as_u16(),
+                content_type,
+            })
+        } else {
+            Ok(ProbeOutcome::Redirected(final_url))
+        }
+    }
+
+    // Note: there used to be a `fetch_web_content_link` method here that
+    // read the file's `webContentLink` field from the Drive Files API.
+    // Removed after we confirmed Drive populates the field for many files
+    // (not just public ones, despite the docs) but the returned URL
+    // `drive.google.com/uc?…` requires Google session cookies to actually
+    // work — the browser gets 403 if the user isn't signed in. Server-side
+    // we can't predict cookie state, so this strategy was fundamentally
+    // unreliable. See the doc comment on `resolve_direct_download_url`
+    // for the full rationale.
+}
+
+/// Outcome of a single `?alt=media` probe.
+#[derive(Debug)]
+enum ProbeOutcome {
+    /// Drive 302-redirected to a CDN URL — the captured URL needs no auth
+    /// and is safe to hand the browser directly.
+    Redirected(String),
+    /// Drive served bytes inline (200 or 206) with no redirect — no URL
+    /// to capture. The caller falls back to the proxy path.
+    /// `status` and `content_type` are captured for diagnostic logging.
+    ServedInline {
+        status: u16,
+        content_type: Option<String>,
+    },
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -695,6 +926,38 @@ impl crate::provider::Provider for GoogleDriveProvider {
         self.client
             .fetch_thumbnail(&self.token.access_token, file_id)
             .await
+    }
+
+    async fn open_stream(
+        &self,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        self.client
+            .open_stream(&self.token.access_token, file_id, range)
+            .await
+    }
+
+    async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
+        match self
+            .client
+            .resolve_direct_download_url(&self.token.access_token, file_id)
+            .await?
+        {
+            Some(url) => {
+                // Drive's pre-signed download URLs (whatever hostname Drive
+                // currently redirects to) are short-lived — tied to the
+                // access token's ~1hr lifetime. Express a conservative
+                // 50-minute expiry so the frontend pre-emptively refreshes
+                // before the URL starts returning 403.
+                let expires_at = {
+                    let expiry = chrono::Utc::now() + chrono::Duration::minutes(50);
+                    Some(expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                };
+                Ok(StreamUrl::Direct { url, expires_at })
+            }
+            None => Ok(StreamUrl::Proxied),
+        }
     }
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
@@ -1065,5 +1328,133 @@ mod tests {
     #[test]
     fn validate_scopes_accepts_drive_readonly_alone() {
         assert!(validate_drive_scopes("https://www.googleapis.com/auth/drive.readonly").is_ok());
+    }
+
+    // ── resolve_direct_download_url tests ──────────────────────────────
+    //
+    // Three cases:
+    //   1. `?alt=media` 302-redirects → Some(captured URL)
+    //   2. `?alt=media` serves bytes inline → None (proxy fallback)
+    //   3. Probe returns 401              → Err(Unauthorized)
+    //
+    // Each uses wiremock to spin up a local HTTP server and points the
+    // client's `drive_files_base` at it via `new_for_testing`. The `http`
+    // and `http_download` clients used in production work as-is against
+    // localhost.
+
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path, query_param};
+
+    /// Build a `GoogleDriveClient` whose Drive API URL points at a wiremock
+    /// server. Both HTTP clients are the production-shaped `reqwest::Client`s
+    /// (`http` with redirects disabled, `http_download` with default
+    /// redirect-following).
+    fn client_for_mock(server: &MockServer) -> GoogleDriveClient {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("http client");
+        let http_download = reqwest::Client::builder()
+            .build()
+            .expect("http_download client");
+        let drive_files_base = format!("{}/drive/v3/files", server.uri());
+        GoogleDriveClient::new_for_testing(test_config(), http, http_download, drive_files_base)
+    }
+
+    #[tokio::test]
+    async fn resolve_direct_download_url_returns_redirected_url_on_strategy_1() {
+        // Strategy 1 (acknowledgeAbuse) — Drive 302-redirects the probe to
+        // a CDN URL. `http_download` follows the redirect; `resp.url()`
+        // captures the final URL. No fallback strategies run.
+        let server = MockServer::start().await;
+
+        let cdn_url = format!("{}/cdn/download?id=f1&authuser=0", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files/f1"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("Location", cdn_url.as_str()),
+            )
+            .mount(&server)
+            .await;
+        // reqwest will follow the redirect and GET this URL — needs a mock
+        // so the follow doesn't land on a 404.
+        Mock::given(method("GET"))
+            .and(path("/cdn/download"))
+            .and(query_param("id", "f1"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("Content-Type", "video/mp4")
+                    .insert_header("Content-Range", "bytes 0-0/1024")
+                    .set_body_bytes(b"\x00"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for_mock(&server);
+        let result = client
+            .resolve_direct_download_url("ya29.test", "f1")
+            .await
+            .expect("strategy 1 should succeed");
+
+        let url = result.expect("should have captured a direct URL");
+        assert_eq!(url, cdn_url);
+    }
+
+    #[tokio::test]
+    async fn resolve_direct_download_url_returns_none_when_probe_served_inline() {
+        // `?alt=media` returns 206 with video bytes inline — Drive declined
+        // to redirect. The function returns `None`, signaling "use the
+        // proxy." This is the path the user's affected Drive file lands on
+        // — confirmed safe: the proxy works (slowly), and we don't return
+        // a URL we can't verify the browser can actually use.
+        //
+        // Note: earlier versions of this function tried `webContentLink`
+        // and direct CDN probes as fallbacks — both removed because they
+        // returned URLs that required Google session cookies and the
+        // browser got 403. See the doc comment on
+        // `resolve_direct_download_url` for the full rationale.
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files/f1"))
+            .and(query_param("alt", "media"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .insert_header("Content-Type", "video/mp4")
+                    .set_body_bytes(b"\x00"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for_mock(&server);
+        let result = client
+            .resolve_direct_download_url("ya29.test", "f1")
+            .await
+            .expect("resolution should not error");
+
+        assert!(result.is_none(), "expected None (proxy fallback)");
+    }
+
+    #[tokio::test]
+    async fn resolve_direct_download_url_returns_unauthorized_on_401() {
+        // Drive returns 401 on the very first probe — the function returns
+        // `Err(Unauthorized)` so the API layer refreshes the token and retries.
+        // No other strategies run.
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files/f1"))
+            .and(query_param("alt", "media"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let client = client_for_mock(&server);
+        let err = client
+            .resolve_direct_download_url("ya29.expired", "f1")
+            .await
+            .expect_err("should return Unauthorized");
+
+        assert!(matches!(err, ProviderError::Unauthorized));
     }
 }

@@ -140,11 +140,24 @@ pub struct DiscoveredVideo {
     pub provider_modified_at: Option<String>,
 }
 
+/// A sidecar subtitle file (`.srt`/`.vtt`) discovered during a provider scan.
+/// Matched to a video by base name during the scan.
+#[derive(Debug, Clone)]
+pub struct DiscoveredSubtitle {
+    pub provider_file_id: String,
+    pub name: String,
+    pub path: Option<String>,
+    pub language: Option<String>,
+}
+
 /// A paginated result from `Provider::list_videos`.
 #[derive(Debug, Clone)]
 pub struct ListPage {
     pub videos: Vec<DiscoveredVideo>,
     pub next_cursor: Option<String>,
+    /// Sidecar subtitle files (`.srt`/`.vtt`) discovered during the same
+    /// listing pass. Matched to videos by base name during scanning.
+    pub subtitles: Vec<DiscoveredSubtitle>,
 }
 
 /// Data needed to insert or upsert a video row.
@@ -255,6 +268,9 @@ pub struct VideoFilter {
     pub min_rating: Option<i32>,
     /// Top-level path segment prefix (e.g. `"Movies"` matches `/Movies/...`).
     pub folder: Option<String>,
+    /// Restrict to videos the current owner has in-progress playback
+    /// (position > 0, not completed).
+    pub in_progress: bool,
     /// Current owner — required for `is_favorite` / `my_rating` joins.
     pub owner_id: String,
 }
@@ -273,6 +289,7 @@ impl Default for VideoFilter {
             favorites_only: false,
             min_rating: None,
             folder: None,
+            in_progress: false,
             owner_id: String::new(),
         }
     }
@@ -311,6 +328,10 @@ pub struct VideoSummary {
     pub my_rating: Option<i32>,
     /// Thumbnail cache state: `"pending"` / `"cached"` / `"failed"` / `"unsupported"`.
     pub thumbnail_status: String,
+    /// Saved playback position in seconds, or `None` if no progress recorded.
+    pub position_seconds: Option<f64>,
+    /// Whether the owner has marked this video as completed (watched past 95%).
+    pub completed: bool,
 }
 
 /// Paginated response for the unified video list.
@@ -320,4 +341,61 @@ pub struct VideoPage {
     pub total: i64,
     pub page: i64,
     pub limit: i64,
+}
+
+/// Saved playback progress for a single video + owner pair.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaybackProgress {
+    pub position_seconds: f64,
+    pub duration_seconds: Option<f64>,
+    pub completed: bool,
+    pub updated_at: String,
+}
+
+/// A detected sidecar subtitle track for a video (`.srt` or `.vtt`).
+#[derive(Debug, Clone, Serialize)]
+pub struct SubtitleTrack {
+    pub id: String,
+    pub language: Option<String>,
+    pub filename: String,
+    pub format: String,
+}
+
+/// Full video metadata for the player page. Enriched with personalization
+/// state, playback progress, and subtitle tracks (FR-4.1).
+#[derive(Debug, Serialize)]
+pub struct VideoDetail {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub sources: Vec<VideoSource>,
+    pub created_at: String,
+    pub path: Option<String>,
+    pub is_favorite: bool,
+    pub my_rating: Option<i32>,
+    pub thumbnail_status: String,
+    pub position_seconds: Option<f64>,
+    pub duration_seconds: Option<f64>,
+    pub completed: bool,
+    pub subtitle_tracks: Vec<SubtitleTrack>,
+}
+
+/// Manifest row for a hot-video cache entry (M4). Tracks which videos have
+/// been cached to local disk, their size, last-access time, and pin state.
+/// The bytes themselves live on disk under the `DiskCache` root; this row
+/// is the manifest the cache layer consults.
+#[derive(Debug, Clone)]
+pub struct VideoCacheEntry {
+    pub video_id: String,
+    pub connection_id: String,
+    pub provider_file_id: String,
+    pub size_bytes: i64,
+    pub last_accessed_at: String,
+    pub pinned: bool,
+    pub created_at: String,
 }

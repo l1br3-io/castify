@@ -11,7 +11,7 @@
 
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, type InitialEntry } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 
@@ -32,7 +32,9 @@ export type FetchHandler = (
 ) => Response | Promise<Response>;
 
 interface RenderWithProvidersOptions {
-  initialEntries?: string[];
+  // Accepts strings ("/watch/v1") or location objects ({ pathname, state })
+  // so callers can seed router state for queue-aware tests (M3 T11).
+  initialEntries?: InitialEntry[];
   fetchImplementation?: FetchHandler;
 }
 
@@ -44,7 +46,8 @@ export function renderWithProviders(
   ui: ReactElement,
   options: RenderWithProvidersOptions = {},
 ) {
-  const { initialEntries = ["/"], fetchImplementation = defaultFetch } = options;
+  const { initialEntries = ["/"], fetchImplementation = defaultFetch } =
+    options;
 
   const queryClient = new QueryClient({
     defaultOptions: {

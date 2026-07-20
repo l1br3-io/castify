@@ -27,6 +27,11 @@ type ShelfProps = {
 };
 
 export function Shelf({ title, videos, onViewAll }: ShelfProps) {
+  // Full sibling list for the ephemeral play queue — every card on this
+  // shelf carries the same `queue` so T11's watch page can offer next/prev
+  // skip within the shelf context.
+  const queue = videos.map((v) => v.id);
+
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-4">
@@ -53,6 +58,8 @@ export function Shelf({ title, videos, onViewAll }: ShelfProps) {
           >
             <PosterCard
               video={video}
+              href={`/watch/${video.id}`}
+              queue={queue}
               topRightSlot={<FavoriteToggle video={video} />}
               bottomOverlaySlot={<RatingStars video={video} />}
             />

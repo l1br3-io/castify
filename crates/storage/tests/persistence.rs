@@ -492,3 +492,261 @@ async fn migration_0004_fts5_triggers_keep_index_in_sync() {
         "FTS5 index should be empty after video deletion"
     );
 }
+
+// ---- Migration 0006: Play ----
+
+#[tokio::test]
+async fn migration_0006_creates_play_tables() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO playback_progress (owner_id, video_id, position_seconds, duration_seconds, \
+         updated_at, completed) \
+         VALUES ('owner-x', 'vid-x', 120.5, 3600.0, '2026-01-01T00:02:00Z', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, \
+         filename, format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'en', 'movie.en.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let position: f64 = sqlx::query_scalar(
+        "SELECT position_seconds FROM playback_progress WHERE video_id = 'vid-x'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(position, 120.5);
+
+    let fmt: String =
+        sqlx::query_scalar("SELECT format FROM video_subtitles WHERE video_id = 'vid-x'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(fmt, "srt");
+}
+
+#[tokio::test]
+async fn migration_0006_cascade_deletes_progress_and_subtitles() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO playback_progress (owner_id, video_id, position_seconds, updated_at) \
+         VALUES ('owner-x', 'vid-x', 60.0, '2026-01-01T00:01:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Deleting the video cascades to progress + subtitles.
+    sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let progress: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_progress")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(progress, 0, "progress should cascade-delete with video");
+
+    let subs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_subtitles")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(subs, 0, "subtitles should cascade-delete with video");
+}
+
+#[tokio::test]
+async fn migration_0006_cascade_deletes_subtitles_on_connection_delete() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Deleting the connection cascades to videos → subtitles.
+    sqlx::query("DELETE FROM provider_connections WHERE id = 'conn-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let subs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_subtitles")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        subs, 0,
+        "subtitles should cascade-delete with connection (via video)"
+    );
+}
+
+#[tokio::test]
+async fn migration_0006_subtitle_format_check_rejects_invalid() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    let bad_format = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.ass', 'ass')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        bad_format.is_err(),
+        "format = 'ass' must be rejected by CHECK"
+    );
+
+    // 'srt' and 'vtt' are accepted.
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub2', 'movie.vtt', 'vtt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn migration_0006_subtitle_unique_constraint() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let dup = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
+         format) \
+         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup.is_err(),
+        "duplicate video_id+provider_file_id must reject"
+    );
+}
+
+#[tokio::test]
+async fn migration_0006_progress_upsert_via_on_conflict() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    // Initial insert.
+    sqlx::query(
+        "INSERT INTO playback_progress (owner_id, video_id, position_seconds, updated_at) \
+         VALUES ('owner-x', 'vid-x', 30.0, '2026-01-01T00:00:30Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Upsert: position advances, completed flips on.
+    sqlx::query(
+        "INSERT INTO playback_progress (owner_id, video_id, position_seconds, duration_seconds, \
+         updated_at, completed) \
+         VALUES ('owner-x', 'vid-x', 3420.0, 3600.0, '2026-01-01T00:57:00Z', 1) \
+         ON CONFLICT(owner_id, video_id) DO UPDATE SET \
+         position_seconds = excluded.position_seconds, \
+         duration_seconds = excluded.duration_seconds, \
+         updated_at = excluded.updated_at, \
+         completed = excluded.completed",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (position, completed): (f64, i64) = sqlx::query_as(
+        "SELECT position_seconds, completed FROM playback_progress WHERE video_id = 'vid-x'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(position, 3420.0);
+    assert_eq!(completed, 1);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM playback_progress")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "upsert should not create a duplicate row");
+}
+
+#[tokio::test]
+async fn migrations_create_video_cache_entries_table() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_cache_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "video_cache_entries starts empty");
+}
+
+#[tokio::test]
+async fn migrations_create_transcode_cache_entries_table() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcode_cache_entries")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "transcode_cache_entries starts empty");
+}

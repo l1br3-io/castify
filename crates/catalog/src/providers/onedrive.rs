@@ -2,11 +2,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
+use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, has_video_extension, infer_image_mime, to_hex, TokenResponse,
+    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
+    infer_image_mime, response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
@@ -320,11 +321,32 @@ impl OneDriveClient {
 
         let response: DeltaResponse = serde_json::from_str(&resp_body)?;
 
-        let videos: Vec<DiscoveredVideo> = response
-            .value
-            .into_iter()
-            .filter(is_video_item)
-            .map(|item| {
+        let mut videos = Vec::new();
+        let mut subtitles = Vec::new();
+
+        for item in response.value {
+            let path = item
+                .parent_reference
+                .as_ref()
+                .and_then(|p| p.path.as_ref())
+                .map(|p| {
+                    let parent = p.split(':').nth(1).unwrap_or("");
+                    if parent.is_empty() {
+                        format!("/{}", item.name)
+                    } else {
+                        format!("{parent}/{}", item.name)
+                    }
+                });
+
+            if item.file.is_some() && has_subtitle_extension(&item.name) {
+                let language = guess_language(&item.name);
+                subtitles.push(DiscoveredSubtitle {
+                    provider_file_id: item.id,
+                    name: item.name,
+                    path,
+                    language,
+                });
+            } else if is_video_item(&item) {
                 let hashes = item.file.as_ref().and_then(|f| f.hashes.as_ref());
 
                 let (native_hash, native_hash_algo) = match hashes {
@@ -350,22 +372,7 @@ impl OneDriveClient {
 
                 let mime_type = item.file.as_ref().and_then(|f| f.mime_type.clone());
 
-                let path = item
-                    .parent_reference
-                    .as_ref()
-                    .and_then(|p| p.path.as_ref())
-                    .map(|p| {
-                        // parentReference.path format: "/drive/root:/Folder/Sub"
-                        // Extract the part after ':' and append the filename.
-                        let parent = p.split(':').nth(1).unwrap_or("");
-                        if parent.is_empty() {
-                            format!("/{}", item.name)
-                        } else {
-                            format!("{parent}/{}", item.name)
-                        }
-                    });
-
-                DiscoveredVideo {
+                videos.push(DiscoveredVideo {
                     provider_file_id: item.id,
                     name: item.name,
                     path,
@@ -377,12 +384,13 @@ impl OneDriveClient {
                     native_hash,
                     native_hash_algo,
                     provider_modified_at: item.last_modified_date_time,
-                }
-            })
-            .collect();
+                });
+            }
+        }
 
         Ok(ListPage {
             videos,
+            subtitles,
             next_cursor: response.next_link,
         })
     }
@@ -402,40 +410,7 @@ impl OneDriveClient {
         }
 
         // Step 1: fetch the preauthenticated download URL from Graph.
-        let item_url =
-            format!("{GRAPH_ROOT}/me/drive/items/{file_id}?$select=@microsoft.graph.downloadUrl");
-        let resp = self
-            .http
-            .get(&item_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-        let status = resp.status();
-        if status.as_u16() == 401 {
-            return Err(ProviderError::Unauthorized);
-        }
-        if status.as_u16() == 429 || status.as_u16() == 503 {
-            return Err(ProviderError::RateLimited {
-                retry_after_secs: None,
-            });
-        }
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Api {
-                status: status.as_u16(),
-                body,
-            });
-        }
-
-        let resp_body = resp.text().await.unwrap_or_default();
-        let item: DownloadUrlResponse = serde_json::from_str(&resp_body)?;
-        let download_url = item.download_url.ok_or_else(|| {
-            ProviderError::NotFound(format!(
-                "no downloadUrl for OneDrive item {file_id} — may be a folder or restricted"
-            ))
-        })?;
+        let download_url = self.fetch_download_url(access_token, file_id).await?;
 
         // Step 2: Range request on the preauthenticated URL (no bearer auth).
         let resp = self
@@ -531,6 +506,78 @@ impl OneDriveClient {
 
         Ok(ThumbnailData { bytes, mime_type })
     }
+
+    /// Stream a OneDrive file's content via the preauthenticated
+    /// `@microsoft.graph.downloadUrl`. Two-step: (1) fetch the short-lived
+    /// download URL from Graph, (2) GET that URL with the browser's `Range`
+    /// header (no auth on the CDN URL). Uses `http_download` (redirect-
+    /// following) for step 2.
+    pub async fn open_stream(
+        &self,
+        access_token: &str,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        // Step 1: fetch the preauthenticated download URL from Graph.
+        let download_url = self.fetch_download_url(access_token, file_id).await?;
+
+        // Step 2: GET the preauthenticated URL with Range (no bearer auth).
+        let mut req = self.http_download.get(&download_url);
+        if let Some(r) = range {
+            req = req.header("Range", r);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        response_to_stream(resp).await
+    }
+
+    /// Fetch the short-lived preauthenticated `@microsoft.graph.downloadUrl`
+    /// for a OneDrive item. Shared by [`Self::fetch_onedrive_prefix_hash`],
+    /// [`Self::open_stream`], and the trait's `open_stream_url` impl. The
+    /// URL is browser-directable (no bearer auth on the CDN host) and
+    /// typically valid for ~1 hour.
+    pub async fn fetch_download_url(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<String> {
+        let item_url =
+            format!("{GRAPH_ROOT}/me/drive/items/{file_id}?$select=@microsoft.graph.downloadUrl");
+        let resp = self
+            .http
+            .get(&item_url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let resp_body = resp.text().await.unwrap_or_default();
+        let item: DownloadUrlResponse = serde_json::from_str(&resp_body)?;
+        item.download_url.ok_or_else(|| {
+            ProviderError::NotFound(format!(
+                "no downloadUrl for OneDrive item {file_id} — may be a folder or restricted"
+            ))
+        })
+    }
 }
 
 /// Response from `GET /me/drive/items/{id}?$select=@microsoft.graph.downloadUrl`.
@@ -570,6 +617,32 @@ impl crate::provider::Provider for OneDriveProvider {
         self.client
             .fetch_thumbnail(&self.token.access_token, file_id)
             .await
+    }
+
+    async fn open_stream(
+        &self,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        self.client
+            .open_stream(&self.token.access_token, file_id, range)
+            .await
+    }
+
+    async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
+        let url = self
+            .client
+            .fetch_download_url(&self.token.access_token, file_id)
+            .await?;
+        // Microsoft's preauthenticated downloadUrl is short-lived (~1 hour).
+        // Express an expiry so the frontend can pre-emptively re-fetch before
+        // the CDN starts returning 403/410.
+        let expires_at = {
+            let now = chrono::Utc::now();
+            let expiry = now + chrono::Duration::minutes(55);
+            Some(expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        };
+        Ok(StreamUrl::Direct { url, expires_at })
     }
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {

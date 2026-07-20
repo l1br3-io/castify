@@ -43,8 +43,6 @@ files" to "your media library."
 
 - Video playback — streaming, seeking, subtitles, resume (M3).
 - Continue-watching shelf — requires playback history (M3).
-- Guest share links (M4).
-- Hosted multi-tenant deployment (M5).
 - Server-side thumbnail generation via ffmpeg — provider-native thumbnails only.
 - Google Drive full-path resolution beyond top-level folder — batch parent-ID
   resolution covers folder names for shelf grouping; deep multi-level paths are
@@ -63,7 +61,7 @@ files" to "your media library."
 | **ProviderFactory trait**           | Extended with `authorization_url()`, `exchange_code()`, `fetch_user_info()`, `is_configured()`. Each factory owns its full OAuth lifecycle. Eliminates the 5 `match provider {}` blocks in `connections.rs`. |
 | **Missing-field compensation**      | Per-provider, internal to each module: Google Drive resolves `path` via batch `files.list?q=…` parent-ID resolution with a scan-local `HashMap` cache (O(unique folders) API calls per scan); Dropbox infers `mime_type` from file extension. OneDrive already populates all fields. |
 | **Shared helpers**                  | `providers/common.rs` extracts `to_hex()`, `classify_token_error()`, `TokenResponse + into_bundle()`, and the refresh-token-preservation logic currently triplicated across all three providers. |
-| **Favorites**                       | New `video_favorites` table `(owner_id TEXT REFERENCES owners(id) ON DELETE CASCADE, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY (owner_id, video_id))`. Per-owner (single owner now, M5-ready schema). |
+| **Favorites**                       | New `video_favorites` table `(owner_id TEXT REFERENCES owners(id) ON DELETE CASCADE, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE, created_at TEXT NOT NULL, PRIMARY KEY (owner_id, video_id))`. Per-owner (single-owner schema). |
 | **Ratings**                         | New `video_ratings` table `(owner_id TEXT REFERENCES owners(id) ON DELETE CASCADE, video_id TEXT REFERENCES videos(id) ON DELETE CASCADE, rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5), updated_at TEXT NOT NULL, PRIMARY KEY (owner_id, video_id))`. |
 | **VideoSummary enrichment**         | Add fields: `created_at` (ISO timestamp), `path` (Option — folder path), `is_favorite` (bool), `my_rating` (Option<i32>), `thumbnail_status` ("pending" / "cached" / "failed" / "unsupported"). |
 | **Folder grouping**                 | Top-level segment of the `path` column. `GET /api/videos/folders` returns `[{ folder: String, video_count: i64 }]`. Videos with `NULL` path (e.g., Google Drive before path resolution) appear under "(Unsorted)". |
@@ -71,7 +69,7 @@ files" to "your media library."
 | **Sort expansion**                  | `VideoSort` gains direction-aware variants: `NameAsc`, `NameDesc`, `SizeAsc`, `SizeDesc`, `DateAsc`, `DateDesc`, `DurationAsc`, `DurationDesc`, `RatingDesc`. `order_clause()` returns a whitelisted column+direction pair. |
 | **Filter parameters**               | `q` (FTS5 search), `duration_min` / `duration_max` (ms), `min_height` (resolution floor, e.g. 720 for HD+), `favorites_only` (bool), `min_rating` (1–5), `folder` (path prefix). Provider filter (existing) retained. |
 | **Browse layout**                   | `/` is redesigned into the browse experience. The M1 `VideoList` component is replaced. No new route — the home page *is* the browse page. |
-| **Personal data storage**           | Favorites and ratings stored in SQLite (self-hosted single-owner model). The VISION's "personal data stays in the owner's cloud" applies to M5 hosted; M2 is self-hosted-only. |
+| **Personal data storage**           | Favorites and ratings stored in SQLite (single-owner model). |
 | **Migration**                       | `0004_browse.sql` adds `video_favorites` + `video_ratings` tables, the `videos_fts` FTS5 virtual table + triggers, and a `thumbnail_status` column on `videos`. |
 
 ## Functional requirements
@@ -212,6 +210,6 @@ files" to "your media library."
 - **Thumbnails**: **Provider-native via lazy proxy + filesystem cache.** No ffmpeg, no scan-time fetching. Each provider implements `fetch_thumbnail()` on the `Provider` trait.
 - **Folder grouping**: **Top-level `path` segment.** Google Drive resolves paths via batch parent-ID lookup during scan. Dropbox and OneDrive already populate `path`.
 - **Genre**: **Not implemented.** No genre metadata exists for arbitrary file-based videos. Folder-based grouping ("by folder") is the practical substitute. Manual collections deferred to future.
-- **Personal data storage**: **SQLite for self-hosted (M2 scope).** The VISION's "personal data in owner's cloud" principle applies to M5 hosted. M2 is self-hosted single-owner.
+- **Personal data storage**: **SQLite (single-owner model).** Favorites and ratings live in the server's SQLite database alongside the catalog.
 - **Browse route**: **`/` redesigned in place.** No new route. The M1 `VideoList` is replaced by the browse experience. First-run guide still shows with zero connections.
 - **Provider modularization**: **Full trait extension.** `Provider` gains `fetch_thumbnail()`. `ProviderFactory` gains OAuth lifecycle methods. All `match provider {}` dispatch eliminated from shared code. Shared helpers extracted to `providers/common.rs`.

@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult, ThumbnailData};
+use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, has_video_extension, infer_image_mime, infer_mime_type, to_hex,
-    TokenResponse,
+    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
+    infer_image_mime, infer_mime_type, response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://www.dropbox.com/oauth2/authorize";
@@ -15,6 +15,7 @@ const TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_folder";
 const LIST_FOLDER_CONTINUE_URL: &str = "https://api.dropboxapi.com/2/files/list_folder/continue";
 const DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/download";
+const GET_TEMPORARY_LINK_URL: &str = "https://api.dropboxapi.com/2/files/get_temporary_link";
 const THUMBNAIL_URL: &str = "https://content.dropboxapi.com/2/files/get_thumbnail_v2";
 const TOKEN_REVOKE_URL: &str = "https://api.dropboxapi.com/2/auth/token_revoke";
 const GET_ACCOUNT_URL: &str = "https://api.dropboxapi.com/2/users/get_current_account";
@@ -235,6 +236,17 @@ struct AccountResponse {
     email: String,
 }
 
+/// Response from `POST /2/files/get_temporary_link`. The `link` field is a
+/// preauthenticated CDN URL valid for ~4 hours; `metadata` carries the file
+/// info we already have from the listing pass, so it's ignored.
+#[derive(Debug, Deserialize)]
+struct TemporaryLinkResponse {
+    link: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    metadata: serde_json::Value,
+}
+
 // ── Video classification ────────────────────────────────────────────
 
 /// A Dropbox entry is a video if it's a file AND either the media_info
@@ -327,20 +339,22 @@ impl DropboxClient {
 
         let response: ListFolderResponse = serde_json::from_str(&resp_body)?;
 
-        let videos: Vec<DiscoveredVideo> = response
-            .entries
-            .into_iter()
-            .filter(is_video_entry)
-            .map(|e| {
+        let mut videos = Vec::new();
+        let mut subtitles = Vec::new();
+
+        for e in response.entries {
+            if e.tag != "file" {
+                continue;
+            }
+            if is_video_entry(&e) {
                 let (width, height, duration_ms) = extract_video_dims(&e.media_info);
                 let native_hash_algo = e.content_hash.as_ref().map(|_| "content_hash".to_string());
                 let mime_type = infer_mime_type(&e.name);
-                DiscoveredVideo {
+                videos.push(DiscoveredVideo {
                     provider_file_id: e.id,
                     name: e.name,
                     path: e.path_display,
                     size_bytes: e.size.unwrap_or(0),
-                    // Dropbox doesn't return a MIME type; infer from extension.
                     mime_type,
                     duration_ms,
                     width,
@@ -348,9 +362,17 @@ impl DropboxClient {
                     native_hash: e.content_hash,
                     native_hash_algo,
                     provider_modified_at: e.server_modified,
-                }
-            })
-            .collect();
+                });
+            } else if has_subtitle_extension(&e.name) {
+                let language = guess_language(&e.name);
+                subtitles.push(DiscoveredSubtitle {
+                    provider_file_id: e.id,
+                    name: e.name,
+                    path: e.path_display,
+                    language,
+                });
+            }
+        }
 
         let next_cursor = if response.has_more {
             Some(response.cursor)
@@ -360,6 +382,7 @@ impl DropboxClient {
 
         Ok(ListPage {
             videos,
+            subtitles,
             next_cursor,
         })
     }
@@ -479,6 +502,73 @@ impl DropboxClient {
 
         Ok(ThumbnailData { bytes, mime_type })
     }
+
+    /// Stream a Dropbox file's content via the download endpoint. Forwards the
+    /// browser's `Range` header (if any) for seeking. The file ID is passed in
+    /// the `Dropbox-API-Arg` header (same as prefix-hash, but arbitrary Range).
+    pub async fn open_stream(
+        &self,
+        access_token: &str,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        let arg = serde_json::json!({ "path": file_id });
+        let mut req = self
+            .http
+            .post(DOWNLOAD_URL)
+            .bearer_auth(access_token)
+            .header("Dropbox-API-Arg", arg.to_string());
+        if let Some(r) = range {
+            req = req.header("Range", r);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        response_to_stream(resp).await
+    }
+
+    /// Fetch a short-lived preauthenticated URL for `file_id` via the
+    /// `get_temporary_link` endpoint. The returned URL points at
+    /// `dl.dropboxusercontent.com` (CDN), requires no bearer header, and is
+    /// valid for ~4 hours per Dropbox's docs. Designed for direct browser
+    /// streaming — `<video src>` hits the CDN without our backend proxying
+    /// bytes.
+    pub async fn fetch_temporary_link(
+        &self,
+        access_token: &str,
+        file_id: &str,
+    ) -> ProviderResult<String> {
+        let resp = self
+            .http
+            .post(GET_TEMPORARY_LINK_URL)
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({ "path": file_id }))
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+
+        let status = resp.status();
+        if status.as_u16() == 401 {
+            return Err(ProviderError::Unauthorized);
+        }
+        if status.as_u16() == 429 || status.as_u16() == 503 {
+            return Err(ProviderError::RateLimited {
+                retry_after_secs: None,
+            });
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body,
+            });
+        }
+
+        let resp_body = resp.text().await.unwrap_or_default();
+        let parsed: TemporaryLinkResponse = serde_json::from_str(&resp_body)?;
+        Ok(parsed.link)
+    }
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -511,6 +601,31 @@ impl crate::provider::Provider for DropboxProvider {
         self.client
             .fetch_thumbnail(&self.token.access_token, file_id)
             .await
+    }
+
+    async fn open_stream(
+        &self,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        self.client
+            .open_stream(&self.token.access_token, file_id, range)
+            .await
+    }
+
+    async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
+        let url = self
+            .client
+            .fetch_temporary_link(&self.token.access_token, file_id)
+            .await?;
+        // Dropbox temporary links live ~4 hours; mark expiry at 3h45m so the
+        // frontend pre-emptively refreshes before the CDN starts returning 410.
+        let expires_at = {
+            let now = chrono::Utc::now();
+            let expiry = now + chrono::Duration::minutes(225);
+            Some(expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        };
+        Ok(StreamUrl::Direct { url, expires_at })
     }
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {

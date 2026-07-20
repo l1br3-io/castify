@@ -8,6 +8,9 @@ const DEFAULT_PORT: u16 = 8427;
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_DATA_DIR: &str = "./data";
 const DEFAULT_DB_FILENAME: &str = "castify.db";
+const DEFAULT_VIDEO_CACHE_MAX_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB
+const VIDEO_CACHE_DIR_NAME: &str = "video-cache";
+const DEFAULT_PROBE_CONCURRENCY: u32 = 2;
 const CONFIG_DOCS_HINT: &str = "See docs/config.md for the full reference.";
 
 /// OAuth credentials for a single cloud storage provider.
@@ -15,6 +18,65 @@ const CONFIG_DOCS_HINT: &str = "See docs/config.md for the full reference.";
 pub struct ProviderOAuthConfig {
     pub client_id: String,
     pub client_secret: String,
+}
+
+/// Hot-video disk cache configuration (M4). Off by default; when enabled,
+/// played videos are stream-through cached to local disk for disk-fast
+/// re-watching.
+#[derive(Debug, Clone)]
+pub struct VideoCacheConfig {
+    pub enabled: bool,
+    pub max_bytes: u64,
+    /// Absolute path to the cache directory. Defaults to
+    /// `<data_dir>/video-cache`.
+    pub dir: std::path::PathBuf,
+}
+
+/// Codec probing configuration (M5). Controls whether and how aggressively
+/// the catalog is probed for codec/bitrate info via ffprobe.
+#[derive(Debug, Clone)]
+pub struct ProbeConfig {
+    /// When true, scan completion triggers a background sweep that probes
+    /// all un-probed videos. Lazy (on-first-play) probing always runs
+    /// regardless of this setting.
+    pub probe_on_scan: bool,
+    /// Parallel probe workers for the eager post-scan sweep.
+    pub concurrency: u32,
+}
+
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            probe_on_scan: true,
+            concurrency: DEFAULT_PROBE_CONCURRENCY,
+        }
+    }
+}
+
+/// Server-side transcoding configuration (M6). When enabled, videos with
+/// browser-incompatible codecs are transcoded to H.264/AAC HLS on the fly.
+#[derive(Debug, Clone)]
+pub struct TranscodeConfig {
+    /// Master switch. When false, incompatible codecs fall back to the
+    /// "download instead" path.
+    pub enabled: bool,
+    /// HLS segment duration in seconds.
+    pub segment_duration_secs: u32,
+    /// Cache directory for transcode output.
+    pub dir: std::path::PathBuf,
+    /// Soft limit for the transcode cache pool (bytes).
+    pub cache_max_bytes: u64,
+}
+
+impl Default for TranscodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            segment_duration_secs: 10,
+            dir: std::path::PathBuf::from("./data/transcode-cache"),
+            cache_max_bytes: 50 * 1024 * 1024 * 1024, // 50 GiB
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +90,9 @@ pub struct Config {
     pub google_oauth: Option<ProviderOAuthConfig>,
     pub dropbox_oauth: Option<ProviderOAuthConfig>,
     pub microsoft_oauth: Option<ProviderOAuthConfig>,
+    pub video_cache: VideoCacheConfig,
+    pub probe: ProbeConfig,
+    pub transcode: TranscodeConfig,
 }
 
 impl Config {
@@ -63,6 +128,9 @@ impl Config {
             load_provider_oauth("CASTIFY_DROPBOX_CLIENT_ID", "CASTIFY_DROPBOX_CLIENT_SECRET");
         let microsoft_oauth =
             load_provider_oauth("CASTIFY_MS_CLIENT_ID", "CASTIFY_MS_CLIENT_SECRET");
+        let video_cache = load_video_cache_config(&data_dir)?;
+        let probe = load_probe_config()?;
+        let transcode = load_transcode_config(&data_dir)?;
 
         Ok(Self {
             bind_addr,
@@ -74,8 +142,107 @@ impl Config {
             google_oauth,
             dropbox_oauth,
             microsoft_oauth,
+            video_cache,
+            probe,
+            transcode,
         })
     }
+}
+
+/// Load transcoding config.
+fn load_transcode_config(data_dir: &Path) -> Result<TranscodeConfig> {
+    let enabled = match std::env::var("CASTIFY_TRANSCODE_ENABLED") {
+        Ok(raw) => parse_bool_env("CASTIFY_TRANSCODE_ENABLED", &raw)?,
+        Err(_) => true,
+    };
+    let segment_duration_secs = std::env::var("CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<u32>().with_context(|| {
+                format!(
+                    "CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS must be a positive integer; got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(10);
+    let dir = match std::env::var("CASTIFY_TRANSCODE_DIR") {
+        Ok(raw) if !raw.is_empty() => PathBuf::from(raw),
+        _ => data_dir.join("transcode-cache"),
+    };
+    let cache_max_bytes = std::env::var("CASTIFY_TRANSCODE_CACHE_MAX_BYTES")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<u64>().with_context(|| {
+                format!(
+                    "CASTIFY_TRANSCODE_CACHE_MAX_BYTES must be a positive integer; got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(50 * 1024 * 1024 * 1024);
+    Ok(TranscodeConfig {
+        enabled,
+        segment_duration_secs,
+        dir,
+        cache_max_bytes,
+    })
+}
+
+/// Load codec probing config.
+fn load_probe_config() -> Result<ProbeConfig> {
+    let probe_on_scan = match std::env::var("CASTIFY_PROBE_ON_SCAN") {
+        Ok(raw) => parse_bool_env("CASTIFY_PROBE_ON_SCAN", &raw)?,
+        Err(_) => true,
+    };
+    let concurrency = std::env::var("CASTIFY_PROBE_CONCURRENCY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<u32>().with_context(|| {
+                format!(
+                    "CASTIFY_PROBE_CONCURRENCY must be a positive integer; got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_PROBE_CONCURRENCY);
+    Ok(ProbeConfig {
+        probe_on_scan,
+        concurrency,
+    })
+}
+
+/// Load hot-video cache config. Enabled by `CASTIFY_VIDEO_CACHE_ENABLED=true`.
+/// When disabled, no routes are registered, no tee on `/stream`, zero overhead.
+fn load_video_cache_config(data_dir: &Path) -> Result<VideoCacheConfig> {
+    let enabled = match std::env::var("CASTIFY_VIDEO_CACHE_ENABLED") {
+        Ok(raw) => parse_bool_env("CASTIFY_VIDEO_CACHE_ENABLED", &raw)?,
+        Err(_) => false,
+    };
+    let max_bytes = std::env::var("CASTIFY_VIDEO_CACHE_MAX_BYTES")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<u64>().with_context(|| {
+                format!(
+                    "CASTIFY_VIDEO_CACHE_MAX_BYTES must be a positive integer (bytes); got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_VIDEO_CACHE_MAX_BYTES);
+    let dir = match std::env::var("CASTIFY_VIDEO_CACHE_DIR") {
+        Ok(raw) if !raw.is_empty() => PathBuf::from(raw),
+        _ => data_dir.join(VIDEO_CACHE_DIR_NAME),
+    };
+    Ok(VideoCacheConfig {
+        enabled,
+        max_bytes,
+        dir,
+    })
 }
 
 fn env_string(key: &str, default: &str) -> String {
@@ -206,6 +373,15 @@ mod tests {
             "CASTIFY_DROPBOX_CLIENT_SECRET",
             "CASTIFY_MS_CLIENT_ID",
             "CASTIFY_MS_CLIENT_SECRET",
+            "CASTIFY_VIDEO_CACHE_ENABLED",
+            "CASTIFY_VIDEO_CACHE_MAX_BYTES",
+            "CASTIFY_VIDEO_CACHE_DIR",
+            "CASTIFY_PROBE_ON_SCAN",
+            "CASTIFY_PROBE_CONCURRENCY",
+            "CASTIFY_TRANSCODE_ENABLED",
+            "CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS",
+            "CASTIFY_TRANSCODE_DIR",
+            "CASTIFY_TRANSCODE_CACHE_MAX_BYTES",
             "RUST_LOG",
         ] {
             std::env::remove_var(key);
@@ -454,5 +630,56 @@ mod tests {
         assert!(cfg.google_oauth.is_some());
         assert!(cfg.dropbox_oauth.is_some());
         assert!(cfg.microsoft_oauth.is_some());
+    }
+
+    #[test]
+    fn video_cache_defaults_disabled() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+
+        let cfg = Config::from_env().unwrap();
+        assert!(!cfg.video_cache.enabled, "video cache defaults off");
+        assert_eq!(cfg.video_cache.max_bytes, DEFAULT_VIDEO_CACHE_MAX_BYTES);
+        assert!(cfg.video_cache.dir.ends_with(VIDEO_CACHE_DIR_NAME));
+    }
+
+    #[test]
+    fn video_cache_enabled_flag_works() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_VIDEO_CACHE_ENABLED", "true");
+
+        let cfg = Config::from_env().unwrap();
+        assert!(cfg.video_cache.enabled);
+    }
+
+    #[test]
+    fn video_cache_invalid_max_bytes_errors() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_VIDEO_CACHE_MAX_BYTES", "not-a-number");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_VIDEO_CACHE_MAX_BYTES"));
+    }
+
+    #[test]
+    fn video_cache_custom_dir_overrides_default() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        let custom = tmp.path().join("custom-cache");
+        std::env::set_var("CASTIFY_VIDEO_CACHE_DIR", &custom);
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.video_cache.dir, custom);
     }
 }

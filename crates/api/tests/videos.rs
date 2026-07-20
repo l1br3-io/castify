@@ -1548,3 +1548,1031 @@ async fn rating_missing_video_returns_404() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ── Playback progress (T4) ────────────────────────────────────────────
+
+#[tokio::test]
+async fn progress_upsert_and_fetch_round_trip() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    // Save progress.
+    let (status, body) = mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/progress"),
+        serde_json::json!({"position_seconds": 42.5, "duration_seconds": 120.0})
+            .to_string()
+            .into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["position_seconds"].as_f64(), Some(42.5));
+    assert_eq!(body["duration_seconds"].as_f64(), Some(120.0));
+    assert_eq!(body["completed"].as_bool(), Some(false));
+
+    // Fetch it back.
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}/progress"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["position_seconds"].as_f64(), Some(42.5));
+}
+
+#[tokio::test]
+async fn progress_update_overwrites_previous() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    // First save.
+    mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/progress"),
+        serde_json::json!({"position_seconds": 10.0})
+            .to_string()
+            .into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+
+    // Second save — new position.
+    let (status, body) = mutate(
+        app.clone(),
+        "POST",
+        &format!("/api/videos/{vid}/progress"),
+        serde_json::json!({"position_seconds": 90.0, "completed": true})
+            .to_string()
+            .into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["position_seconds"].as_f64(), Some(90.0));
+    assert_eq!(body["completed"].as_bool(), Some(true));
+}
+
+#[tokio::test]
+async fn progress_get_returns_404_when_none() {
+    let (app, cookie, _csrf_token, _csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _body) =
+        get_json(app, &format!("/api/videos/{vid}/progress"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn progress_post_returns_404_for_missing_video() {
+    let (app, cookie, csrf_token, csrf_cookie, _repo, _vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _body) = mutate(
+        app,
+        "POST",
+        "/api/videos/no-such-video/progress",
+        serde_json::json!({"position_seconds": 1.0})
+            .to_string()
+            .into_bytes(),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn progress_post_rejects_unauthenticated() {
+    let (app, _cookie, _csrf_token, _csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _) = mutate(
+        app,
+        "POST",
+        &format!("/api/videos/{vid}/progress"),
+        serde_json::json!({"position_seconds": 1.0})
+            .to_string()
+            .into_bytes(),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn progress_post_rejects_missing_csrf() {
+    let (app, cookie, _csrf_token, _csrf_cookie, _repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+
+    let (status, _) = mutate(
+        app,
+        "POST",
+        &format!("/api/videos/{vid}/progress"),
+        serde_json::json!({"position_seconds": 1.0})
+            .to_string()
+            .into_bytes(),
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn in_progress_filter_returns_only_in_progress() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let owner = owner_id(&repo).await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+
+    let v1 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "prog-1",
+        "in-progress.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let v2 = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "prog-2",
+        "completed.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "prog-3",
+        "no-progress.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // v1: in-progress (position > 0, not completed).
+    repo.upsert_progress(&owner, &v1, 30.0, Some(120.0), false)
+        .await
+        .unwrap();
+    // v2: completed.
+    repo.upsert_progress(&owner, &v2, 120.0, Some(120.0), true)
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(app, "/api/videos?in_progress=true", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1, "only the in-progress video");
+    assert_eq!(body["videos"][0]["name"], "in-progress.mp4");
+}
+
+#[tokio::test]
+async fn video_summary_includes_position_seconds() {
+    let (app, cookie, csrf_token, csrf_cookie, repo, vid, _guard) =
+        boot_with_csrf_and_video().await;
+    let owner = owner_id(&repo).await;
+
+    repo.upsert_progress(&owner, &vid, 45.5, Some(100.0), false)
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(app, "/api/videos", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["videos"][0]["position_seconds"].as_f64(), Some(45.5));
+    assert_eq!(body["videos"][0]["completed"].as_bool(), Some(false));
+
+    // Ensure CSRF/progress state didn't interfere — just checking the field is
+    // there, not asserting on the csrf vars.
+    let _ = (csrf_token, csrf_cookie);
+}
+
+// ── Video detail (T5) ─────────────────────────────────────────────────
+
+async fn seed_subtitle(
+    repo: &CatalogRepository,
+    video_id: &str,
+    connection_id: &str,
+    provider_file_id: &str,
+    language: Option<&str>,
+    filename: &str,
+    format: &str,
+) -> String {
+    let id = format!("sub-{provider_file_id}");
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(video_id)
+    .bind(connection_id)
+    .bind(provider_file_id)
+    .bind(language)
+    .bind(filename)
+    .bind(format)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn video_detail_returns_all_fields() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "detail-1",
+        "detail-test.mp4",
+        Some("/Movies/detail-test.mp4"),
+        Some(120_000),
+        Some(1080),
+    )
+    .await;
+
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], vid);
+    assert_eq!(body["name"], "detail-test.mp4");
+    assert_eq!(body["provider"], "google_drive");
+    assert_eq!(body["size_bytes"], 10_000);
+    assert_eq!(body["mime_type"], "video/mp4");
+    assert_eq!(body["duration_ms"], 120_000);
+    assert_eq!(body["width"], 1920);
+    assert_eq!(body["height"], 1080);
+    assert!(body["sources"].is_array());
+    assert!(!body["sources"].as_array().unwrap().is_empty());
+    assert!(body["created_at"].is_string());
+    assert_eq!(body["path"], "/Movies/detail-test.mp4");
+    assert_eq!(body["thumbnail_status"], "pending");
+    assert_eq!(body["is_favorite"].as_bool(), Some(false));
+    assert!(body["my_rating"].is_null());
+    assert!(body["position_seconds"].is_null());
+    assert!(body["duration_seconds"].is_null());
+    assert_eq!(body["completed"].as_bool(), Some(false));
+    assert_eq!(body["subtitle_tracks"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn video_detail_returns_404_for_missing() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _body) = get_json(app, "/api/videos/nonexistent", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn video_detail_subtitle_tracks_populated_when_seeded() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "detail-subs-1",
+        "with-subs.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    seed_subtitle(
+        &repo,
+        &vid,
+        &conn,
+        "sub-file-1",
+        Some("en"),
+        "with-subs.en.srt",
+        "srt",
+    )
+    .await;
+    seed_subtitle(
+        &repo,
+        &vid,
+        &conn,
+        "sub-file-2",
+        Some("es"),
+        "with-subs.es.vtt",
+        "vtt",
+    )
+    .await;
+
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    let tracks = body["subtitle_tracks"].as_array().unwrap();
+    assert_eq!(tracks.len(), 2);
+    // Ordered by filename — en < es
+    assert_eq!(tracks[0]["language"], "en");
+    assert_eq!(tracks[0]["filename"], "with-subs.en.srt");
+    assert_eq!(tracks[0]["format"], "srt");
+    assert_eq!(tracks[1]["language"], "es");
+    assert_eq!(tracks[1]["filename"], "with-subs.es.vtt");
+    assert_eq!(tracks[1]["format"], "vtt");
+}
+
+#[tokio::test]
+async fn video_detail_includes_playback_progress() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "detail-prog-1",
+        "progress-video.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let owner = owner_id(&repo).await;
+    repo.upsert_progress(&owner, &vid, 120.5, Some(600.0), false)
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["position_seconds"].as_f64(), Some(120.5));
+    assert_eq!(body["duration_seconds"].as_f64(), Some(600.0));
+    assert_eq!(body["completed"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn video_detail_includes_personalization() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "detail-pers-1",
+        "personal.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    let owner = owner_id(&repo).await;
+    set_favorite(&repo, &owner, &vid).await;
+    set_rating(&repo, &owner, &vid, 4).await;
+
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_favorite"].as_bool(), Some(true));
+    assert_eq!(body["my_rating"], 4);
+}
+
+#[tokio::test]
+async fn video_detail_rejects_unauthenticated() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "detail-auth-1",
+        "auth-test.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (state, _guard2, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _) = get_json(app, &format!("/api/videos/{vid}"), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ── Subtitle list + serving (T6) ──────────────────────────────────────
+
+#[tokio::test]
+async fn subtitle_list_returns_tracks() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "sub-list-1",
+        "subtitled.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    seed_subtitle(
+        &repo,
+        &vid,
+        &conn,
+        "slist-1",
+        Some("en"),
+        "subtitled.en.srt",
+        "srt",
+    )
+    .await;
+    seed_subtitle(&repo, &vid, &conn, "slist-2", None, "subtitled.vtt", "vtt").await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/subtitles"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    let tracks = body.as_array().unwrap();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks[0]["language"], "en");
+    assert_eq!(tracks[0]["format"], "srt");
+}
+
+#[tokio::test]
+async fn subtitle_list_returns_empty_when_none() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "sub-empty-1",
+        "no-subs.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/subtitles"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn subtitle_list_returns_404_for_missing_video() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _body) = get_json(app, "/api/videos/nonexistent/subtitles", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── Stream + download proxy (T3) ──────────────────────────────────────
+
+/// GET a stream/download URI with optional cookie + Range header. Returns
+/// status, response headers, and body bytes.
+async fn get_stream_bytes(
+    app: axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+    range: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder().method("GET").uri(uri);
+    if let Some(c) = cookie {
+        builder = builder.header("cookie", c);
+    }
+    if let Some(r) = range {
+        builder = builder.header("range", r);
+    }
+    let response = app
+        .oneshot(builder.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, bytes.to_vec())
+}
+
+#[tokio::test]
+async fn stream_video_not_found_returns_404() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _, _) =
+        get_stream_bytes(app, "/api/videos/nonexistent/stream", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn stream_unauthenticated_returns_401() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _, _) = get_stream_bytes(app, "/api/videos/some-id/stream", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_returns_200_full_content() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-vacation",
+        "vacation.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, headers, bytes) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/stream"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-type").unwrap().to_str().unwrap(),
+        "video/mp4"
+    );
+    assert!(headers.get("accept-ranges").is_some());
+    assert!(!bytes.is_empty(), "body should have bytes");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_range_returns_206_with_content_range() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-concert",
+        "concert.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, headers, bytes) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/stream"),
+        Some(&cookie),
+        Some("bytes=0-7"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let content_range = headers.get("content-range").unwrap().to_str().unwrap();
+    assert!(
+        content_range.starts_with("bytes 0-7/"),
+        "content-range: {content_range}"
+    );
+    assert_eq!(bytes.len(), 8, "should return 8 bytes for range 0-7");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_not_found_prefix_returns_404() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "no-stream-1",
+        "unstreamable.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, _, _) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/stream"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn download_returns_content_disposition() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-vacation",
+        "vacation.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, headers, _bytes) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/download"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let disposition = headers
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        disposition.contains("attachment"),
+        "should be attachment: {disposition}"
+    );
+    assert!(
+        disposition.contains("vacation.mp4"),
+        "should include filename: {disposition}"
+    );
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn e2e_subtitle_list_and_serving() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-vacation",
+        "vacation.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+    // Seed a subtitle track pointing at the mock's subtitle file ID.
+    // The mock's fetch_subtitle_content returns MOCK_VTT for any non-"no-subs-" ID.
+    let track_id = seed_subtitle(
+        &repo,
+        &vid,
+        &conn,
+        "gd-vacation-srt",
+        Some("en"),
+        "vacation.en.srt",
+        "srt",
+    )
+    .await;
+
+    // GET /subtitles — list tracks
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/api/videos/{vid}/subtitles"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let tracks = body.as_array().unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0]["language"], "en");
+    assert_eq!(tracks[0]["filename"], "vacation.en.srt");
+    assert_eq!(tracks[0]["format"], "srt");
+
+    // GET /subtitles/{track_id} — serve as VTT
+    let (status, bytes, content_type) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/{track_id}"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("text/vtt"));
+    let vtt = String::from_utf8_lossy(&bytes);
+    assert!(vtt.starts_with("WEBVTT"), "should start with WEBVTT header");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn e2e_subtitle_serving_404_missing_track() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-concert",
+        "concert.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, _, _) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/nonexistent"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── /stream-url endpoint (T12) ─────────────────────────────────────────
+//
+// The endpoint tells the frontend where to fetch video bytes: a direct
+// CDN URL (all providers — OneDrive/Dropbox preauthenticated, Google Drive
+// via `?alt=media` redirect-follow), or our own /stream proxy as a fallback
+// for files Drive can't direct-serve. These tests verify the response shape
+// for each strategy, plus 404 / unauthenticated handling.
+
+#[tokio::test]
+async fn stream_url_video_not_found_returns_404() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, body) = get_json(app, "/api/videos/nonexistent/stream-url", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["status"], "error");
+}
+
+#[tokio::test]
+async fn stream_url_rejects_unauthenticated() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _) = get_json(app, "/api/videos/any/stream-url", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_url_returns_proxy_strategy_for_google_drive() {
+    // The e2e mock returns Proxied for Drive (deliberately, to exercise the
+    // /stream proxy path in the browser suite). Production Drive usually
+    // returns Direct (when ?alt=media redirects) but falls back to Proxied
+    // for inline-byte cases — see `stream_drive_inline_byte_fallback` below.
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-vacation",
+        "vacation.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["strategy"], "proxy");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.ends_with("/stream"),
+        "proxy URL should point at /stream endpoint: {url}"
+    );
+    // expires_at is null for the proxy path (no CDN URL to expire).
+    assert!(body.get("expires_at").is_some());
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_url_returns_direct_strategy_for_onedrive() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::OneDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::OneDrive,
+        "od-clip",
+        "onedrive-clip.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["strategy"], "direct");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.starts_with("/api/__e2e/mock-cdn/"),
+        "mock direct URL should point at the e2e CDN route: {url}"
+    );
+    // expires_at is null in the mock; the production impl sets it (~55min for
+    // OneDrive). Just check the field exists.
+    assert!(body.get("expires_at").is_some());
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_url_returns_direct_strategy_for_dropbox() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::Dropbox).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::Dropbox,
+        "db-screenshots",
+        "screenshots.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["strategy"], "direct");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.starts_with("/api/__e2e/mock-cdn/"),
+        "mock direct URL should point at the e2e CDN route: {url}"
+    );
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_url_direct_strategy_404_propagates() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::OneDrive).await;
+    // The e2e mock returns NotFound for file IDs starting with "no-stream-".
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::OneDrive,
+        "no-stream-1",
+        "unstreamable.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["status"], "error");
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn mock_cdn_serves_video_bytes_with_range_support() {
+    // The e2e mock CDN route must serve the same bytes as `open_stream` so
+    // the browser's `<video>` element can actually fetch them. This test
+    // verifies the route works (Range + full content). The route sits under
+    // `/api/*` so it requires an authenticated session — the e2e browser
+    // has one too.
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+
+    // Full content (no Range).
+    let (status, headers, bytes) = get_stream_bytes(
+        app.clone(),
+        "/api/__e2e/mock-cdn/anything",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-type").unwrap().to_str().unwrap(),
+        "video/mp4"
+    );
+    assert!(headers.get("accept-ranges").is_some());
+    assert!(!bytes.is_empty());
+
+    // Range request → 206 partial content.
+    let (status, headers, bytes) = get_stream_bytes(
+        app,
+        "/api/__e2e/mock-cdn/anything",
+        Some(&cookie),
+        Some("bytes=0-3"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let content_range = headers.get("content-range").unwrap().to_str().unwrap();
+    assert!(
+        content_range.starts_with("bytes 0-3/"),
+        "content-range: {content_range}"
+    );
+    assert_eq!(bytes.len(), 4);
+}
+
+// ── M3.5 streaming audit tests ──────────────────────────────────────
+
+/// M3.5 FR-7.1 — Drive inline-byte fallback path. When Drive serves bytes
+/// inline instead of 302-redirecting (rare: restricted sharing, large files,
+/// flagged mimetypes), `/stream-url` returns `strategy: "proxy"` pointing at
+/// `/stream`, and `/stream` serves the bytes correctly with Range support.
+///
+/// The e2e mock exercises this path unconditionally for Drive (production
+/// usually returns Direct via redirect-follow). This test verifies the
+/// end-to-end proxy path: stream-url returns proxy, stream serves 206 with
+/// correct Content-Range for a Range request.
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_drive_inline_byte_fallback() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-inline",
+        "inline-video.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // Step 1: stream-url returns proxy strategy.
+    let (status, body) =
+        get_json(app.clone(), &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["strategy"], "proxy");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.ends_with("/stream"),
+        "proxy URL should point at /stream: {url}"
+    );
+
+    // Step 2: /stream serves 206 with correct Content-Range for Range request.
+    let (status, headers, bytes) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/stream"),
+        Some(&cookie),
+        Some("bytes=0-3"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let content_range = headers.get("content-range").unwrap().to_str().unwrap();
+    assert!(
+        content_range.starts_with("bytes 0-3/"),
+        "content-range: {content_range}"
+    );
+    assert_eq!(bytes.len(), 4);
+    assert_eq!(
+        headers.get("content-type").unwrap().to_str().unwrap(),
+        "video/mp4"
+    );
+    assert_eq!(
+        headers.get("accept-ranges").unwrap().to_str().unwrap(),
+        "bytes"
+    );
+}
+
+/// M3.5 FR-7.2 — token refresh mid-stream. When the provider returns 401 on
+/// the first `open_stream` call, the API layer refreshes the token once and
+/// retries. The response should be 206 with correct Content-Range (the user
+/// never sees the 401). The e2e mock simulates this via the `refresh-once-`
+/// file-ID prefix: first call returns Unauthorized, second succeeds.
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_token_refresh_mid_stream() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    // The `refresh-once-` prefix triggers the mock's Unauthorized-then-success
+    // behavior. The factory's shared state ensures the second `open_stream`
+    // call (after refresh) sees the counter incremented.
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "refresh-once-test",
+        "refresh-test.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // Range request through the proxy. First open_stream returns 401 → API
+    // refreshes → retry succeeds. Client sees only the successful 206.
+    let (status, headers, bytes) = get_stream_bytes(
+        app,
+        &format!("/api/videos/{vid}/stream"),
+        Some(&cookie),
+        Some("bytes=0-3"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let content_range = headers.get("content-range").unwrap().to_str().unwrap();
+    assert!(
+        content_range.starts_with("bytes 0-3/"),
+        "content-range: {content_range}"
+    );
+    assert_eq!(bytes.len(), 4);
+}

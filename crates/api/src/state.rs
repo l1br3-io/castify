@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use castify_auth::{AuthRepository, SessionSecret};
+use castify_cache::DiskCache;
 use castify_catalog::providers::dropbox::DropboxConfig;
 use castify_catalog::providers::google_drive::GoogleDriveConfig;
 use castify_catalog::providers::onedrive::OneDriveConfig;
@@ -25,6 +26,10 @@ struct AppStateInner {
     oauth_store: OAuthStateStore,
     session_secret: SessionSecret,
     provider_registry: ProviderRegistry,
+    /// Hot-video disk cache (M4). `None` when `CASTIFY_VIDEO_CACHE_ENABLED=false`.
+    /// When `Some`, the `/stream` handler tee's response bytes to disk and
+    /// `get_stream_url` returns `Cached` strategy for cache hits.
+    video_cache: Option<Arc<DiskCache>>,
 }
 
 impl AppState {
@@ -51,6 +56,9 @@ impl AppState {
                 client_secret: o.client_secret.clone(),
             }),
         );
+        let video_cache_enabled = config.video_cache.enabled;
+        let video_cache_dir = config.video_cache.dir.clone();
+        let video_cache_max_bytes = config.video_cache.max_bytes;
         Self {
             inner: Arc::new(AppStateInner {
                 config,
@@ -61,6 +69,28 @@ impl AppState {
                 oauth_store,
                 session_secret,
                 provider_registry,
+                video_cache: if video_cache_enabled {
+                    match futures::executor::block_on(DiskCache::new(&video_cache_dir)) {
+                        Ok(cache) => {
+                            tracing::info!(
+                                dir = %video_cache_dir.display(),
+                                max_bytes = video_cache_max_bytes,
+                                "video cache enabled"
+                            );
+                            Some(Arc::new(cache))
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                dir = %video_cache_dir.display(),
+                                "failed to initialize video cache; feature disabled"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                },
             }),
         }
     }
@@ -98,6 +128,12 @@ impl AppState {
     /// `registry.factory_for(provider)` rather than `match provider {}`.
     pub fn provider_registry(&self) -> &ProviderRegistry {
         &self.inner.provider_registry
+    }
+
+    /// The hot-video disk cache (M4). `None` when the feature is disabled
+    /// (`CASTIFY_VIDEO_CACHE_ENABLED=false`).
+    pub fn video_cache(&self) -> Option<&Arc<DiskCache>> {
+        self.inner.video_cache.as_ref()
     }
 
     /// Resolve a provider factory for the given provider. Under the `e2e`

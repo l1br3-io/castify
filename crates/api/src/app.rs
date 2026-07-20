@@ -50,6 +50,10 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::get(videos::list_folders),
         )
         .route(
+            "/api/videos/{id}",
+            axum::routing::get(videos::get_video_detail),
+        )
+        .route(
             "/api/videos/{id}/favorite",
             axum::routing::post(videos::set_favorite).delete(videos::delete_favorite),
         )
@@ -58,15 +62,80 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::put(videos::set_rating).delete(videos::delete_rating),
         )
         .route(
+            "/api/videos/{id}/progress",
+            axum::routing::post(videos::set_progress).get(videos::get_progress),
+        )
+        .route(
             "/api/videos/{id}/thumbnail",
             axum::routing::get(videos::get_thumbnail),
+        )
+        .route(
+            "/api/videos/{id}/stream",
+            axum::routing::get(videos::get_stream),
+        )
+        .route(
+            "/api/videos/{id}/stream-url",
+            axum::routing::get(videos::get_stream_url),
+        )
+        .route(
+            "/api/videos/{id}/cached-stream",
+            axum::routing::get(videos::get_cached_stream),
+        )
+        .route(
+            "/api/videos/{id}/download",
+            axum::routing::get(videos::get_download),
+        )
+        .route(
+            "/api/videos/{id}/subtitles",
+            axum::routing::get(videos::list_subtitles),
+        )
+        .route(
+            "/api/videos/{id}/subtitles/{subtitle_id}",
+            axum::routing::get(videos::get_subtitle_track),
+        )
+        .route(
+            "/api/videos/{id}/cache",
+            axum::routing::post(videos::set_cache_pinned).delete(videos::delete_cache_entry),
+        )
+        .route(
+            "/api/admin/cache",
+            axum::routing::get(videos::get_cache_admin),
+        )
+        .route(
+            "/api/admin/probe",
+            axum::routing::get(videos::get_probe_admin),
+        )
+        .route(
+            "/api/admin/reprobe/{video_id}",
+            axum::routing::post(videos::reprobe_one),
+        )
+        .route(
+            "/api/admin/reprobe-all",
+            axum::routing::post(videos::reprobe_all),
+        )
+        .route(
+            "/api/videos/{id}/transcode/master.m3u8",
+            axum::routing::get(videos::get_transcode_master),
+        )
+        .route(
+            "/api/videos/{id}/transcode/{variant}/playlist.m3u8",
+            axum::routing::get(videos::get_transcode_playlist),
+        )
+        .route(
+            "/api/videos/{id}/transcode/{variant}/{segment}",
+            axum::routing::get(videos::get_transcode_segment),
         );
 
     #[cfg(feature = "e2e")]
-    let router = router.route(
-        "/api/__e2e/seed-connection",
-        axum::routing::post(crate::e2e::seed_connection),
-    );
+    let router = router
+        .route(
+            "/api/__e2e/seed-connection",
+            axum::routing::post(crate::e2e::seed_connection),
+        )
+        .route(
+            "/api/__e2e/mock-cdn/{file_id}",
+            axum::routing::get(crate::e2e::mock_cdn),
+        );
 
     router
         .fallback(spa_handler)

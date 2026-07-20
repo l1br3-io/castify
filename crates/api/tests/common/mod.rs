@@ -38,6 +38,16 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         google_oauth: None,
         dropbox_oauth: None,
         microsoft_oauth: None,
+        video_cache: castify_core::VideoCacheConfig {
+            enabled: false,
+            max_bytes: 0,
+            dir: data_dir.join("video-cache"),
+        },
+        probe: castify_core::ProbeConfig::default(),
+        transcode: castify_core::TranscodeConfig {
+            enabled: false,
+            ..Default::default()
+        },
     };
     let state = AppState::new(config, pool, secret, token_key);
     (state, named, path)

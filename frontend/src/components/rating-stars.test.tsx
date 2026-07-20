@@ -21,6 +21,8 @@ const UNRATED: VideoSummaryDto = {
   is_favorite: false,
   my_rating: null,
   thumbnail_status: "pending",
+  position_seconds: null,
+  completed: false,
 };
 
 const RATED: VideoSummaryDto = { ...UNRATED, my_rating: 4 };

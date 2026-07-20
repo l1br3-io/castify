@@ -15,14 +15,23 @@
 //! badge — exercising the full dedup pipeline end-to-end.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::State;
+use axum::body::Body;
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::Response;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
-use castify_catalog::provider::{ProviderError, ProviderFactory, ProviderResult, ThumbnailData};
-use castify_catalog::{DiscoveredVideo, ListPage, NewConnection, Provider, TokenBundle};
+use castify_catalog::provider::{
+    ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+};
+use castify_catalog::{
+    DiscoveredSubtitle, DiscoveredVideo, ListPage, NewConnection, Provider, TokenBundle,
+};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -39,9 +48,38 @@ const SHARED_PREFIX_HASH: &str = "e2e-shared-hash";
 /// detection checks the PNG signature, and tests compare raw bytes.
 const TEST_THUMBNAIL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n test thumbnail";
 
+/// Minimal MP4 ftyp box (24 bytes) returned by the e2e mock's `open_stream`.
+/// Enough for the browser to identify the file as MP4 and for the stream
+/// proxy to return `Content-Type: video/mp4`. The e2e test checks the
+/// network request and response status, not full video playback.
+const MOCK_MP4: &[u8] = &[
+    0x00, 0x00, 0x00, 0x18, // ftyp box size = 24
+    b'f', b't', b'y', b'p', // "ftyp"
+    b'i', b's', b'o', b'm', // major brand = "isom"
+    0x00, 0x00, 0x00, 0x00, // minor version = 0
+    b'i', b's', b'o', b'm', // compatible brand = "isom"
+    b'm', b'p', b'4', b'2', // compatible brand = "mp42"
+];
+
+/// Canned VTT content returned by the e2e mock's `fetch_subtitle_content`.
+const MOCK_VTT: &[u8] = b"WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nTest subtitle\n";
+
 struct E2eMockProvider {
+    /// Used by `open_stream_url` to pick Direct vs Proxied. Production Drive
+    /// follows the `?alt=media` 302 and returns Direct; the e2e mock
+    /// deliberately returns Proxied for Drive so the proxy code path
+    /// (`/api/videos/{id}/stream`) gets exercised in the browser suite.
+    /// OneDrive + Dropbox mirror production (Direct → mock CDN route).
+    provider: Provider,
     videos: Vec<DiscoveredVideo>,
+    subtitles: Vec<DiscoveredSubtitle>,
     prefix_hashes: HashMap<String, String>,
+    /// Shared with the factory so both provider instances created within a
+    /// single request's refresh-and-retry path see the same counters.
+    /// File IDs starting with `refresh-once-` return `Unauthorized` on the
+    /// first `open_stream` call and succeed on retry, simulating an expired
+    /// access token mid-stream.
+    refresh_state: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 #[async_trait]
@@ -53,6 +91,7 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
     async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
         Ok(ListPage {
             videos: self.videos.clone(),
+            subtitles: self.subtitles.clone(),
             next_cursor: None,
         })
     }
@@ -71,8 +110,95 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
         })
     }
 
+    async fn open_stream(
+        &self,
+        file_id: &str,
+        range: Option<&str>,
+    ) -> ProviderResult<StreamResponse> {
+        if file_id.starts_with("no-stream-") {
+            return Err(ProviderError::NotFound(file_id.into()));
+        }
+
+        // Token-refresh simulation: file IDs starting with `refresh-once-`
+        // return Unauthorized on the first call, then succeed on retry. This
+        // exercises the API layer's refresh-and-retry path within a single
+        // request. State is shared across provider instances via the factory.
+        if file_id.starts_with("refresh-once-") {
+            let mut state = self.refresh_state.lock().await;
+            let count = state.entry(file_id.to_string()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                return Err(ProviderError::Unauthorized);
+            }
+        }
+
+        use bytes::Bytes;
+        use futures::stream;
+
+        let total = MOCK_MP4.len() as u64;
+
+        // Parse "bytes=start-end" Range header for 206 partial content.
+        if let Some(range_str) = range {
+            if let Some((start, end)) = parse_simple_range(range_str, total) {
+                let start_us = start as usize;
+                let end_us = end as usize;
+                let bytes = Bytes::copy_from_slice(&MOCK_MP4[start_us..=end_us]);
+                let content_length = bytes.len() as u64;
+                let body = stream::once(async move { Ok::<_, std::io::Error>(bytes) });
+                return Ok(StreamResponse {
+                    status: 206,
+                    content_type: "video/mp4".into(),
+                    content_length: Some(content_length),
+                    content_range: Some(format!("bytes {start}-{end}/{total}")),
+                    body: Box::pin(body),
+                });
+            }
+        }
+
+        let body =
+            stream::once(async move { Ok::<_, std::io::Error>(Bytes::from_static(MOCK_MP4)) });
+        Ok(StreamResponse {
+            status: 200,
+            content_type: "video/mp4".into(),
+            content_length: Some(total),
+            content_range: None,
+            body: Box::pin(body),
+        })
+    }
+
     async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {
         Ok(())
+    }
+
+    async fn fetch_subtitle_content(&self, file_id: &str) -> ProviderResult<Vec<u8>> {
+        if file_id.starts_with("no-subs-") {
+            return Err(ProviderError::NotFound(file_id.into()));
+        }
+        Ok(MOCK_VTT.to_vec())
+    }
+
+    /// Mocks `open_stream_url`. Production returns Direct for all three
+    /// providers (OneDrive + Dropbox issue a preauthenticated CDN URL;
+    /// Drive follows the `?alt=media` 302 to a pre-signed download URL).
+    /// This mock splits strategies deliberately: OneDrive + Dropbox return
+    /// Direct pointing at a mock CDN route (`/api/__e2e/mock-cdn/{file_id}`)
+    /// so the browser suite exercises the direct path, while Google Drive
+    /// returns Proxied so the suite also exercises the `/stream` proxy path
+    /// — Drive's real redirect flow can't run in CI without real OAuth.
+    /// The mock CDN route serves the same `MOCK_MP4` bytes `open_stream`
+    /// would have produced, so the e2e browser can actually load the
+    /// `<video src>` in either strategy.
+    async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
+        if file_id.starts_with("no-stream-") {
+            return Err(ProviderError::NotFound(file_id.into()));
+        }
+        match self.provider {
+            Provider::GoogleDrive => Ok(StreamUrl::Proxied),
+            Provider::Dropbox | Provider::OneDrive => Ok(StreamUrl::Direct {
+                url: format!("/api/__e2e/mock-cdn/{file_id}"),
+                expires_at: None,
+            }),
+        }
     }
 }
 
@@ -80,11 +206,17 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
 
 pub struct E2eMockFactory {
     provider: Provider,
+    /// Shared across all provider instances created by this factory within
+    /// a single request's lifetime. See `E2eMockProvider::refresh_state`.
+    refresh_state: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl E2eMockFactory {
     pub fn new(provider: Provider) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            refresh_state: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     fn videos(&self) -> Vec<DiscoveredVideo> {
@@ -147,6 +279,18 @@ impl E2eMockFactory {
         }
         hashes
     }
+
+    fn subtitles(&self) -> Vec<DiscoveredSubtitle> {
+        match self.provider {
+            Provider::GoogleDrive => vec![DiscoveredSubtitle {
+                provider_file_id: "gd-vacation-srt".into(),
+                name: "vacation.en.srt".into(),
+                path: Some("/Movies/vacation.en.srt".into()),
+                language: Some("en".into()),
+            }],
+            _ => vec![],
+        }
+    }
 }
 
 #[async_trait]
@@ -156,8 +300,11 @@ impl ProviderFactory for E2eMockFactory {
         _token: &TokenBundle,
     ) -> ProviderResult<Box<dyn castify_catalog::provider::Provider>> {
         Ok(Box::new(E2eMockProvider {
+            provider: self.provider,
             videos: self.videos(),
+            subtitles: self.subtitles(),
             prefix_hashes: self.prefix_hashes(),
+            refresh_state: self.refresh_state.clone(),
         }))
     }
 
@@ -205,6 +352,25 @@ fn mock_video(
         native_hash_algo: native_hash.map(|_| "sha256".to_string()),
         provider_modified_at: None,
     }
+}
+
+/// Parse a simple `bytes=start-end` Range header for the e2e mock's
+/// `open_stream`. Returns `(start, end)` inclusive, clamped to `total`.
+/// Supports `bytes=0-1023` and `bytes=0-` (open-ended). Returns `None`
+/// for unparseable values (falls back to full-content 200).
+fn parse_simple_range(range: &str, total: u64) -> Option<(u64, u64)> {
+    let range = range.strip_prefix("bytes=")?;
+    let (start_str, end_str) = range.split_once('-')?;
+    let start: u64 = start_str.parse().ok()?;
+    let end: u64 = if end_str.is_empty() {
+        total - 1
+    } else {
+        end_str.parse().ok()?
+    };
+    if start > end || start >= total {
+        return None;
+    }
+    Some((start, end.min(total - 1)))
 }
 
 // ── Seed endpoint ───────────────────────────────────────────────────
@@ -255,4 +421,63 @@ pub async fn seed_connection(
         id: conn.id,
         provider: provider.to_string(),
     }))
+}
+
+// ── Mock CDN endpoint ──────────────────────────────────────────────
+
+/// `GET /api/__e2e/mock-cdn/{file_id}` — serves the same canned MP4 bytes
+/// as `E2eMockProvider::open_stream`, but from a same-origin URL that the
+/// browser can hit directly when `open_stream_url` returns
+/// `StreamUrl::Direct { url: "/api/__e2e/mock-cdn/{file_id}" }`. Honors
+/// `Range` (206 partial content) so `<video>` seeking works in e2e.
+///
+/// The e2e test asserts the `<video src>` points here for OneDrive/Dropbox
+/// (Direct strategy) — proving the browser fetches from the CDN URL rather
+/// than our `/stream` proxy.
+pub async fn mock_cdn(Path(file_id): Path<String>, headers: HeaderMap) -> Response {
+    if file_id.starts_with("no-stream-") {
+        let mut resp = Response::new(Body::from("not found"));
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        return resp;
+    }
+
+    let total = MOCK_MP4.len() as u64;
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| parse_simple_range(s, total));
+
+    match range {
+        Some((start, end)) => {
+            let start_us = start as usize;
+            let end_us = end as usize;
+            let bytes = MOCK_MP4[start_us..=end_us].to_vec();
+            let content_length = bytes.len() as u64;
+            let mut resp = Response::new(Body::from(bytes));
+            *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+            if let Ok(val) = HeaderValue::from_str(&content_length.to_string()) {
+                resp.headers_mut().insert(header::CONTENT_LENGTH, val);
+            }
+            if let Ok(val) = HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
+                resp.headers_mut().insert(header::CONTENT_RANGE, val);
+            }
+            resp.headers_mut()
+                .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            resp
+        }
+        None => {
+            let mut resp = Response::new(Body::from(MOCK_MP4.to_vec()));
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+            if let Ok(val) = HeaderValue::from_str(&total.to_string()) {
+                resp.headers_mut().insert(header::CONTENT_LENGTH, val);
+            }
+            resp.headers_mut()
+                .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+            resp
+        }
+    }
 }

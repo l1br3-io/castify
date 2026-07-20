@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/api", "crates/catalog", "crates/core", "crates/storage", "crates/auth", "crates/bench"]
+members = ["crates/api", "crates/catalog", "crates/cache", "crates/core", "crates/storage", "crates/auth", "crates/bench"]
 resolver = "2"
 
 [workspace.package]
@@ -15,6 +15,7 @@ castify-core = { path = "crates/core" }
 castify-storage = { path = "crates/storage" }
 castify-auth = { path = "crates/auth" }
 castify-catalog = { path = "crates/catalog" }
+castify-cache = { path = "crates/cache" }
 
 [profile.release]
 lto = "thin"

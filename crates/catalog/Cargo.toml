@@ -13,19 +13,22 @@ aes-gcm = "0.10.3"
 anyhow = "1.0.103"
 async-trait = "0.1.88"
 base64 = "0.22.1"
+bytes = "1.10"
 chrono = { version = "0.4.45", features = ["serde"] }
+futures = "0.3"
 rand = { version = "0.8", features = ["std_rng"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_urlencoded = "0.7.1"
 sha2 = "0.10.9"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+tempfile = "3.27.0"
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["time"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "process", "time"] }
 tracing = "0.1.44"
 uuid = { version = "1.20.0", features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["macros", "rt"] }
+wiremock = "0.6.5"

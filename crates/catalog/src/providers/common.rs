@@ -7,7 +7,7 @@
 use serde::Deserialize;
 
 use crate::crypto::TokenBundle;
-use crate::provider::ProviderError;
+use crate::provider::{ProviderError, ProviderResult, StreamResponse};
 
 /// Seconds subtracted from a token's advertised `expires_in` so refresh happens
 /// before the wire expiry rather than at it.
@@ -18,6 +18,10 @@ pub(crate) const TOKEN_BUFFER_SECS: i64 = 60;
 pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv", ".flv",
 ];
+
+/// Known sidecar subtitle extensions. Used by all three providers to capture
+/// `.srt`/`.vtt` files during the same listing pass as videos.
+pub(crate) const SUBTITLE_EXTENSIONS: &[&str] = &[".srt", ".vtt"];
 
 /// Lowercase hex encoding of a byte slice.
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
@@ -31,7 +35,18 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
 
 /// Classify a non-success token-endpoint response into the appropriate
 /// provider error. Shared by all providers' token exchange + refresh paths.
+///
+/// Per [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc6749#section-5.2),
+/// an `"invalid_grant"` error from the token endpoint means the refresh
+/// grant itself is dead (expired, revoked, or malformed) — this is distinct
+/// from a 401 on a resource call (access-token expiry, recoverable via
+/// refresh). We surface it as [`ProviderError::ReauthRequired`] so the API
+/// layer can return a structured `code: "reauth_required"` response and the
+/// frontend can route the user to reconnect.
 pub(crate) fn classify_token_error(status: u16, body: &str) -> ProviderError {
+    if is_invalid_grant(body) {
+        return ProviderError::ReauthRequired;
+    }
     if status == 401 {
         ProviderError::Unauthorized
     } else if status == 429 || status == 503 {
@@ -46,11 +61,122 @@ pub(crate) fn classify_token_error(status: u16, body: &str) -> ProviderError {
     }
 }
 
+/// Detect the OAuth2 `invalid_grant` error in a token-endpoint response body.
+/// Tolerant of whitespace and key ordering; the canonical body is
+/// `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`.
+/// Used by [`classify_token_error`] across all three providers.
+fn is_invalid_grant(body: &str) -> bool {
+    // Cheap pre-filter before touching serde. Providers always JSON-encode the
+    // key/val pair, but quoting/spacing varies across accounts/SDKs; keep this
+    // loose on purpose.
+    if !body.contains("invalid_grant") {
+        return false;
+    }
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(v) => v
+            .get("error")
+            .and_then(|e| e.as_str())
+            .map(|s| s == "invalid_grant")
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// Returns true if the filename ends with a known video extension
 /// (case-insensitive).
 pub(crate) fn has_video_extension(name: &str) -> bool {
     let lower = name.to_lowercase();
     VIDEO_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Returns true if the filename ends with a known subtitle extension
+/// (case-insensitive).
+pub(crate) fn has_subtitle_extension(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    SUBTITLE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// Infer the subtitle format from the filename extension: `"srt"` or `"vtt"`.
+/// Returns `None` for non-subtitle files.
+pub(crate) fn infer_subtitle_format(name: &str) -> Option<&'static str> {
+    let lower = name.to_lowercase();
+    if lower.ends_with(".srt") {
+        Some("srt")
+    } else if lower.ends_with(".vtt") {
+        Some("vtt")
+    } else {
+        None
+    }
+}
+
+/// Guess a language code from a subtitle filename. Looks for a 2-letter
+/// ISO 639-1 code (optionally followed by a region suffix like `-US`) in the
+/// segment immediately before the subtitle extension.
+///
+/// Examples: `movie.en.srt` → `Some("en")`, `movie.pt-BR.srt` →
+/// `Some("pt-BR")`, `movie.srt` → `None`, `movie.english.srt` → `None`.
+pub(crate) fn guess_language(filename: &str) -> Option<String> {
+    let stripped = filename
+        .rsplit_once('.')
+        .filter(|(_, ext)| {
+            let lower = ext.to_lowercase();
+            lower == "srt" || lower == "vtt"
+        })?
+        .0;
+    // Use the last dot-separated segment (not `-`/`_`, so "pt-BR" stays intact).
+    let last_segment = stripped.rsplit('.').next()?;
+    if is_language_code(last_segment) {
+        Some(last_segment.to_string())
+    } else {
+        None
+    }
+}
+
+/// Check if a string looks like an ISO 639-1 language code: exactly 2 lowercase
+/// ASCII letters, optionally followed by `-`/`_` and 2 uppercase ASCII letters
+/// (region suffix like `pt-BR`).
+fn is_language_code(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    match bytes.len() {
+        2 => bytes.iter().all(|b| b.is_ascii_lowercase()),
+        5 => {
+            bytes[..2].iter().all(|b| b.is_ascii_lowercase())
+                && (bytes[2] == b'-' || bytes[2] == b'_')
+                && bytes[3..].iter().all(|b| b.is_ascii_uppercase())
+        }
+        _ => false,
+    }
+}
+
+/// Compute the base name of a subtitle file for matching to videos: strips the
+/// subtitle extension and any language suffix. Returns `None` if the file
+/// isn't a subtitle.
+///
+/// Examples: `movie.en.srt` → `Some("movie")`, `movie.srt` → `Some("movie")`,
+/// `movie.pt-BR.vtt` → `Some("movie")`, `photo.jpg` → `None`.
+pub(crate) fn subtitle_base_name(filename: &str) -> Option<String> {
+    let format = infer_subtitle_format(filename)?;
+    let without_ext = &filename[..filename.len() - format.len() - 1];
+    let language = guess_language(filename);
+    match &language {
+        Some(lang) => Some(without_ext[..without_ext.len() - lang.len() - 1].to_string()),
+        None => Some(without_ext.to_string()),
+    }
+}
+
+/// Compute the base name of a video file for matching to subtitles: strips the
+/// known video extension.
+///
+/// Examples: `movie.mp4` → `Some("movie")`, `movie.trailer.mkv` →
+/// `Some("movie.trailer")`, `photo.jpg` → `None`.
+pub(crate) fn video_base_name(name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    for ext in VIDEO_EXTENSIONS {
+        if let Some(stripped) = lower.strip_suffix(ext) {
+            return Some(name[..stripped.len()].to_string());
+        }
+    }
+    None
 }
 
 /// Infer an image MIME type from an HTTP `Content-Type` header value.
@@ -85,6 +211,63 @@ pub(crate) fn infer_mime_type(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(mime.to_string())
+}
+
+/// Convert a reqwest response into a [`StreamResponse`], handling the common
+/// error/status mapping shared by all three providers' `open_stream` methods.
+///
+/// Maps 401 → [`ProviderError::Unauthorized`], 429/503 →
+/// [`ProviderError::RateLimited`], and non-success non-206 →
+/// [`ProviderError::Api`]. Extracts `Content-Type`, `Content-Length`, and
+/// `Content-Range` headers. The body is converted to a streaming
+/// [`BodyStream`](crate::provider::BodyStream) via `bytes_stream()`.
+pub(crate) async fn response_to_stream(resp: reqwest::Response) -> ProviderResult<StreamResponse> {
+    let status = resp.status();
+    if status.as_u16() == 401 {
+        return Err(ProviderError::Unauthorized);
+    }
+    if status.as_u16() == 429 || status.as_u16() == 503 {
+        return Err(ProviderError::RateLimited {
+            retry_after_secs: None,
+        });
+    }
+    if !status.is_success() && status.as_u16() != 206 {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProviderError::Api {
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let content_length = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse().ok());
+    let content_range = resp
+        .headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
+    use futures::StreamExt;
+    let body = resp
+        .bytes_stream()
+        .map(|result| result.map_err(std::io::Error::other));
+
+    Ok(StreamResponse {
+        status: status.as_u16(),
+        content_type,
+        content_length,
+        content_range,
+        body: Box::pin(body),
+    })
 }
 
 /// Raw token response shared across providers.
@@ -227,5 +410,117 @@ mod tests {
             classify_token_error(400, "nope"),
             ProviderError::Api { status: 400, .. }
         ));
+    }
+
+    #[test]
+    fn classify_token_error_detects_invalid_grant_regardless_of_status() {
+        // The canonical Google/OneDrive/Dropbox signal — usually 400, but the
+        // RFC does not mandate a specific status; classification keys on the
+        // body's `error` field, not the HTTP status.
+        let cases: &[(&str, u16, &str)] = &[
+            (
+                r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#,
+                400,
+                "canonical Google form",
+            ),
+            (r#"{"error":"invalid_grant"}"#, 401, "minimal 401 form"),
+            // Whitespace/key-order tolerance.
+            (
+                r#"{  "error_description" : "Bad request" , "error" : "invalid_grant" }"#,
+                400,
+                "key-reordered with spaces",
+            ),
+        ];
+        for (body, status, label) in cases {
+            assert!(
+                matches!(
+                    classify_token_error(*status, body),
+                    ProviderError::ReauthRequired
+                ),
+                "{label}: expected ReauthRequired for body={body}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_token_error_does_not_false_positive_invalid_grant() {
+        // Body mentions the substring but `error` is something else — must
+        // fall through to the status-based mapping, not ReauthRequired.
+        let body = r#"{"error":"invalid_request","error_description":"invalid_grant is not the error here"}"#;
+        assert!(matches!(
+            classify_token_error(400, body),
+            ProviderError::Api { status: 400, .. }
+        ));
+        // Malformed JSON mentioning invalid_grant — never classify as
+        // ReauthRequired (we can't actually confirm the structured `error`).
+        assert!(matches!(
+            classify_token_error(400, "oops invalid_grant not json"),
+            ProviderError::Api { status: 400, .. }
+        ));
+    }
+
+    #[test]
+    fn has_subtitle_extension_matches_case_insensitive() {
+        assert!(has_subtitle_extension("movie.SRT"));
+        assert!(has_subtitle_extension("clip.vtt"));
+        assert!(!has_subtitle_extension("movie.mp4"));
+        assert!(!has_subtitle_extension("noext"));
+    }
+
+    #[test]
+    fn infer_subtitle_format_detects_srt_and_vtt() {
+        assert_eq!(infer_subtitle_format("movie.srt"), Some("srt"));
+        assert_eq!(infer_subtitle_format("movie.VTT"), Some("vtt"));
+        assert_eq!(infer_subtitle_format("movie.mp4"), None);
+    }
+
+    #[test]
+    fn guess_language_extracts_code() {
+        assert_eq!(guess_language("movie.en.srt").as_deref(), Some("en"));
+        assert_eq!(guess_language("movie.es.vtt").as_deref(), Some("es"));
+        assert_eq!(guess_language("movie.pt-BR.srt").as_deref(), Some("pt-BR"));
+        assert_eq!(guess_language("movie.srt"), None);
+        assert_eq!(guess_language("movie.english.srt"), None);
+    }
+
+    #[test]
+    fn subtitle_base_name_strips_extension_and_language() {
+        assert_eq!(subtitle_base_name("movie.en.srt").as_deref(), Some("movie"));
+        assert_eq!(subtitle_base_name("movie.srt").as_deref(), Some("movie"));
+        assert_eq!(
+            subtitle_base_name("movie.pt-BR.vtt").as_deref(),
+            Some("movie")
+        );
+        assert_eq!(
+            subtitle_base_name("trailer.part1.en.srt").as_deref(),
+            Some("trailer.part1")
+        );
+        assert_eq!(subtitle_base_name("photo.jpg"), None);
+    }
+
+    #[test]
+    fn video_base_name_strips_video_extension() {
+        assert_eq!(video_base_name("movie.mp4").as_deref(), Some("movie"));
+        assert_eq!(
+            video_base_name("trailer.part1.mkv").as_deref(),
+            Some("trailer.part1")
+        );
+        assert_eq!(video_base_name("photo.jpg"), None);
+    }
+
+    #[test]
+    fn subtitle_matches_video_by_base_name() {
+        assert_eq!(
+            subtitle_base_name("vacation.en.srt").as_deref(),
+            video_base_name("vacation.mp4").as_deref()
+        );
+        assert_eq!(
+            subtitle_base_name("concert.srt").as_deref(),
+            video_base_name("concert.mkv").as_deref()
+        );
+        assert_ne!(
+            subtitle_base_name("different.en.srt").as_deref(),
+            video_base_name("vacation.mp4").as_deref()
+        );
     }
 }

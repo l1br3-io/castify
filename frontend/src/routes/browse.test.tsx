@@ -36,6 +36,8 @@ const VIDEO_PAGE_ONE = {
       is_favorite: false,
       my_rating: null,
       thumbnail_status: "pending",
+      position_seconds: null,
+      completed: false,
     },
     {
       id: "v2",
@@ -55,6 +57,8 @@ const VIDEO_PAGE_ONE = {
       is_favorite: true,
       my_rating: 4,
       thumbnail_status: "cached",
+      position_seconds: null,
+      completed: false,
     },
   ],
   total: 60,

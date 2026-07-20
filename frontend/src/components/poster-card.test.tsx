@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
+import { Route, Routes, useLocation } from "react-router-dom";
 
 import { PosterCard } from "./poster-card";
 import type { VideoSummaryDto } from "../api/types";
@@ -22,6 +23,8 @@ const VIDEO: VideoSummaryDto = {
   is_favorite: false,
   my_rating: null,
   thumbnail_status: "pending",
+  position_seconds: null,
+  completed: false,
 };
 
 const MULTI_SOURCE_VIDEO: VideoSummaryDto = {
@@ -131,5 +134,88 @@ describe("PosterCard", () => {
     // Duration still renders; resolution bucket returns null for height < 360.
     expect(screen.getByText("2:00")).toBeInTheDocument();
     expect(screen.queryByText("240p")).not.toBeInTheDocument();
+  });
+
+  it("renders a stretched link when href is provided", () => {
+    renderWithProviders(<PosterCard video={VIDEO} href="/watch/v1" />);
+    const link = screen.getByRole("link", { name: "Play cat.mp4" });
+    expect(link).toHaveAttribute("href", "/watch/v1");
+    expect(link).toHaveClass("absolute", "inset-0", "z-0");
+  });
+
+  it("does not render a link when href is omitted", () => {
+    renderWithProviders(<PosterCard video={VIDEO} />);
+    expect(
+      screen.queryByRole("link", { name: /Play/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("positions slot wrappers above the stretched link via z-10", () => {
+    renderWithProviders(
+      <PosterCard
+        video={VIDEO}
+        href="/watch/v1"
+        topRightSlot={<button type="button">fav</button>}
+        bottomOverlaySlot={<div data-testid="rating">stars</div>}
+      />,
+    );
+    const link = screen.getByRole("link", { name: "Play cat.mp4" });
+    // Slots should be in containers with z-10 (above the z-0 link).
+    const slotContainers = link.parentElement!.querySelectorAll(".z-10");
+    expect(slotContainers.length).toBe(2);
+  });
+
+  // --- M3 T7: ephemeral queue state propagation ---
+
+  // Renders at /watch/:id with the location serialized so the test can
+  // assert on `state.queue` after clicking a PosterCard link.
+  function QueueStateProbe() {
+    const loc = useLocation();
+    return (
+      <div data-testid="loc-state">{JSON.stringify(loc.state ?? null)}</div>
+    );
+  }
+
+  it("passes `queue` via router state when provided (M3 T7)", () => {
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <PosterCard
+              video={VIDEO}
+              href="/watch/v1"
+              queue={["v1", "v2", "v3"]}
+            />
+          }
+        />
+        <Route path="/watch/:id" element={<QueueStateProbe />} />
+      </Routes>,
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "Play cat.mp4" }));
+
+    const state = screen.getByTestId("loc-state").textContent;
+    expect(state).toContain("queue");
+    expect(state).toContain("v1");
+    expect(state).toContain("v2");
+    expect(state).toContain("v3");
+  });
+
+  it("omits router state when `queue` is not provided (M3 T7)", () => {
+    renderWithProviders(
+      <Routes>
+        <Route
+          path="/"
+          element={<PosterCard video={VIDEO} href="/watch/v1" />}
+        />
+        <Route path="/watch/:id" element={<QueueStateProbe />} />
+      </Routes>,
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "Play cat.mp4" }));
+
+    // No `queue` prop → state is undefined → serialized as null.
+    expect(screen.getByTestId("loc-state")).toHaveTextContent("null");
   });
 });

@@ -21,6 +21,8 @@ const NOT_FAV: VideoSummaryDto = {
   is_favorite: false,
   my_rating: null,
   thumbnail_status: "pending",
+  position_seconds: null,
+  completed: false,
 };
 
 const FAV: VideoSummaryDto = { ...NOT_FAV, is_favorite: true };

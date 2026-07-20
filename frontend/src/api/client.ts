@@ -28,12 +28,21 @@ export function getCsrfToken(): string | null {
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
+  /**
+   * Machine-readable error code from the backend's `{ code }` field, or
+   * `null` when absent. Currently only `"reauth_required"` is produced —
+   * signaling a dead provider refresh token that needs user-driven
+   * reconnect on the Connections page. Other failures leave `code` null
+   * so the existing `message`-based UX applies.
+   */
+  readonly code: string | null;
 
-  constructor(status: number, message: string, body: unknown) {
+  constructor(status: number, message: string, body: unknown, code: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.code = code;
   }
 }
 
@@ -107,7 +116,18 @@ async function parseResponseBody<T>(response: Response): Promise<T> {
       typeof (parsed as { message: unknown }).message === "string"
         ? (parsed as { message: string }).message
         : `request to ${response.url} failed: ${response.status}`;
-    throw new ApiError(response.status, message, parsed);
+    // Extract the structured `code` field when present (e.g. "reauth_required").
+    // Other responses leave the field null — callers branch on the specific
+    // code only when they can recover from it; everything else falls back to
+    // the existing message-based UI.
+    const code =
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "code" in parsed &&
+      typeof (parsed as { code: unknown }).code === "string"
+        ? (parsed as { code: string }).code
+        : null;
+    throw new ApiError(response.status, message, parsed, code);
   }
   return parsed as T;
 }

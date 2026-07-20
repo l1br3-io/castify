@@ -4,11 +4,11 @@
 > **Owner:** Castify Team — **l1br3** *(pronounced "libre")*
 > **Tagline:** *"One home for all your cloud media."*
 
-Castify is a free, open-source **personal media hub** — a product of the **l1br3** organization (pronounced "libre") — that connects to the cloud storage users *already pay for* and unifies scattered photos, videos, and audio into one organized, searchable library. It brings together the best parts of Google Drive, Google Photos, iCloud, and pCloud: bring-your-own-cloud aggregation, organized browsing, instant sharing, and direct playback — without ever moving or re-hosting the user's media.
+Castify is a free, open-source **personal media server** — a product of the **l1br3** organization (pronounced "libre") — that connects to the cloud storage users *already pay for* and unifies scattered photos, videos, and audio into one organized, searchable library. It brings together the best parts of Google Drive, Google Photos, iCloud, and pCloud: bring-your-own-cloud aggregation, organized browsing, and direct playback — without ever moving or re-hosting the user's media.
 
-Castify ships in two ways from a single product: a **vendor-hosted service** for the average user (no install, no signup — just connect a cloud provider and your library appears), and a **self-hosted** option for power users who want full control, privacy, or have outgrown the free service's limits.
+Castify is **personal server software**. You run it on your own hardware — a NAS, a home server, a VPS, anything that runs Docker. The cloud storage you already pay for stays the source of truth; Castify just connects to it, unifies it, and makes it browsable and playable from one place. The media never moves; nothing of yours lives on Castify's own disk.
 
-The app is free. Cloud storage is already paid for. That's the disruption: competitors charge $10–30/mo for storage lock-in; Castify charges nothing for the app and lets your existing cloud do the heavy lifting. The hosted service stays sustainable through per-owner usage limits that funnel power users toward self-hosting — costs stay bounded while the product stays free for everyone.
+The app is free and open source (AGPL-3.0). Cloud storage is already paid for. That's the disruption: competitors charge $10–30/mo for storage lock-in; Castify charges nothing for the app and lets your existing cloud do the heavy lifting.
 
 **Product positioning:** *"One home for all your cloud media. Unified, organized, and yours. Free, by l1br3."*
 
@@ -22,9 +22,9 @@ Existing solutions all extract a recurring cost or impose friction:
 
 - **Google Photos / Apple Photos** — Polished, but you must store media in *their* cloud. You re-buy storage you may already have, and lose data sovereignty. ($9.99–$29.99/mo for 2 TB.)
 - **Immich / PhotoPrism** — Open source and self-hosted, but require you to buy and run server hardware for storage. No bring-your-own-cloud.
-- **Plex** — Great media management, but needs an always-on media server, advanced features need a paid pass, and every viewer must create an account and be invited.
+- **Plex** — Great media management, but needs an always-on media server, advanced features need a paid pass, and it stores media on its own disk rather than the cloud you already pay for.
 - **Infuse** — Apple-only, paid.
-- **Google Drive / iCloud / pCloud** — Reliable storage, but no unified library view, no cross-provider aggregation, no unified browse/share experience.
+- **Google Drive / iCloud / pCloud** — Reliable storage, but no unified library view, no cross-provider aggregation, no unified browse experience.
 
 The core pains:
 
@@ -33,9 +33,8 @@ The core pains:
 3. **No unified library** — each provider silos your media.
 4. **Manual organization** — no help to group, tag, dedupe, or surface memories.
 5. **Cost** — recurring subscriptions for features that should be free.
-6. **Sharing friction** — watching together means every household member must create an account on the same platform, or be admin-provisioned.
 
-Castify solves this by connecting to the cloud storage users *already pay for*, unifying every provider into one home, and making that media easy to browse, organize, and share.
+Castify solves this by connecting to the cloud storage users *already pay for*, unifying every provider into one home, and making that media easy to browse, organize, and play.
 
 ---
 
@@ -44,20 +43,19 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 | Goal | Target |
 |------|--------|
 | Unify every connected provider into one browsable library | Set up and see a unified catalog in under 10 minutes |
-| Fastest possible onboarding | From landing page to first unified library view in under 2 minutes (no install, no signup) |
+| Single command to a running app | `docker compose up` → app serving in under 30 seconds |
 | Major cloud providers from day one | 3 providers at launch (Google Drive, Dropbox, OneDrive) |
 | Snappy unified library | Renders across all connected providers in under 500 ms |
 | Deduplicate across providers | A majority of libraries deduplicated |
 | Direct cloud playback | Video starts within 3 seconds |
-| Frictionless household sharing | From guest receiving a link to browsing in under 30 seconds |
 | Genuinely free | $0 monthly app cost |
-| Community adoption | Growing pulls, stars, and signups |
+| Community adoption | Growing pulls, stars, and contributors |
 
 ### Non-goals (explicitly out of scope)
 
 **At launch — NOT shipping:**
 
-- Individual viewer accounts / per-user profiles — launch uses account-less **guest links** instead.
+- Multi-user access — Castify is a single-owner personal server. The owner is the only viewer.
 - Photo management / browsing.
 - Auto-grouped memories and stories.
 - Face recognition / people albums.
@@ -66,9 +64,9 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 **Across all phases — NOT building:**
 
 - Our own cloud media storage service — always bring-your-own-cloud; the user's media stays in their cloud.
-- Paid subscription tiers — the app is always free; sustainability comes from usage limits + a self-host path, never paywalls.
+- Paid subscription tiers — the app is always free and AGPL-3.0.
 - Email/password accounts — signing in happens through the user's cloud provider.
-- Server-side video transcoding — ever.
+- Server-side video transcoding — out of launch scope; revisit when codec coverage becomes a real blocker. See the [Self-Hosted Media Server roadmap](./ROADMAP-self-hosted-media-server.md) for the post-launch arc (M3.5 → M8) that adds disk caching, codec probing, transcoding, adaptive bitrate, and advanced subtitles.
 
 ---
 
@@ -76,12 +74,10 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 
 | Persona | Description | Key need |
 |---------|-------------|----------|
-| **The Average Joe** *(primary)* | Non-technical; wants "it just works"; will never self-host or run server software | Hosted service: no install, no signup, no config — connect a cloud provider and the library appears |
-| The Self-Hoster | Runs a NAS or home server; values data sovereignty | Self-host at their own domain; full control, no limits, no lock-in |
+| **The Self-Hoster** *(primary)* | Runs a NAS, home server, or VPS; values data sovereignty and control | Personal server software: run it on their own hardware, full control, no lock-in |
 | The Media Hoarder | Has movies/shows across cloud storage; wants one organized library | Free, unified hub — organized catalog, browse and play from one place |
 | The Multi-Cloud User | Media scattered across Drive, Dropbox, B2 | One unified library across all providers |
-| The Family | Multiple household members on different devices | Guest link sharing, no viewer accounts at launch |
-| The Traveler | Accesses the library from anywhere | Remote browse from cloud |
+| The Traveler | Accesses their library from anywhere | Remote browse from cloud |
 
 ---
 

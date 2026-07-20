@@ -344,6 +344,16 @@ async fn session_survives_restart_with_persisted_secret() {
         google_oauth: None,
         dropbox_oauth: None,
         microsoft_oauth: None,
+        video_cache: castify_core::VideoCacheConfig {
+            enabled: false,
+            max_bytes: 0,
+            dir: std::env::temp_dir().join("castify-restart-test-video-cache"),
+        },
+        probe: castify_core::ProbeConfig::default(),
+        transcode: castify_core::TranscodeConfig {
+            enabled: false,
+            ..Default::default()
+        },
     };
     let new_state = castify_api::state::AppState::new(config, pool, secret, token_key);
     let new_app = build_app(new_state);

@@ -25,6 +25,8 @@ function video(id: string, over: Partial<VideoSummaryDto> = {}): VideoSummaryDto
     is_favorite: false,
     my_rating: null,
     thumbnail_status: "pending",
+    position_seconds: null,
+    completed: false,
     ...over,
   };
 }

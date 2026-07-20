@@ -29,16 +29,24 @@ export function formatSize(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-/** Milliseconds → "H:MM:SS" or "M:SS". */
-export function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
+/**
+ * Seconds → "M:SS" or "H:MM:SS". Floors fractional seconds (the `<video>`
+ * `currentTime` / `duration` are floats). Used by the player time display.
+ */
+export function formatTime(seconds: number): string {
+  const totalSeconds = Math.floor(seconds);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
+  const secs = totalSeconds % 60;
   if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+/** Milliseconds → "H:MM:SS" or "M:SS". Delegates to `formatTime`. */
+export function formatDuration(ms: number): string {
+  return formatTime(ms / 1000);
 }
 
 /** Pixels → "1920×1080" (uses U+00D7 multiplication sign). */

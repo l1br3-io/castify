@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::crypto::{TokenBundle, TokenKey};
 use crate::model::{
-    NewConnection, NewVideo, Provider, ProviderConnection, ScanState, ScanStatus, VideoFilter,
-    VideoPage, VideoSource, VideoSummary,
+    NewConnection, NewVideo, PlaybackProgress, Provider, ProviderConnection, ScanState, ScanStatus,
+    SubtitleTrack, VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSource, VideoSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +40,20 @@ pub struct VideoThumbnailInfo {
     pub provider: Provider,
     pub provider_file_id: String,
     pub thumbnail_status: String,
+}
+
+/// Minimal video fields needed by the stream/download proxy endpoints.
+/// Includes `mime_type`, `size_bytes`, and `name` for response headers and
+/// the download filename.
+#[derive(Debug, Clone)]
+pub struct VideoStreamInfo {
+    pub id: String,
+    pub connection_id: String,
+    pub provider: Provider,
+    pub provider_file_id: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
+    pub name: String,
 }
 
 /// Push the shared WHERE predicates (provider, search, duration, resolution,
@@ -99,6 +113,11 @@ fn push_video_predicates(qb: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, filter: 
         qb.push(" AND vr.rating >= ");
         qb.push_bind(min_r);
         qb.push(")");
+    }
+    if filter.in_progress {
+        qb.push(" AND EXISTS (SELECT 1 FROM playback_progress pp WHERE pp.video_id = videos.id AND pp.owner_id = ");
+        qb.push_bind(filter.owner_id.clone());
+        qb.push(" AND pp.position_seconds > 0 AND pp.completed = 0)");
     }
 }
 
@@ -373,6 +392,39 @@ impl CatalogRepository {
         }
     }
 
+    /// Fetch the minimal fields needed by the stream/download proxy:
+    /// connection_id, provider, provider_file_id (to call `open_stream`),
+    /// plus mime_type, size_bytes, and name (for response headers + download
+    /// filename).
+    pub async fn fetch_video_stream_info(
+        &self,
+        video_id: &str,
+    ) -> CatalogResult<Option<VideoStreamInfo>> {
+        let row = sqlx::query(
+            "SELECT id, connection_id, provider, provider_file_id, mime_type, size_bytes, name \
+             FROM videos WHERE id = ?",
+        )
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => {
+                let provider_str: String = row.get("provider");
+                Ok(Some(VideoStreamInfo {
+                    id: row.get("id"),
+                    connection_id: row.get("connection_id"),
+                    provider: Provider::parse(&provider_str).map_err(CatalogError::Other)?,
+                    provider_file_id: row.get("provider_file_id"),
+                    mime_type: row.get("mime_type"),
+                    size_bytes: row.get("size_bytes"),
+                    name: row.get("name"),
+                }))
+            }
+        }
+    }
+
     /// Update the thumbnail cache state for a video. The caller is responsible
     /// for passing one of the four convention values: `"pending"`, `"cached"`,
     /// `"failed"`, `"unsupported"`.
@@ -419,12 +471,16 @@ impl CatalogRepository {
             "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
                     v.duration_ms, v.width, v.height, v.dedup_group, \
                     v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
-                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
+                    pp.position_seconds AS position_seconds, \
+                    (COALESCE(pp.completed, 0)) AS completed \
              FROM videos v \
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ",
         );
         page_qb.push_bind(filter.owner_id.clone());
         page_qb.push(" LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ");
+        page_qb.push_bind(filter.owner_id.clone());
+        page_qb.push(" LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ");
         page_qb.push_bind(filter.owner_id.clone());
         page_qb.push(" WHERE v.id IN (SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL");
         push_video_predicates(&mut page_qb, filter);
@@ -487,6 +543,8 @@ impl CatalogRepository {
                     is_favorite: sqlx::Row::get(row, "is_favorite"),
                     my_rating: sqlx::Row::get(row, "my_rating"),
                     thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
+                    position_seconds: sqlx::Row::get(row, "position_seconds"),
+                    completed: sqlx::Row::get(row, "completed"),
                 }
             })
             .collect();
@@ -607,6 +665,316 @@ impl CatalogRepository {
         Ok(())
     }
 
+    // ── Playback progress (T4) ────────────────────────────────────────
+
+    /// Upsert playback progress for a video (PRD M3 FR-3.1). Uses
+    /// `INSERT ... ON CONFLICT DO UPDATE` so repeated saves (e.g. periodic
+    /// progress tracking from the player) update in place.
+    pub async fn upsert_progress(
+        &self,
+        owner_id: &str,
+        video_id: &str,
+        position_seconds: f64,
+        duration_seconds: Option<f64>,
+        completed: bool,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT INTO playback_progress \
+                (owner_id, video_id, position_seconds, duration_seconds, updated_at, completed) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT (owner_id, video_id) DO UPDATE \
+             SET position_seconds = excluded.position_seconds, \
+                 duration_seconds = excluded.duration_seconds, \
+                 updated_at = excluded.updated_at, \
+                 completed = excluded.completed",
+        )
+        .bind(owner_id)
+        .bind(video_id)
+        .bind(position_seconds)
+        .bind(duration_seconds)
+        .bind(iso_now())
+        .bind(if completed { 1 } else { 0 })
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch saved playback progress for a video (PRD M3 FR-3.2). Returns
+    /// `None` if no progress row exists.
+    pub async fn fetch_progress(
+        &self,
+        owner_id: &str,
+        video_id: &str,
+    ) -> CatalogResult<Option<PlaybackProgress>> {
+        let row = sqlx::query(
+            "SELECT position_seconds, duration_seconds, completed, updated_at \
+             FROM playback_progress WHERE owner_id = ? AND video_id = ?",
+        )
+        .bind(owner_id)
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => Ok(Some(PlaybackProgress {
+                position_seconds: row.get("position_seconds"),
+                duration_seconds: row.get("duration_seconds"),
+                completed: row.get::<i64, _>("completed") != 0,
+                updated_at: row.get("updated_at"),
+            })),
+        }
+    }
+
+    /// Fetch the owner's in-progress videos for the continue-watching shelf
+    /// (PRD M3 T13). Returns videos with `position_seconds > 0 AND completed = 0`,
+    /// sorted by `updated_at DESC` (most recently watched first). Enriched
+    /// with favorites/ratings/sources via the same LEFT JOIN pattern as
+    /// `fetch_video_page`.
+    pub async fn fetch_in_progress_videos(
+        &self,
+        owner_id: &str,
+        limit: i64,
+    ) -> CatalogResult<Vec<VideoSummary>> {
+        let rows = sqlx::query(
+            "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
+                    v.duration_ms, v.width, v.height, v.dedup_group, \
+                    v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
+                    pp.position_seconds AS position_seconds, \
+                    (pp.completed) AS completed \
+             FROM videos v \
+             INNER JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
+             LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
+             LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
+             WHERE pp.position_seconds > 0 AND pp.completed = 0 \
+             ORDER BY pp.updated_at DESC \
+             LIMIT ?",
+        )
+        .bind(owner_id)
+        .bind(owner_id)
+        .bind(owner_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // ── Batch-fetch sources for dedup groups ──────────────────────
+        let dedup_groups: Vec<String> = rows
+            .iter()
+            .filter_map(|r| sqlx::Row::get::<Option<String>, _>(r, "dedup_group"))
+            .collect();
+
+        let sources_by_group = if dedup_groups.is_empty() {
+            HashMap::new()
+        } else {
+            self.fetch_sources_by_groups(&dedup_groups).await?
+        };
+
+        rows.iter()
+            .map(|row| {
+                let dedup_group: Option<String> = sqlx::Row::get(row, "dedup_group");
+                let own_source = VideoSource {
+                    connection_id: sqlx::Row::get(row, "connection_id"),
+                    provider: sqlx::Row::get::<String, _>(row, "provider"),
+                    provider_file_id: sqlx::Row::get(row, "provider_file_id"),
+                };
+
+                let sources = match &dedup_group {
+                    Some(group) => sources_by_group
+                        .get(group)
+                        .cloned()
+                        .unwrap_or_else(|| vec![own_source.clone()]),
+                    None => vec![own_source],
+                };
+
+                Ok(VideoSummary {
+                    id: sqlx::Row::get(row, "id"),
+                    name: sqlx::Row::get(row, "name"),
+                    provider: sqlx::Row::get(row, "provider"),
+                    size_bytes: sqlx::Row::get(row, "size_bytes"),
+                    mime_type: sqlx::Row::get(row, "mime_type"),
+                    duration_ms: sqlx::Row::get(row, "duration_ms"),
+                    width: sqlx::Row::get(row, "width"),
+                    height: sqlx::Row::get(row, "height"),
+                    sources,
+                    created_at: sqlx::Row::get(row, "created_at"),
+                    path: sqlx::Row::get(row, "path"),
+                    is_favorite: sqlx::Row::get(row, "is_favorite"),
+                    my_rating: sqlx::Row::get(row, "my_rating"),
+                    thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
+                    position_seconds: sqlx::Row::get(row, "position_seconds"),
+                    completed: sqlx::Row::get(row, "completed"),
+                })
+            })
+            .collect()
+    }
+
+    /// Fetch full video detail for the player page. Enriched with favorites,
+    /// ratings, playback progress, and subtitle tracks (FR-4.1).
+    pub async fn fetch_video_detail(
+        &self,
+        video_id: &str,
+        owner_id: &str,
+    ) -> CatalogResult<Option<VideoDetail>> {
+        let row = sqlx::query(
+            "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
+                    v.duration_ms, v.width, v.height, v.dedup_group, \
+                    v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
+                    pp.position_seconds AS position_seconds, \
+                    pp.duration_seconds AS duration_seconds, \
+                    (COALESCE(pp.completed, 0)) AS completed \
+             FROM videos v \
+             LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
+             LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
+             LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
+             WHERE v.id = ?",
+        )
+        .bind(owner_id)
+        .bind(owner_id)
+        .bind(owner_id)
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let dedup_group: Option<String> = sqlx::Row::get(&row, "dedup_group");
+        let own_source = VideoSource {
+            connection_id: sqlx::Row::get(&row, "connection_id"),
+            provider: sqlx::Row::get::<String, _>(&row, "provider"),
+            provider_file_id: sqlx::Row::get(&row, "provider_file_id"),
+        };
+
+        let sources = match &dedup_group {
+            Some(group) => {
+                let mut map = self
+                    .fetch_sources_by_groups(std::slice::from_ref(group))
+                    .await?;
+                map.remove(group)
+                    .unwrap_or_else(|| vec![own_source.clone()])
+            }
+            None => vec![own_source],
+        };
+
+        let subtitle_tracks = self.fetch_subtitles(video_id).await?;
+
+        Ok(Some(VideoDetail {
+            id: sqlx::Row::get(&row, "id"),
+            name: sqlx::Row::get(&row, "name"),
+            provider: sqlx::Row::get(&row, "provider"),
+            size_bytes: sqlx::Row::get(&row, "size_bytes"),
+            mime_type: sqlx::Row::get(&row, "mime_type"),
+            duration_ms: sqlx::Row::get(&row, "duration_ms"),
+            width: sqlx::Row::get(&row, "width"),
+            height: sqlx::Row::get(&row, "height"),
+            sources,
+            created_at: sqlx::Row::get(&row, "created_at"),
+            path: sqlx::Row::get(&row, "path"),
+            is_favorite: sqlx::Row::get(&row, "is_favorite"),
+            my_rating: sqlx::Row::get(&row, "my_rating"),
+            thumbnail_status: sqlx::Row::get(&row, "thumbnail_status"),
+            position_seconds: sqlx::Row::get(&row, "position_seconds"),
+            duration_seconds: sqlx::Row::get(&row, "duration_seconds"),
+            completed: sqlx::Row::get(&row, "completed"),
+            subtitle_tracks,
+        }))
+    }
+
+    /// Fetch subtitle tracks for a video.
+    pub async fn fetch_subtitles(&self, video_id: &str) -> CatalogResult<Vec<SubtitleTrack>> {
+        let rows = sqlx::query(
+            "SELECT id, language, filename, format FROM video_subtitles WHERE video_id = ? ORDER BY filename",
+        )
+        .bind(video_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| SubtitleTrack {
+                id: r.get("id"),
+                language: r.get("language"),
+                filename: r.get("filename"),
+                format: r.get("format"),
+            })
+            .collect())
+    }
+
+    /// Upsert a discovered subtitle track for a video. Idempotent by
+    /// `UNIQUE(video_id, provider_file_id)`.
+    pub async fn upsert_subtitle(
+        &self,
+        video_id: &str,
+        connection_id: &str,
+        provider_file_id: &str,
+        language: Option<&str>,
+        filename: &str,
+        format: &str,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(video_id, provider_file_id) DO UPDATE SET \
+                language = excluded.language, filename = excluded.filename, format = excluded.format",
+        )
+        .bind(format!("sub-{provider_file_id}"))
+        .bind(video_id)
+        .bind(connection_id)
+        .bind(provider_file_id)
+        .bind(language)
+        .bind(filename)
+        .bind(format)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch a single subtitle track with connection metadata for serving.
+    /// Returns `(track, connection_id, provider_file_id)`.
+    pub async fn fetch_subtitle_track(
+        &self,
+        video_id: &str,
+        track_id: &str,
+    ) -> CatalogResult<Option<(SubtitleTrack, String, String)>> {
+        let row = sqlx::query(
+            "SELECT id, language, filename, format, connection_id, provider_file_id \
+             FROM video_subtitles WHERE id = ? AND video_id = ?",
+        )
+        .bind(track_id)
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| {
+            (
+                SubtitleTrack {
+                    id: r.get("id"),
+                    language: r.get("language"),
+                    filename: r.get("filename"),
+                    format: r.get("format"),
+                },
+                r.get("connection_id"),
+                r.get("provider_file_id"),
+            )
+        }))
+    }
+
+    /// Fetch video names for subtitle matching within a connection.
+    /// Returns `(video_id, name)` pairs.
+    pub(crate) async fn fetch_video_names_for_connection(
+        &self,
+        connection_id: &str,
+    ) -> CatalogResult<Vec<(String, String)>> {
+        let rows = sqlx::query("SELECT id, name FROM videos WHERE connection_id = ?")
+            .bind(connection_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.iter().map(|r| (r.get("id"), r.get("name"))).collect())
+    }
+
     /// Fetch all source copies for a set of dedup groups.
     async fn fetch_sources_by_groups(
         &self,
@@ -714,6 +1082,387 @@ impl CatalogRepository {
 
         Ok(row.map(|row| ScanState::from_row(&row)))
     }
+
+    // ── Video cache manifest (M4) ──────────────────────────────────────
+
+    /// Fetch the cache entry for a video, if one exists. Returns `None` when
+    /// the video has never been cached or was evicted. The caller is
+    /// responsible for verifying `provider_file_id` matches the current
+    /// video's file ID (re-scan may have replaced it).
+    pub async fn fetch_video_cache_entry(
+        &self,
+        video_id: &str,
+    ) -> CatalogResult<Option<VideoCacheEntry>> {
+        let row = sqlx::query(
+            r#"SELECT video_id, connection_id, provider_file_id, size_bytes,
+                      last_accessed_at, pinned, created_at
+               FROM video_cache_entries
+               WHERE video_id = ?"#,
+        )
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| VideoCacheEntry {
+            video_id: row.get("video_id"),
+            connection_id: row.get("connection_id"),
+            provider_file_id: row.get("provider_file_id"),
+            size_bytes: row.get("size_bytes"),
+            last_accessed_at: row.get("last_accessed_at"),
+            pinned: row.get::<i64, _>("pinned") != 0,
+            created_at: row.get("created_at"),
+        }))
+    }
+
+    /// Insert or replace a cache entry. Called by the stream-through tee
+    /// when a video finishes streaming successfully.
+    pub async fn upsert_video_cache_entry(
+        &self,
+        video_id: &str,
+        connection_id: &str,
+        provider_file_id: &str,
+        size_bytes: u64,
+    ) -> CatalogResult<()> {
+        let now = iso_now();
+        sqlx::query(
+            r#"INSERT INTO video_cache_entries
+               (video_id, connection_id, provider_file_id, size_bytes,
+                last_accessed_at, pinned)
+               VALUES (?, ?, ?, ?, ?, 0)
+               ON CONFLICT(video_id) DO UPDATE SET
+                 connection_id = excluded.connection_id,
+                 provider_file_id = excluded.provider_file_id,
+                 size_bytes = excluded.size_bytes,
+                 last_accessed_at = excluded.last_accessed_at"#,
+        )
+        .bind(video_id)
+        .bind(connection_id)
+        .bind(provider_file_id)
+        .bind(size_bytes as i64)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update `last_accessed_at` to now. Called on every cache hit (cheap:
+    /// single SQL UPDATE).
+    pub async fn touch_video_cache_entry(&self, video_id: &str) -> CatalogResult<()> {
+        let now = iso_now();
+        sqlx::query("UPDATE video_cache_entries SET last_accessed_at = ? WHERE video_id = ?")
+            .bind(now)
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Toggle the pinned state of a cache entry. Pinned entries survive LRU
+    /// eviction. Returns `Ok(false)` if the entry doesn't exist (caller
+    /// surfaces as 404 — can't pin what isn't there).
+    pub async fn set_video_cache_pinned(
+        &self,
+        video_id: &str,
+        pinned: bool,
+    ) -> CatalogResult<bool> {
+        let result = sqlx::query(
+            "UPDATE video_cache_entries SET pinned = ? WHERE video_id = ?",
+        )
+        .bind(if pinned { 1i64 } else { 0i64 })
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete the manifest row for a cache entry. Does NOT delete the bytes
+    /// on disk — the caller does that via `DiskCache::delete`.
+    pub async fn delete_video_cache_entry(&self, video_id: &str) -> CatalogResult<()> {
+        sqlx::query("DELETE FROM video_cache_entries WHERE video_id = ?")
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Total size in bytes of all cache entries (pinned + unpinned).
+    pub async fn video_cache_total_size(&self) -> CatalogResult<i64> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM video_cache_entries",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(total)
+    }
+
+    /// Count of cache entries (pinned + unpinned).
+    pub async fn video_cache_entry_count(&self) -> CatalogResult<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM video_cache_entries")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
+
+    /// Return unpinned cache entries ordered oldest-first, until their
+    /// cumulative size is enough to free `bytes_to_evict`. Used by the LRU
+    /// eviction sweep when total cache size exceeds the configured limit.
+    /// Returns video_ids + sizes; the caller deletes files + manifest rows.
+    pub async fn video_cache_eviction_candidates(
+        &self,
+        bytes_to_evict: i64,
+    ) -> CatalogResult<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            r#"SELECT video_id, size_bytes,
+                      SUM(size_bytes) OVER (ORDER BY last_accessed_at ASC, rowid ASC) AS running_total
+               FROM video_cache_entries
+               WHERE pinned = 0
+               ORDER BY last_accessed_at ASC, rowid ASC"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut candidates = Vec::new();
+        for row in rows {
+            let video_id: String = row.get("video_id");
+            let size_bytes: i64 = row.get("size_bytes");
+            let running_total: i64 = row.get("running_total");
+            candidates.push((video_id, size_bytes));
+            // Stop once we've accumulated enough to evict the target.
+            if running_total >= bytes_to_evict {
+                break;
+            }
+        }
+        Ok(candidates)
+    }
+
+    /// Return the top N cache entries by size (for the admin endpoint).
+    pub async fn video_cache_top_entries(
+        &self,
+        limit: i64,
+    ) -> CatalogResult<Vec<VideoCacheEntry>> {
+        let rows = sqlx::query(
+            r#"SELECT video_id, connection_id, provider_file_id, size_bytes,
+                      last_accessed_at, pinned, created_at
+               FROM video_cache_entries
+               ORDER BY size_bytes DESC
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| VideoCacheEntry {
+                video_id: row.get("video_id"),
+                connection_id: row.get("connection_id"),
+                provider_file_id: row.get("provider_file_id"),
+                size_bytes: row.get("size_bytes"),
+                last_accessed_at: row.get("last_accessed_at"),
+                pinned: row.get::<i64, _>("pinned") != 0,
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// Count of pinned entries.
+    pub async fn video_cache_pinned_count(&self) -> CatalogResult<i64> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM video_cache_entries WHERE pinned = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    // ── Probe data (M5) ────────────────────────────────────────────────
+
+    /// Update a video's codec info from a successful ffprobe. Sets all
+    /// codec columns + `probe_status = 'probed'` + `probed_at = now`.
+    pub async fn update_video_probe_info(
+        &self,
+        video_id: &str,
+        video_codec: Option<&str>,
+        audio_codec: Option<&str>,
+        bitrate: Option<u64>,
+        framerate: Option<f64>,
+    ) -> CatalogResult<()> {
+        let now = iso_now();
+        sqlx::query(
+            r#"UPDATE videos SET
+                 video_codec = ?,
+                 audio_codec = ?,
+                 bitrate = ?,
+                 framerate = ?,
+                 probed_at = ?,
+                 probe_status = 'probed'
+               WHERE id = ?"#,
+        )
+        .bind(video_codec)
+        .bind(audio_codec)
+        .bind(bitrate.map(|b| b as i64))
+        .bind(framerate)
+        .bind(now)
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark a video's probe as failed with an optional error message.
+    /// Sets `probe_status = 'failed'`; the `probed_at` timestamp is set so
+    /// the admin endpoint can see when it was last attempted.
+    pub async fn mark_probe_failed(
+        &self,
+        video_id: &str,
+        status: &str,
+    ) -> CatalogResult<()> {
+        let now = iso_now();
+        sqlx::query(
+            r#"UPDATE videos SET
+                 probe_status = ?,
+                 probed_at = ?
+               WHERE id = ?"#,
+        )
+        .bind(status)
+        .bind(now)
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Reset a video's probe status to 'pending' so it gets re-probed.
+    /// Used by the admin re-probe endpoints.
+    pub async fn reset_probe_status(&self, video_id: &str) -> CatalogResult<()> {
+        sqlx::query(
+            r#"UPDATE videos SET probe_status = 'pending', probed_at = NULL
+               WHERE id = ?"#,
+        )
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return up to `limit` video IDs that still need probing. Used by
+    /// the eager post-scan worker.
+    pub async fn fetch_pending_probe_ids(&self, limit: i64) -> CatalogResult<Vec<(String, String, String)>> {
+        let rows = sqlx::query(
+            r#"SELECT v.id, v.connection_id, v.provider_file_id
+               FROM videos v
+               WHERE v.probe_status = 'pending'
+               LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get("id"),
+                    row.get("connection_id"),
+                    row.get("provider_file_id"),
+                )
+            })
+            .collect())
+    }
+
+    /// Probe statistics for the admin endpoint.
+    pub async fn probe_stats(&self) -> CatalogResult<ProbeStats> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM videos")
+            .fetch_one(&self.pool)
+            .await?;
+        let probed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM videos WHERE probe_status = 'probed'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM videos WHERE probe_status = 'pending'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let failed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM videos WHERE probe_status = 'failed'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let needs_more: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM videos WHERE probe_status = 'needs_more_bytes'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let unsupported: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM videos WHERE probe_status = 'unsupported_container'",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(ProbeStats {
+            total,
+            probed,
+            pending,
+            failed,
+            needs_more_bytes: needs_more,
+            unsupported_container: unsupported,
+        })
+    }
+
+    /// Insert an embedded subtitle track discovered at probe time.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_subtitle_track(
+        &self,
+        id: &str,
+        video_id: &str,
+        embedded_index: i64,
+        codec: &str,
+        format_family: &str,
+        language: Option<&str>,
+        title: Option<&str>,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            r#"INSERT INTO video_subtitle_tracks
+               (id, video_id, embedded_index, codec, format_family, language, title)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(video_id, embedded_index) DO UPDATE SET
+                 codec = excluded.codec,
+                 format_family = excluded.format_family,
+                 language = excluded.language,
+                 title = excluded.title"#,
+        )
+        .bind(id)
+        .bind(video_id)
+        .bind(embedded_index)
+        .bind(codec)
+        .bind(format_family)
+        .bind(language)
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete all embedded subtitle tracks for a video (used before
+    /// re-inserting during re-probe).
+    pub async fn clear_subtitle_tracks(&self, video_id: &str) -> CatalogResult<()> {
+        sqlx::query("DELETE FROM video_subtitle_tracks WHERE video_id = ?")
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Probe statistics returned by `probe_stats()`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct ProbeStats {
+    pub total: i64,
+    pub probed: i64,
+    pub pending: i64,
+    pub failed: i64,
+    pub needs_more_bytes: i64,
+    pub unsupported_container: i64,
 }
 
 fn iso_now() -> String {
@@ -751,6 +1500,10 @@ mod tests {
             include_str!("../../storage/migrations/0003_connect_catalog.sql"),
             include_str!("../../storage/migrations/0004_browse.sql"),
             include_str!("../../storage/migrations/0005_browse_perf.sql"),
+            include_str!("../../storage/migrations/0006_play.sql"),
+            include_str!("../../storage/migrations/0007_video_cache.sql"),
+            include_str!("../../storage/migrations/0008_video_codec.sql"),
+            include_str!("../../storage/migrations/0009_transcode_cache.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -1184,5 +1937,166 @@ mod tests {
             total_ratings, 0,
             "ratings should cascade-delete with the video"
         );
+    }
+
+    // ── Video cache manifest tests (M4) ────────────────────────────────
+
+    #[tokio::test]
+    async fn video_cache_upsert_and_fetch_round_trip() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, video) = seed_owner_conn_video(&repo).await;
+
+        // Initially no cache entry.
+        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_none());
+
+        // Upsert creates the entry.
+        repo.upsert_video_cache_entry(&video, &conn, "file-123", 1_000_000)
+            .await
+            .unwrap();
+        let entry = repo.fetch_video_cache_entry(&video).await.unwrap().unwrap();
+        assert_eq!(entry.video_id, video);
+        assert_eq!(entry.connection_id, conn);
+        assert_eq!(entry.provider_file_id, "file-123");
+        assert_eq!(entry.size_bytes, 1_000_000);
+        assert!(!entry.pinned);
+
+        // Upsert replaces (new size, new file_id).
+        repo.upsert_video_cache_entry(&video, &conn, "file-456", 2_000_000)
+            .await
+            .unwrap();
+        let entry = repo.fetch_video_cache_entry(&video).await.unwrap().unwrap();
+        assert_eq!(entry.provider_file_id, "file-456");
+        assert_eq!(entry.size_bytes, 2_000_000);
+    }
+
+    #[tokio::test]
+    async fn video_cache_pin_unpin() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, video) = seed_owner_conn_video(&repo).await;
+        repo.upsert_video_cache_entry(&video, &conn, "f", 100)
+            .await
+            .unwrap();
+
+        // Pin.
+        assert!(repo.set_video_cache_pinned(&video, true).await.unwrap());
+        let entry = repo.fetch_video_cache_entry(&video).await.unwrap().unwrap();
+        assert!(entry.pinned);
+
+        // Unpin.
+        assert!(repo.set_video_cache_pinned(&video, false).await.unwrap());
+        let entry = repo.fetch_video_cache_entry(&video).await.unwrap().unwrap();
+        assert!(!entry.pinned);
+
+        // Pin on non-existent entry returns false.
+        assert!(!repo.set_video_cache_pinned("no-such-video", true).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn video_cache_delete() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, video) = seed_owner_conn_video(&repo).await;
+        repo.upsert_video_cache_entry(&video, &conn, "f", 500)
+            .await
+            .unwrap();
+        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_some());
+
+        repo.delete_video_cache_entry(&video).await.unwrap();
+        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_none());
+
+        // Delete again is a no-op.
+        repo.delete_video_cache_entry(&video).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn video_cache_total_size_and_count() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, v1) = seed_owner_conn_video(&repo).await;
+        // Create two more videos to have 3 cache entries.
+        let v2 = seed_extra_video(&repo, &conn, "v2").await;
+        let v3 = seed_extra_video(&repo, &conn, "v3").await;
+
+        repo.upsert_video_cache_entry(&v1, &conn, "f1", 100)
+            .await
+            .unwrap();
+        repo.upsert_video_cache_entry(&v2, &conn, "f2", 200)
+            .await
+            .unwrap();
+        repo.upsert_video_cache_entry(&v3, &conn, "f3", 300)
+            .await
+            .unwrap();
+
+        assert_eq!(repo.video_cache_total_size().await.unwrap(), 600);
+        assert_eq!(repo.video_cache_entry_count().await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn video_cache_eviction_candidates_respects_pin() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, v1) = seed_owner_conn_video(&repo).await;
+        let v2 = seed_extra_video(&repo, &conn, "v2").await;
+        let v3 = seed_extra_video(&repo, &conn, "v3").await;
+
+        // v1 = 100 bytes, v2 = 200 bytes (pinned), v3 = 300 bytes.
+        repo.upsert_video_cache_entry(&v1, &conn, "f1", 100)
+            .await
+            .unwrap();
+        repo.upsert_video_cache_entry(&v2, &conn, "f2", 200)
+            .await
+            .unwrap();
+        repo.upsert_video_cache_entry(&v3, &conn, "f3", 300)
+            .await
+            .unwrap();
+        repo.set_video_cache_pinned(&v2, true).await.unwrap();
+
+        // Evict 50 bytes. v1 alone (100 bytes) is enough — running_total
+        // crosses 50 at v1.
+        let candidates = repo.video_cache_eviction_candidates(50).await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, v1);
+
+        // Evict 150 bytes. v1 (100) alone isn't enough; v3 (300) is also
+        // needed. v2 (pinned) must never appear.
+        let candidates = repo
+            .video_cache_eviction_candidates(150)
+            .await
+            .unwrap();
+        assert_eq!(candidates.len(), 2, "v1 + v3 needed to free 150 bytes");
+        assert!(candidates.iter().any(|(id, _)| *id == v1));
+        assert!(candidates.iter().any(|(id, _)| *id == v3));
+        assert!(
+            !candidates.iter().any(|(id, _)| *id == v2),
+            "pinned entries must never be evicted"
+        );
+    }
+
+    /// Helper: insert an additional video under an existing connection.
+    async fn seed_extra_video(repo: &CatalogRepository, conn: &str, id: &str) -> String {
+        use crate::model::NewVideo;
+        let video = NewVideo {
+            provider_file_id: format!("{id}-file"),
+            name: format!("{id}.mp4"),
+            path: Some(format!("/{id}.mp4")),
+            size_bytes: 5_000_000,
+            mime_type: Some("video/mp4".to_string()),
+            duration_ms: Some(120_000),
+            width: Some(1920),
+            height: Some(1080),
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        };
+        repo.upsert_video(conn, Provider::GoogleDrive, &video).await.unwrap();
+        // Fetch the generated UUID.
+        let row: (String,) = sqlx::query_as("SELECT id FROM videos WHERE provider_file_id = ?")
+            .bind(format!("{id}-file"))
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        row.0
     }
 }

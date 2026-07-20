@@ -168,6 +168,9 @@ export function BrowsePage() {
 
   const heroVideo = recentlyAdded.data.videos[0];
   const hasActiveFilter = filters.activeCount > 0;
+  // Recently Added list also feeds the hero — same queue for both so the
+  // watch page can next/prev through recently-added context.
+  const recentlyAddedQueue = recentlyAdded.data.videos.map((v) => v.id);
 
   return (
     <div className="space-y-8">
@@ -179,6 +182,7 @@ export function BrowsePage() {
         <>
           <HeroShowcase
             video={heroVideo}
+            queue={recentlyAddedQueue}
             favoriteSlot={<FavoriteToggle video={heroVideo} variant="hero" />}
             ratingSlot={<RatingStars video={heroVideo} variant="hero" />}
           />
@@ -389,9 +393,7 @@ function BrowseGrid({
     if (hasActiveFilter) {
       return (
         <div className="rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-8 text-center">
-          <p className="text-lg font-medium">
-            No videos match this filter
-          </p>
+          <p className="text-lg font-medium">No videos match this filter</p>
           <p className="mt-2 text-sm opacity-60">
             Try adjusting or clearing your filters.
           </p>
@@ -403,6 +405,9 @@ function BrowseGrid({
   }
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
+  // Sibling list for the ephemeral play queue — the current grid page.
+  // Passed through PosterCard → router state → watch page (T11).
+  const gridQueue = data.videos.map((v) => v.id);
 
   return (
     <div className="space-y-4">
@@ -414,6 +419,8 @@ function BrowseGrid({
           <PosterCard
             key={video.id}
             video={video}
+            href={`/watch/${video.id}`}
+            queue={gridQueue}
             topRightSlot={<FavoriteToggle video={video} />}
             bottomOverlaySlot={<RatingStars video={video} />}
           />

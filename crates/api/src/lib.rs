@@ -9,6 +9,7 @@ pub mod shutdown;
 pub mod spa;
 pub mod state;
 pub mod tracing_init;
+pub mod transcode;
 
 #[cfg(feature = "e2e")]
 pub mod e2e;

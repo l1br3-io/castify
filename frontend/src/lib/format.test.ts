@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatResolution,
   formatSize,
+  formatTime,
   resolutionBucket,
 } from "./format";
 
@@ -54,6 +55,30 @@ describe("formatDuration", () => {
   it("zero-pads seconds and minutes under 1 hour", () => {
     expect(formatDuration(5_000)).toBe("0:05");
     expect(formatDuration(65_000)).toBe("1:05");
+  });
+});
+
+describe("formatTime", () => {
+  it("renders sub-minute as M:SS", () => {
+    expect(formatTime(0)).toBe("0:00");
+    expect(formatTime(59)).toBe("0:59");
+  });
+
+  it("renders minutes as M:SS without zero-padding the minute", () => {
+    expect(formatTime(120)).toBe("2:00");
+    expect(formatTime(65)).toBe("1:05");
+    expect(formatTime(125)).toBe("2:05");
+  });
+
+  it("renders hours as H:MM:SS", () => {
+    expect(formatTime(3600)).toBe("1:00:00");
+    expect(formatTime(3600 + 60 + 1)).toBe("1:01:01");
+    expect(formatTime(3600 * 2 + 5 * 60)).toBe("2:05:00");
+  });
+
+  it("floors fractional seconds", () => {
+    expect(formatTime(12.9)).toBe("0:12");
+    expect(formatTime(65.999)).toBe("1:05");
   });
 });
 

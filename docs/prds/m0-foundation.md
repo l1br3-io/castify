@@ -23,8 +23,6 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 - Cloud provider connections (M1).
 - Catalog scanning, dedupe, browse UI (M1–M2).
 - Video playback (M3).
-- Guest share links (M4).
-- Multi-tenant hosted deployment (M5).
 - OAuth provider login (linked in M1; M0 owner identity is local).
 - Email, telemetry, password reset flows.
 
@@ -36,7 +34,7 @@ M0 lays the spine of Castify: a single-binary application that installs, runs, p
 | Backend          | `axum` + `tokio` + `tower` + `tracing`                                      |
 | Frontend         | Vite + React + TypeScript + React Router + TanStack Query + Tailwind  |
 | API              | REST + JSON                                                            |
-| Database         | SQLite (WAL) via `sqlx`; Postgres target deferred to M5                |
+| Database         | SQLite (WAL) via `sqlx`                                                  |
 | Owner auth       | First-run wizard: password (`argon2`)                                    |
 | Sessions         | Signed HttpOnly cookies, SameSite=Lax, server-side session rows in SQLite |
 | CSRF             | Double-submit token cookie + header                                    |
