@@ -85,7 +85,7 @@ npm test -- --verbose
 npm test -- --testPathPattern="specific-file" --runInBand
 ```
 
-For the full-suite re-run after a fix, prefer the quiet defaults in `rules/verification-commands.md` — the exit code is the verdict, the verbose output above was the reproduction evidence.
+For the full-suite re-run after a fix, prefer the quiet defaults in `.opencode/harness/rules/verification-commands.md` — the exit code is the verdict, the verbose output above was the reproduction evidence.
 
 ### Step 2: Localize
 
@@ -158,7 +158,7 @@ This test will prevent the same bug from recurring. It should fail without the f
 
 ### Step 6: Verify End-to-End
 
-After fixing, verify the complete scenario. Run quietly — the exit code is the verdict; pull detail only if a step fails (see `rules/verification-commands.md`):
+After fixing, verify the complete scenario. Run quietly — the exit code is the verdict; pull detail only if a step fails (see `.opencode/harness/rules/verification-commands.md`):
 
 ```bash
 # Run the specific test that reproduced the bug

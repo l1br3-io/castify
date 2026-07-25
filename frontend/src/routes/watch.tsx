@@ -30,6 +30,7 @@ import { DedupBadge, ProviderBadge } from "../components/badges";
 import { PlayerControls } from "../components/player-controls";
 import { UpNext } from "../components/up-next";
 import { useAutoAdvance } from "../hooks/use-auto-advance";
+import { useHlsStream } from "../hooks/use-hls-stream";
 import { usePlaybackTracking } from "../hooks/use-playback-tracking";
 import { useQueue } from "../hooks/use-queue";
 import {
@@ -65,6 +66,13 @@ export function WatchPage() {
   const { id } = useParams<{ id: string }>();
   const query = useVideoDetail(id);
 
+  // M7 T10: we need the stream strategy at this level so we can branch on
+  // `transcode` (use hls.js) vs other strategies (use `<video src>`). The
+  // hook was previously called inside VideoPlayer; pulling it up means
+  // VideoPlayer takes the resolved data as a prop and WatchPage can decide
+  // whether to render VideoPlayer at all.
+  const streamUrlQuery = useStreamUrl(id);
+
   if (query.isError) {
     const isNotFound =
       query.error instanceof Error &&
@@ -95,10 +103,23 @@ export function WatchPage() {
   }
 
   const video = query.data;
+  const strategy = streamUrlQuery.data?.strategy;
 
-  if (canPlay(video.mime_type)) {
-    return <VideoPlayer video={video} />;
+  // Transcode strategy → render VideoPlayer regardless of MIME canPlayType.
+  // The backend already determined this codec is unplayable; hls.js will
+  // feed H.264/AAC segments the browser can decode.
+  if (strategy === "transcode" || canPlay(video.mime_type)) {
+    return (
+      <VideoPlayer video={video} streamUrlQuery={streamUrlQuery} />
+    );
   }
+
+  // stream-url hasn't resolved yet AND the mime type is unplayable — show
+  // skeleton. Once strategy lands, the branch above catches "transcode".
+  if (streamUrlQuery.isLoading) {
+    return <WatchSkeleton />;
+  }
+
   return <UnsupportedFormat video={video} />;
 }
 
@@ -106,17 +127,20 @@ export function WatchPage() {
 // Video player (native `<video>` element)
 // ---------------------------------------------------------------------------
 
-function VideoPlayer({ video }: { video: VideoDetailDto }) {
+function VideoPlayer({
+  video,
+  streamUrlQuery,
+}: {
+  video: VideoDetailDto;
+  streamUrlQuery: ReturnType<typeof useStreamUrl>;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [hasError, setHasError] = useState(false);
   const [showEndOfQueue, setShowEndOfQueue] = useState(false);
 
-  // Resolve where to fetch video bytes: a direct CDN URL (all providers —
-  // OneDrive/Dropbox issue natively, Google Drive via `?alt=media` redirect-
-  // follow) or our /stream proxy (fallback). See T12 — direct CDN streaming.
-  const streamUrlQuery = useStreamUrl(video.id);
   const invalidateStreamUrl = useInvalidateStreamUrl();
+  const isTranscode = streamUrlQuery.data?.strategy === "transcode";
   // CDN URL expiry retry guard. Resets when the video id changes (queue skip)
   // — direct CDN URLs are short-lived (~1hr), and an `<video>` error after
   // that window should trigger one re-fetch of /stream-url before degrading
@@ -166,12 +190,26 @@ function VideoPlayer({ video }: { video: VideoDetailDto }) {
     if (!queue.hasNext && queue.hasQueue) setShowEndOfQueue(true);
   }
 
+  // hls.js attachment for the transcode strategy. Lives at the top level so
+  // rules-of-hooks are satisfied; only takes effect when `isTranscode`.
+  const masterUrl = isTranscode ? streamUrlQuery.data?.url : undefined;
+  const hlsStream = useHlsStream(videoRef, masterUrl, {
+    onError: () => setHasError(true),
+  });
+
   // `<video>` error handler. For direct-CDN strategy, a 410/403 mid-stream
   // means the short-lived URL expired — refresh once by invalidating the
   // /stream-url query (TanStack re-fetches, React swaps `<video src>` to
   // the fresh URL, Range requests resume from currentTime). For proxy
-  // strategy or after one retry, fall back to UnsupportedFormat.
+  // strategy or after one retry, fall back to UnsupportedFormat. Transcode
+  // strategy has its own recovery path inside `useHlsStream`.
   function handleVideoError() {
+    if (isTranscode) {
+      // hls.js errors flow through `useHlsStream.onError`; a native `<video>`
+      // error here means hls.js never attached (Safari native HLS failed).
+      setHasError(true);
+      return;
+    }
     const strategy = streamUrlQuery.data?.strategy;
     if (strategy === "direct" && !retriedStreamUrlRef.current) {
       retriedStreamUrlRef.current = true;
@@ -212,13 +250,13 @@ function VideoPlayer({ video }: { video: VideoDetailDto }) {
   }
 
   const posterUrl = `/api/videos/${encodeURIComponent(video.id)}/thumbnail`;
-  // While /stream-url resolves (first paint), `src` is undefined — the
-  // `<video>` shows the poster with no playable source. We render a
-  // "Preparing" overlay so the user knows playback is starting shortly;
-  // without it, the poster looks like a finished render and pressing Play
-  // throws "no supported sources" before the URL has landed.
-  const src = streamUrlQuery.data?.url;
-  const isStreamLoading = !src;
+  // For non-transcode strategies, `src` is the resolved stream URL. For
+  // transcode, hls.js attaches the master playlist to the `<video>` via
+  // `useHlsStream`; setting `src` here would conflict, so it stays undefined
+  // and the `<video>` element is fed through MediaSource.
+  const src = isTranscode ? undefined : streamUrlQuery.data?.url;
+  const isStreamLoading = !src && !isTranscode;
+  const isHlsLoading = isTranscode && !hlsStream.isReady;
 
   return (
     <div className="space-y-4">
@@ -347,6 +385,18 @@ function VideoPlayer({ video }: { video: VideoDetailDto }) {
             </div>
           </div>
         )}
+        {isHlsLoading && (
+          <div
+            role="status"
+            aria-label="Starting transcode stream"
+            className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+          >
+            <div className="flex flex-col items-center gap-3 text-white">
+              <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
+              <p className="text-sm text-white/80">Transcoding…</p>
+            </div>
+          </div>
+        )}
         <PlayerControls
           videoRef={videoRef}
           containerRef={containerRef}
@@ -356,6 +406,13 @@ function VideoPlayer({ video }: { video: VideoDetailDto }) {
           onNext={queue.hasQueue ? handleNext : undefined}
           hasPrev={queue.hasPrev}
           hasNext={queue.hasNext}
+          levels={isTranscode ? hlsStream.levels : undefined}
+          currentLevel={isTranscode ? hlsStream.currentLevel : undefined}
+          onLevelChange={
+            isTranscode
+              ? (level: number) => hlsStream.setCurrentLevel(level)
+              : undefined
+          }
         />
       </div>
       <VideoInfo video={video} />

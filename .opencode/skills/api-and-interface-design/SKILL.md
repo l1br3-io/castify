@@ -19,8 +19,8 @@ Design stable, well-documented interfaces that are hard to misuse. Good interfac
 
 ## Tech Context
 
-Tech is declared in `rules/tech.md`. Each name maps directly to `tech/<name>/`
-(e.g. `rust` → `tech/rust/`, `react` → `tech/react/`), then read:
+Tech is declared in `.opencode/harness/rules/tech.md`. Each name maps directly to `.opencode/harness/tech/<name>/`
+(e.g. `rust` → `.opencode/harness/tech/rust/`, `react` → `.opencode/harness/tech/react/`), then read:
 
 - `<name>/patterns.md`
 - `common/patterns.md`

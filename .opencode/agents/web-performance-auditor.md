@@ -34,7 +34,7 @@ Populate the scorecard only with values backed by these sources. Mark unmeasured
 | Lab metrics, opportunities, diagnostics | Lighthouse JSON | None (parse a provided file) |
 | Field metrics (real users, p75) | CrUX API | `CRUX_API_KEY` or `GOOGLE_API_KEY` env var |
 | Combined lab + field | PageSpeed Insights JSON | None for parsing; the user provides the JSON |
-| Live trace, LCP attribution, INP attribution, layout shift attribution | Chrome DevTools MCP server (`performance_*`, `lighthouse_audit`) | `chrome-devtools` MCP server configured in the harness (see `skills/browser-testing-with-devtools`) |
+| Live trace, LCP attribution, INP attribution, layout shift attribution | Chrome DevTools MCP server (`performance_*`, `lighthouse_audit`) | `chrome-devtools` MCP server configured in the harness (see `.opencode/skills/browser-testing-with-devtools`) |
 | Manual terminal capture (Lighthouse, trace, screenshot) | Chrome DevTools MCP CLI (e.g. `chrome-devtools lighthouse_audit --output-format=json`) | `npx -p chrome-devtools-mcp chrome-devtools <tool>` or `npm i -g chrome-devtools-mcp` (CLI is independent of the harness) |
 
 If a source is unavailable, do not fabricate. Skip the related section of the scorecard and continue with what you have.
@@ -173,8 +173,8 @@ Identify the framework and rendering model (React, Vue, Svelte, Angular, Next.js
 5. Every finding must include a specific, actionable recommendation.
 6. Do not recommend micro-optimizations without evidence they affect a Core Web Vital or another measurable metric.
 7. Acknowledge good performance practices — positive reinforcement matters.
-8. Use `rules/performance-checklist.md` as the minimum baseline for each area.
-9. Delegate granular optimization guidance and remediation steps to `skills/performance-optimization/SKILL.md` — keep this report at the audit level.
+8. Use `.opencode/harness/rules/performance-checklist.md` as the minimum baseline for each area.
+9. Delegate granular optimization guidance and remediation steps to `.opencode/skills/performance-optimization/SKILL.md` — keep this report at the audit level.
 10. Fold AI-generated anti-patterns into their relevant area (Network or Rendering/JS); do not create a separate "AI" category.
 11. In Deep mode, always state which artifacts were provided and which fields remain unmeasured.
 

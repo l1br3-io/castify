@@ -1,3 +1,7 @@
+---
+paths:
+  - "**/*.rs"
+---
 # Rust Performance Rule
 
 Performance guidance synthesized from Effective Rust Items 9, 12, 17, 20 and

@@ -19,9 +19,10 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
 
 use castify_catalog::{
-    BodyStream, CatalogRepository, FolderCount, PlaybackProgress, Provider, ProviderError,
-    ProviderFactory, StreamResponse, StreamUrl, SubtitleTrack, ThumbnailData, TokenBundle,
-    VideoDetail, VideoFilter, VideoPage, VideoSort, VideoStreamInfo, VideoThumbnailInfo,
+    BodyStream, CatalogRepository, FolderCount, NewTranscodeEntry, PlaybackProgress, Provider,
+    ProviderError, ProviderFactory, StreamResponse, StreamUrl, SubtitleTrack, ThumbnailData,
+    TokenBundle, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoStreamInfo,
+    VideoThumbnailInfo,
 };
 
 use crate::auth::resolve_owner;
@@ -1628,9 +1629,7 @@ pub struct CacheEntryDto {
     pub size_bytes: i64,
     pub last_accessed_at: String,
     pub pinned: bool,
-}
-
-pub async fn get_cache_admin(
+}pub async fn get_cache_admin(
     State(state): State<AppState>,
 ) -> ApiResult<Json<CacheAdminResponse>> {
     let repo = state.catalog_repository();
@@ -1670,6 +1669,63 @@ pub async fn get_cache_admin(
     }))
 }
 
+/// `GET /api/admin/transcode` — per-rung transcode stats: how many
+/// variants cached/in-progress/failed at each rung, plus the dedup
+/// registry size. Auth required, no CSRF.
+#[derive(Debug, Serialize)]
+pub struct TranscodeAdminResponse {
+    pub enabled: bool,
+    pub variants: Vec<castify_catalog::TranscodeRungStats>,
+    pub pool: TranscodePoolStats,
+    pub max_bytes: u64,
+    pub configured_ladder: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TranscodePoolStats {
+    /// Count of currently-registered in-memory transcode handles
+    /// (`OnceLock<Mutex<HashMap>>` size). Each represents a running or
+    /// recently-finished ffmpeg process.
+    pub active_workers: u64,
+}
+
+pub async fn get_transcode_admin(
+    State(state): State<AppState>,
+) -> ApiResult<Json<TranscodeAdminResponse>> {
+    if !state.config().transcode.enabled {
+        return Ok(Json(TranscodeAdminResponse {
+            enabled: false,
+            variants: vec![],
+            pool: TranscodePoolStats { active_workers: 0 },
+            max_bytes: state.config().transcode.cache_max_bytes,
+            configured_ladder: state
+                .config()
+                .abr
+                .ladder
+                .iter()
+                .map(|r| r.name.to_string())
+                .collect(),
+        }));
+    }
+    let variants = state.catalog_repository().transcode_stats_per_rung().await?;
+    let active = transcode_registry().lock().await.len() as u64;
+    Ok(Json(TranscodeAdminResponse {
+        enabled: true,
+        variants,
+        pool: TranscodePoolStats {
+            active_workers: active,
+        },
+        max_bytes: state.config().transcode.cache_max_bytes,
+        configured_ladder: state
+            .config()
+            .abr
+            .ladder
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect(),
+    }))
+}
+
 /// Evict unpinned entries until under `target_bytes`. Called after each
 /// cache write (via `cache_write_task`) and from a periodic background
 /// sweep. Returns the count of entries evicted.
@@ -1702,11 +1758,95 @@ pub async fn evict_to_target(
     Ok(evicted)
 }
 
+/// Evict completed transcode variants until the total approximated cache
+/// size is at or below `target_bytes`. Walks
+/// `fetch_transcode_eviction_candidates()` (already ordered oldest-first
+/// by `last_accessed_at`) and deletes each manifest row + its on-disk
+/// `output_dir`. Skips `pending`/`in_progress` entries (the SQL filter
+/// guarantees this). Returns the count of variants evicted.
+///
+/// **M7 T9.** Called by the periodic background sweep spawned in
+/// `main.rs`. Also available to admin tooling via `POST /api/admin/...`
+/// (T8 surfaced stats; a dedicated trigger endpoint can be added later).
+pub async fn evict_transcode_to_target(
+    state: &AppState,
+    target_bytes: u64,
+) -> Result<u64, anyhow::Error> {
+    let repo = state.catalog_repository().clone();
+    let candidates = repo.fetch_transcode_eviction_candidates().await?;
+
+    // Approximate current total: sum of bytes for all completed entries.
+    let mut current: u64 = candidates.iter().map(|(_, bytes)| *bytes as u64).sum();
+    if current <= target_bytes {
+        return Ok(0);
+    }
+
+    let mut evicted = 0u64;
+    for (entry, approx_bytes) in candidates {
+        if current <= target_bytes {
+            break;
+        }
+        // Delete the manifest row, then the on-disk segments.
+        if let Err(e) = repo
+            .delete_transcode_entry(&entry.video_id, &entry.variant, &entry.profile)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                video_id = %entry.video_id,
+                variant = %entry.variant,
+                "transcode eviction: manifest delete failed"
+            );
+            continue;
+        }
+        let dir = std::path::PathBuf::from(&entry.output_dir);
+        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+            // Don't fail the sweep on a missing/unreadable dir — the row is
+            // already gone, which is the durable state we care about.
+            tracing::debug!(
+                error = %e,
+                dir = %dir.display(),
+                "transcode eviction: output_dir removal failed (already gone?)"
+            );
+        }
+        current = current.saturating_sub(approx_bytes as u64);
+        evicted += 1;
+    }
+    if evicted > 0 {
+        tracing::info!(evicted, target_bytes, remaining_bytes = current, "transcode LRU sweep complete");
+    }
+    Ok(evicted)
+}
+
+/// Background sweep loop. Runs forever, sleeping `interval` between
+/// passes. Designed to be spawned via `tokio::spawn` from `main.rs`.
+pub async fn transcode_sweep_loop(state: AppState, interval: std::time::Duration) {
+    tracing::info!(?interval, "transcode LRU sweep task started");
+    loop {
+        tokio::time::sleep(interval).await;
+        let target = state.config().transcode.cache_max_bytes;
+        match evict_transcode_to_target(&state, target).await {
+            Ok(n) if n > 0 => {
+                tracing::info!(evicted = n, target_bytes = target, "transcode sweep evicted variants");
+            }
+            Ok(_) => {} // No work; avoid log spam.
+            Err(e) => {
+                tracing::warn!(error = %e, "transcode sweep iteration failed");
+            }
+        }
+    }
+}
+
 // ── HLS transcode endpoints (M6) ────────────────────────────────────
 
 /// `GET /api/videos/{id}/transcode/master.m3u8` — HLS master playlist.
 /// If no transcode exists yet, kicks off a default-variant transcode and
 /// returns the master playlist once the first segment is ready.
+///
+/// **M7:** the playlist is regenerated per request from
+/// `transcode_cache_entries` rows — it grows as on-demand variants land.
+/// The pre-compute variant is selected from the video's source height per
+/// PRD FR-1.4 / `select_precompute_variant`.
 ///
 /// Auth required, no CSRF (safe GET).
 pub async fn get_transcode_master(
@@ -1719,16 +1859,48 @@ pub async fn get_transcode_master(
 
     let stream_info = resolve_stream_info(&state, &id).await?;
 
-    // Ensure a transcode worker is running for this video.
-    ensure_transcode_started(&state, &id, &stream_info, crate::transcode::DEFAULT_VARIANT)
+    // Pick the pre-compute variant: best rung ≤ min(source_height, cap).
+    let source_height = fetch_video_height(&state, &id).await;
+    let precompute = castify_core::select_precompute_variant(
+        source_height,
+        &state.config().abr.ladder,
+        &state.config().abr.precompute_cap,
+    );
+
+    // Ensure a transcode worker is running for the pre-compute variant.
+    ensure_transcode_started(&state, &id, &stream_info, precompute.name).await?;
+
+    // Build master playlist from the current cache state.
+    let entries = state
+        .catalog_repository()
+        .fetch_transcodes_for_video(&id)
         .await?;
 
-    // Build master playlist. Single variant for M6; M7 adds the ladder.
-    let master = crate::transcode::build_master_playlist(
-        crate::transcode::DEFAULT_VARIANT,
-        3_000_000, // 3 Mbps estimated for 720p
-        Some((1280, 720)),
-    );
+    let master = if entries.is_empty() {
+        // Manifest insert failed inside ensure_transcode_started but the
+        // transcode itself started. Fall back to a single-variant playlist
+        // pointing at the pre-compute variant so the client can still try.
+        tracing::warn!(video_id = %id, "no manifest rows; falling back to default-variant master");
+        let fallback_rung = castify_core::lookup_rung(precompute.name);
+        crate::transcode::build_master_playlist(&[castify_catalog::TranscodeCacheEntry {
+            video_id: id.clone(),
+            variant: precompute.name.into(),
+            profile: crate::transcode::DEFAULT_PROFILE.into(),
+            output_dir: String::new(),
+            total_segments: None,
+            completed_segments: 0,
+            segment_duration_secs: state.config().transcode.segment_duration_secs as i64,
+            bitrate: fallback_rung.map(|r| (r.target_bitrate_kbps as i64) * 1000),
+            width: fallback_rung.map(|r| (r.target_height as i64) * 16 / 9),
+            height: fallback_rung.map(|r| r.target_height as i64),
+            status: "pending".into(),
+            last_error: None,
+            created_at: String::new(),
+            last_accessed_at: String::new(),
+        }])
+    } else {
+        crate::transcode::build_master_playlist(&entries)
+    };
 
     let mut resp = Response::new(Body::from(master));
     *resp.status_mut() = StatusCode::OK;
@@ -1743,9 +1915,35 @@ pub async fn get_transcode_master(
     Ok(resp)
 }
 
+/// Fetch the source video height (from scan-time metadata, not the M5
+/// probe). Returns `None` if the video is missing or the column is NULL.
+/// Used by `get_transcode_master` to pick the pre-compute variant.
+async fn fetch_video_height(state: &AppState, video_id: &str) -> Option<u32> {
+    use sqlx::Row;
+    let row = sqlx::query(r#"SELECT height FROM videos WHERE id = ?"#)
+        .bind(video_id)
+        .fetch_optional(state.pool())
+        .await
+        .ok()??;
+    let height: Option<i64> = row.get("height");
+    height
+        .filter(|h| *h > 0)
+        .map(|h| h as u32)
+}
+
 /// `GET /api/videos/{id}/transcode/{variant}/playlist.m3u8` — variant HLS
-/// playlist. Lists segments that are ready. If transcode is in-progress,
-/// playlist grows as new segments land (client polls).
+/// playlist. Lists segments that are ready.
+///
+/// **M7 on-demand semantics:**
+/// - If the variant has a manifest row in `failed` state: return 503 with
+///   the last error message.
+/// - If the variant has a manifest row in `pending`/`in_progress`/`completed`:
+///   try to read the playlist file. Return 200 if present, otherwise 404 +
+///   `Retry-After: 3` (segments still generating).
+/// - If no manifest row: kick off an on-demand transcode via
+///   `ensure_transcode_started`, then return 404 + `Retry-After: 3`. hls.js
+///   retries per its ABR logic; the next request finds the playlist once the
+///   first segment lands.
 pub async fn get_transcode_playlist(
     State(state): State<AppState>,
     Path((id, variant)): Path<(String, String)>,
@@ -1754,30 +1952,52 @@ pub async fn get_transcode_playlist(
         return Err(ApiError::NotFound);
     }
 
-    let stream_info = resolve_stream_info(&state, &id).await?;
+    let repo = state.catalog_repository();
+    let profile = crate::transcode::DEFAULT_PROFILE;
+    let entry = repo.fetch_transcode_entry(&id, &variant, profile).await?;
 
-    // Ensure a transcode worker is running.
-    ensure_transcode_started(&state, &id, &stream_info, &variant).await?;
+    // Failed variant → 503 with the last error.
+    if let Some(e) = entry.as_ref() {
+        if e.status == castify_catalog::TRANSCODE_STATUS_FAILED {
+            let msg = e
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "transcode failed".to_string());
+            return Err(ApiError::ServiceUnavailable(msg));
+        }
+    }
+
+    // For variants with a row (pending/in_progress/completed) or after
+    // kicking off an on-demand transcode, try to read the playlist file.
+    if entry.is_none() {
+        // No manifest row → on-demand generation. Kick off the transcode
+        // (no-op if already running) and fall through to the playlist read.
+        // If the playlist file isn't there yet, we'll return 404 below.
+        let stream_info = resolve_stream_info(&state, &id).await?;
+        ensure_transcode_started(&state, &id, &stream_info, &variant).await?;
+    }
 
     let dir = transcode_output_dir(&state, &id, &variant);
-
-    // Wait briefly for the playlist file to appear (transcode may have
-    // just started). Poll for up to 10 seconds.
-    let playlist_content = wait_for_playlist(&dir, std::time::Duration::from_secs(10))
-        .await
-        .ok_or(ApiError::NotFound)?;
-
-    let mut resp = Response::new(Body::from(playlist_content));
-    *resp.status_mut() = StatusCode::OK;
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/vnd.apple.mpegurl"),
-    );
-    resp.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
-    );
-    Ok(resp)
+    if let Some(playlist_content) = crate::transcode::read_playlist(&dir).await {
+        let mut resp = Response::new(Body::from(playlist_content));
+        *resp.status_mut() = StatusCode::OK;
+        resp.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.apple.mpegurl"),
+        );
+        resp.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        );
+        Ok(resp)
+    } else {
+        // Playlist not ready yet. hls.js retries per its ABR logic.
+        let mut resp = Response::new(Body::empty());
+        *resp.status_mut() = StatusCode::NOT_FOUND;
+        resp.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("3"));
+        Ok(resp)
+    }
 }
 
 /// `GET /api/videos/{id}/transcode/{variant}/{segment}` — serve a .ts
@@ -1801,6 +2021,14 @@ pub async fn get_transcode_segment(
 
     match tokio::fs::read(&segment_path).await {
         Ok(bytes) => {
+            // Best-effort manifest touch — bump `last_accessed_at` for LRU.
+            // Don't fail the request if the DB write fails; the segment is
+            // already in hand.
+            let _ = state
+                .catalog_repository()
+                .touch_transcode(&id, &variant, crate::transcode::DEFAULT_PROFILE)
+                .await;
+
             let mut resp = Response::new(Body::from(bytes));
             *resp.status_mut() = StatusCode::OK;
             resp.headers_mut().insert(
@@ -1828,27 +2056,39 @@ fn transcode_output_dir(state: &AppState, video_id: &str, variant: &str) -> std:
         .join(crate::transcode::DEFAULT_PROFILE)
 }
 
+/// Process-level registry of active transcodes. Keyed by
+/// `{video_id}:{variant}`. Each entry holds the `TranscodeHandle` so
+/// concurrent requests share one ffmpeg process. Shared between
+/// `ensure_transcode_started` (insert) and `cancel_transcode` (remove + kill).
+static TRANSCODE_REGISTRY: std::sync::OnceLock<
+    tokio::sync::Mutex<std::collections::HashMap<String, Arc<crate::transcode::TranscodeHandle>>>,
+> = std::sync::OnceLock::new();
+
+fn transcode_registry(
+) -> &'static tokio::sync::Mutex<std::collections::HashMap<String, Arc<crate::transcode::TranscodeHandle>>>
+{
+    TRANSCODE_REGISTRY.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// Ensure a transcode worker is running for the given video + variant.
 /// If a worker is already running or completed, this is a no-op.
-/// Uses a process-level registry to deduplicate concurrent requests.
+/// Uses [`TRANSCODE_REGISTRY`] to deduplicate concurrent requests.
+///
+/// **M7 manifest wiring:** on start, writes a `pending` row to
+/// `transcode_cache_entries`; a spawned watcher task updates the row to
+/// `in_progress` → `completed`/`failed` as ffmpeg runs. On resume (segments
+/// exist but no in-memory handle), seeds a `completed` row if missing.
 async fn ensure_transcode_started(
     state: &AppState,
     video_id: &str,
     stream_info: &VideoStreamInfo,
     variant: &str,
 ) -> ApiResult<()> {
-    use std::collections::HashMap;
-    use std::sync::OnceLock;
-
-    // Process-level registry of active transcodes. Keyed by (video_id, variant).
-    // Each entry holds the TranscodeHandle so concurrent requests share one
-    // ffmpeg process.
-    static REGISTRY: OnceLock<
-        tokio::sync::Mutex<HashMap<String, Arc<crate::transcode::TranscodeHandle>>>,
-    > = OnceLock::new();
-    let registry = REGISTRY.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let registry = transcode_registry();
 
     let key = format!("{video_id}:{variant}");
+    let profile = crate::transcode::DEFAULT_PROFILE;
+    let repo = state.catalog_repository().clone();
 
     let mut guard = registry.lock().await;
 
@@ -1865,7 +2105,8 @@ async fn ensure_transcode_started(
     }
 
     // Check if segments already exist on disk (completed transcode from
-    // a previous server session).
+    // a previous server session, or M6→M7 migration where the manifest
+    // wasn't wired yet).
     let output_dir = transcode_output_dir(state, video_id, variant);
     let existing_segments =
         crate::transcode::count_segments(&output_dir).await;
@@ -1875,14 +2116,47 @@ async fn ensure_transcode_started(
                 return Ok(());
             }
         }
-        // Segments exist but no handle — likely from a previous session.
-        // Treat as complete.
+        // Segments exist but no completed handle. Seed a completed manifest
+        // row if missing — the resume case. Bitrate/width/height unknown
+        // for M6-era segments; left NULL (admin/eviction treat NULL as 0).
         tracing::info!(%key, segments = existing_segments, "found existing transcode segments");
+        let entry = NewTranscodeEntry {
+            video_id,
+            variant,
+            profile,
+            output_dir: &output_dir.to_string_lossy(),
+            segment_duration_secs: state.config().transcode.segment_duration_secs,
+            bitrate: None,
+            width: None,
+            height: None,
+        };
+        if let Err(e) = repo
+            .seed_completed_transcode_if_missing(&entry, existing_segments)
+            .await
+        {
+            tracing::warn!(error = %e, %key, "failed to seed completed manifest row");
+        }
         return Ok(());
     }
 
     // Start a new transcode. First, fetch the provider stream.
     tracing::info!(%key, "starting transcode");
+
+    // Write the pending manifest row before ffmpeg starts so admin/eviction
+    // can see the in-flight job even before the first segment lands.
+    let entry = NewTranscodeEntry {
+        video_id,
+        variant,
+        profile,
+        output_dir: &output_dir.to_string_lossy(),
+        segment_duration_secs: state.config().transcode.segment_duration_secs,
+        bitrate: crate::transcode::variant_target_bitrate(variant),
+        width: crate::transcode::variant_target_width(variant),
+        height: crate::transcode::variant_target_height(variant),
+    };
+    if let Err(e) = repo.insert_pending_transcode(&entry).await {
+        tracing::warn!(error = %e, %key, "failed to insert pending manifest row");
+    }
 
     let stream_response =
         open_stream_with_refresh(state, stream_info, None).await?;
@@ -1899,26 +2173,150 @@ async fn ensure_transcode_started(
             "failed to start transcode: {e}"
         ))
     })?;
+    let handle = Arc::new(handle);
 
-    guard.insert(key, Arc::new(handle));
+    // Spawn a watcher that updates the manifest row as ffmpeg progresses.
+    // Best-effort: log failures but don't propagate (the transcode itself
+    // is already running; the manifest is secondary).
+    spawn_transcode_manifest_watcher(
+        repo.clone(),
+        Arc::clone(&handle),
+        video_id.to_string(),
+        variant.to_string(),
+        profile.to_string(),
+        output_dir.clone(),
+    );
+
+    guard.insert(key, handle);
     Ok(())
 }
 
-/// Poll for the variant playlist file until it exists or timeout.
-async fn wait_for_playlist(
-    dir: &std::path::Path,
-    timeout: std::time::Duration,
-) -> Option<String> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if let Some(content) = crate::transcode::read_playlist(dir).await {
-            return Some(content);
+/// Background task that mirrors a running transcode's progress into the
+/// `transcode_cache_entries` manifest. Polls the output directory every
+/// second for new segments; on ffmpeg exit, writes the final status.
+///
+/// Best-effort: all repo writes are logged-and-discarded on failure. The
+/// transcode itself doesn't depend on the manifest — only admin/eviction
+/// and the master playlist do.
+fn spawn_transcode_manifest_watcher(
+    repo: CatalogRepository,
+    handle: Arc<crate::transcode::TranscodeHandle>,
+    video_id: String,
+    variant: String,
+    profile: String,
+    output_dir: PathBuf,
+) {
+    tokio::spawn(async move {
+        // Mark in_progress immediately so admin sees the running state.
+        let _ = repo
+            .mark_transcode_in_progress(&video_id, &variant, &profile)
+            .await
+            .inspect_err(|e| {
+                tracing::warn!(error = %e, %video_id, %variant, "manifest mark_in_progress failed");
+            });
+
+        let poll_interval = std::time::Duration::from_secs(1);
+        loop {
+            let done = handle.state.is_done();
+            let segments = crate::transcode::count_segments(&output_dir).await;
+            let _ = repo
+                .update_transcode_progress(&video_id, &variant, &profile, segments)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, %video_id, %variant, "manifest update_progress failed");
+                });
+            if done {
+                break;
+            }
+            tokio::time::sleep(poll_interval).await;
         }
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Final status from ffmpeg's exit flags.
+        let final_segments = crate::transcode::count_segments(&output_dir).await;
+        if handle
+            .state
+            .completed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let _ = repo
+                .mark_transcode_completed(&video_id, &variant, &profile, final_segments)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, %video_id, %variant, "manifest mark_completed failed");
+                });
+        } else {
+            let _ = repo
+                .mark_transcode_failed(&video_id, &variant, &profile, "ffmpeg exited non-zero")
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!(error = %e, %video_id, %variant, "manifest mark_failed failed");
+                });
+         }
+     });
+ }
+
+// (M7 T6 removed `wait_for_playlist` — the on-demand playlist endpoint now
+// returns 404 + Retry-After immediately when segments aren't ready, letting
+// hls.js do the polling per its ABR logic.)
+
+/// `DELETE /api/videos/{id}/transcode` — cancel all active transcodes for
+/// a video. Kills the ffmpeg child processes, drops the registry entries,
+/// marks the manifest rows `failed` with `last_error = 'cancelled'`.
+/// Returns 204 even if nothing was running (idempotent), so the client can
+/// retry safely. Auth + CSRF required.
+pub async fn cancel_transcode(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if !state.config().transcode.enabled {
+        return Err(ApiError::NotFound);
     }
+
+    let registry = transcode_registry();
+    let profile = crate::transcode::DEFAULT_PROFILE;
+    let repo = state.catalog_repository().clone();
+
+    // Snapshot of keys to cancel (all variants for this video).
+    let prefix = format!("{id}:");
+    let mut guard = registry.lock().await;
+    let keys_to_cancel: Vec<String> = guard
+        .keys()
+        .filter(|k| k.starts_with(&prefix))
+        .cloned()
+        .collect();
+
+    for key in &keys_to_cancel {
+        if let Some(handle) = guard.remove(key) {
+            // Try to kill ffmpeg before the watcher claims it.
+            let mut child_guard = handle.child.lock().await;
+            if let Some(child) = child_guard.as_mut() {
+                let _ = child.kill().await;
+            }
+            drop(child_guard);
+        }
+        // Mark the manifest row failed for every variant we cancelled.
+        // `key` is `{video_id}:{variant}` — split on the first `:`.
+        if let Some(variant) = key.split_once(':').map(|(_, v)| v) {
+            if let Err(e) = repo
+                .mark_transcode_failed(&id, variant, profile, "cancelled by user")
+                .await
+            {
+                tracing::warn!(error = %e, %key, "failed to mark cancelled manifest row");
+            }
+        }
+    }
+
+    if keys_to_cancel.is_empty() {
+        tracing::info!(video_id = %id, "cancel_transcode: no active transcodes");
+    } else {
+        tracing::info!(
+            video_id = %id,
+            cancelled = keys_to_cancel.len(),
+            "cancel_transcode: stopped transcodes"
+        );
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── Probe admin endpoints (M5) ──────────────────────────────────────

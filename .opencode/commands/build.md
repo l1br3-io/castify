@@ -13,7 +13,7 @@ The arguments select the mode. Treat `auto` (canonical) or `all` as autonomous m
 
 ## Default: one task
 
-Pick the next pending task from the plan. Then:
+Pick the next pending task from `tasks/todo.md` (the lightweight checklist), then read **only that task's section** from `tasks/plan.md` — not the whole file. Pull in the plan's Overview / Architecture Decisions only if the task needs that context; skip other tasks' completed detail. Then:
 
 1. Read the task's acceptance criteria
 2. Load relevant context (existing code, patterns, types)
@@ -38,6 +38,6 @@ Use this once a spec exists and you want to collapse plan + build into one run. 
    - the spec is ambiguous, or a task needs a decision the spec doesn't cover
    - a task is high-risk or irreversible — auth/permission changes, destructive data migrations, payments, deletions, deploys, anything touching secrets, or anything you can't undo with `git revert` → follow the doubt-driven-development skill and get explicit sign-off before continuing
    After the user resolves a blocker, they re-invoke /build auto — it resumes from the next pending task.
-7. Summarize at the end: tasks completed, tests added, commits made, and anything skipped, flagged, or left for the user.
+7. Summarize at the end: tasks completed, tests added, commits made, and anything skipped, flagged, or left for the user. If all tasks in the plan are complete, suggest archiving the phase — move `tasks/plan.md`, `tasks/todo.md`, and the phase's spec into `tasks/archive/YYYY-MM-DD-<slug>/` (see `planning-and-task-breakdown` § Plan File Lifecycle) so the next `/build` starts a fresh, phase-scoped plan. Do not move the files until the user confirms.
 
 If any step fails, follow the debugging-and-error-recovery skill.

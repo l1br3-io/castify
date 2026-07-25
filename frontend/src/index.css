@@ -25,6 +25,17 @@ body {
   color: var(--color-castify-text);
 }
 
+/* M3 T12: subtitle cue styling. jsdom can't render these (UA-rendered
+   pseudo-element); styled for legibility on varied video backgrounds.
+   White text + translucent black backdrop + soft shadow for outline. */
+video::cue {
+  font-size: 1.15em;
+  font-family: var(--font-sans);
+  color: #fff;
+  background-color: rgba(0, 0, 0, 0.7);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
 /* Hide scrollbar on horizontal shelf containers while keeping scroll
    functional (trackpad, swipe, shift+wheel). T8 shelves use this. */
 .no-scrollbar {

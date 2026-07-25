@@ -48,6 +48,7 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
             enabled: false,
             ..Default::default()
         },
+        abr: castify_core::AbrConfig::default(),
     };
     let state = AppState::new(config, pool, secret, token_key);
     (state, named, path)

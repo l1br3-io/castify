@@ -43,6 +43,7 @@ The depth behind these items lives in `code-review-and-quality` (the five-axis r
 - [ ] Public interfaces, APIs, and user-facing behavior are documented
 - [ ] Architectural decisions worth preserving are recorded (see `documentation-and-adrs`)
 - [ ] Documentation describes the current state in timeless language, not the change history
+- [ ] The always-loaded rules file (AGENTS.md) stays lean — gotchas go in the code next to the trap (`/** GOTCHA */`), or `docs/gotchas.md#gN` only when there's no code home; the rules file gets at most an index line, never inline prose
 
 ### Ship-readiness
 - [ ] Security implications reviewed for any untrusted input, auth, or data handling (see `security-and-hardening`)

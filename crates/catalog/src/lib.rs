@@ -7,12 +7,13 @@ pub mod provider;
 pub mod providers;
 pub mod repository;
 pub mod scanner;
+pub mod transcode_cache;
 
 pub use crypto::{decrypt, encrypt, TokenBundle, TokenKey};
 pub use model::{
     DiscoveredSubtitle, DiscoveredVideo, ListPage, NewConnection, NewVideo, PlaybackProgress,
-    Provider, ProviderConnection, ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry,
-    VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
+    Provider, ProviderConnection, ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry,
+    VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
 };
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
 pub use provider::{
@@ -26,4 +27,8 @@ pub use providers::ProviderRegistry;
 pub use repository::{
     CatalogError, CatalogRepository, CatalogResult, FolderCount, ProbeStats, VideoStreamInfo,
     VideoThumbnailInfo,
+};
+pub use transcode_cache::{
+    NewTranscodeEntry, TranscodeRungStats, TRANSCODE_STATUS_COMPLETED, TRANSCODE_STATUS_FAILED,
+    TRANSCODE_STATUS_IN_PROGRESS, TRANSCODE_STATUS_PENDING,
 };

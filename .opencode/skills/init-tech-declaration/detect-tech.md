@@ -1,7 +1,7 @@
 # Detect the Project's Tech
 
-Used by `init-tech-declaration` to generate `rules/tech.md`. Do NOT run this
-at session start — read `rules/tech.md` instead.
+Used by `init-tech-declaration` to generate `.opencode/harness/rules/tech.md`. Do NOT run this
+at session start — read `.opencode/harness/rules/tech.md` instead.
 
 ---
 
@@ -18,14 +18,14 @@ Step 3, not by guessing.
 
 ---
 
-## Step 2 — Map the manifest to a `tech/<dir>/`
+## Step 2 — Map the manifest to a `.opencode/harness/tech/<dir>/`
 
 Use the file the skill is acting on to pick the row. "Deps" = a key in
 `package.json` `dependencies` / `devDependencies`.
 
 ### Non-JS/TS (1:1 with language)
 
-Mapping is 1:1 with the language — no framework branching.
+Mapping is 1:1 with the language, then refined by framework detection below.
 
 | Manifest / signal            | Tech dir     |
 | :--------------------------- | :----------- |
@@ -46,6 +46,24 @@ Mapping is 1:1 with the language — no framework branching.
 
 If a manifest signals a tech dir that does not exist, fall back to `common/`
 only and write in the target language's idioms.
+
+#### Framework hints (non-JS)
+
+After resolving the language dir, check deps for known frameworks. If matched,
+append the framework as a hint in parentheses (e.g. `python (fastapi)`). The
+router then points at both the language dir and any framework-specific file
+inside it (e.g. `tech/python/fastapi.md`).
+
+| Language | Dep / signal in manifest           | Framework hint |
+| :------- | :--------------------------------- | :------------- |
+| python   | `fastapi` in requirements/pyproject | `python (fastapi)` |
+| python   | `django` in requirements/pyproject  | `python (django)`  |
+| python   | `flask` in requirements/pyproject   | `python (flask)`   |
+| ruby     | `rails` in Gemfile                  | `ruby (rails)`     |
+| php      | `laravel/framework` in composer     | `php (laravel)`    |
+
+Only record a hint when a corresponding `tech/<lang>/<framework>.md` file
+exists; otherwise the hint adds noise without a file to point at.
 
 ### JS/TS (framework-aware — check `deps` in priority order)
 

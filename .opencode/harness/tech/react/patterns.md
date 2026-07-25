@@ -181,11 +181,11 @@ Older codebases on React 18 still need `forwardRef`.
 ### Next.js (App Router)
 
 - Server Actions, Route Handlers, Middleware, Parallel/Intercepted Routes, streaming Metadata
-- Treated as a separate framework concern — when adding deep Next-specific patterns, propose a dedicated `rules/nextjs/` track
+- Treated as a separate framework concern — when adding deep Next-specific patterns, propose a dedicated `.opencode/harness/rules/nextjs/` track
 - For now follow Next.js official docs for App Router specifics
 
 ### React Native
 
 - Platform-specific imports (`Platform.OS`, `.ios.tsx` / `.android.tsx`), `StyleSheet`, navigation libraries (React Navigation, Expo Router)
-- Treated as a separate track — `rules/react-native/` is not yet present
+- Treated as a separate track — `.opencode/harness/rules/react-native/` is not yet present
 - React core hooks/patterns from this file still apply

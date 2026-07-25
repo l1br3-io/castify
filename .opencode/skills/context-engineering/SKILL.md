@@ -71,6 +71,17 @@ Create a rules file that persists across sessions. This is the highest-leverage 
 [One short example of a well-written component in your style]
 ```
 
+### Rules File Lifecycle
+
+The always-loaded rules file (AGENTS.md) is an **index, not an archive**. It earns its place in every session by staying small; once it bloats, it stops being read carefully and attention scatters.
+
+- **Index, don't inline.** Each entry is a one-line pointer (title + where the detail lives), not the full text. Gotchas live in the code next to the trap by default, or `docs/gotchas.md#gN` as a fallback; deep rationale links to an ADR.
+- **Graduate detail to on-demand.** When an entry grows past a line or two, move the detail to its on-demand home and leave a pointer behind. The full content is loaded only when a task needs it (Levels 2-3), not every session.
+- **Size guard.** If Level 1 exceeds roughly **15 KB / ~400 lines**, split detail out until it's back to a lean index. Treat the threshold as a tripwire, not a budget to spend.
+- **No per-milestone paste.** A common failure mode: each milestone adds a full gotcha or convention block to the rules file and nothing ever gets trimmed. The rules file is linked-to, not pasted-into, per milestone. See `documentation-and-adrs` for where gotchas canonically live.
+
+This mirrors the `planning-and-task-breakdown` Plan File Lifecycle: phase-scoped, archived when done, linked rather than copied.
+
 ### Level 2: Specs and Architecture
 
 Load the relevant spec section when starting a feature. Don't load the entire spec if only one section applies.
@@ -125,7 +136,7 @@ PROJECT CONTEXT:
 - Key constraints: [list]
 - Files involved: [list with brief descriptions]
 - Related patterns: [pointer to an example file]
-- Known gotchas: [list of things to watch out for]
+- Known gotchas: [gotchas live in the code by default; list here only the rare ones with no code home, as a title + link to docs/gotchas.md#gN]
 ```
 
 ### The Selective Include
@@ -250,6 +261,7 @@ This catches wrong directions before you've built on them. It's a 30-second inve
 |---|---|---|
 | Context starvation | Agent invents APIs, ignores conventions | Load rules file + relevant source files before each task |
 | Context flooding | Agent loses focus when loaded with >5,000 lines of non-task-specific context. More files does not mean better output. | Include only what is relevant to the current task. Aim for <2,000 lines of focused context per task. |
+| Rules-file accumulation | AGENTS.md grows one paste per milestone — gotchas, conventions, notes — and never gets trimmed, so the always-loaded file bloats and attention scatters. | Keep Level 1 a lean index. Gotchas go in the code next to the trap (or `docs/gotchas.md#gN` only when there's no code home); the rules file gets at most a one-line pointer, never full prose. See the Rules File Lifecycle note. |
 | Stale context | Agent references outdated patterns or deleted code | Start fresh sessions when context drifts |
 | Missing examples | Agent invents a new style instead of following yours | Include one example of the pattern to follow |
 | Implicit knowledge | Agent doesn't know project-specific rules | Write it down in rules files — if it's not written, it doesn't exist |

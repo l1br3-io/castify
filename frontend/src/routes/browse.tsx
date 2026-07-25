@@ -1,20 +1,21 @@
 // Browse page — M2 T7 poster-grid view + T8 hero showcase + scrollable shelves
-// + T9 search + T10 filter panel / URL deep-linking.
+// + T9 search + T10 filter panel / URL deep-linking + T13 continue-watching.
 //
-// Layout (PRD FR-8):
+// Layout (PRD FR-8 + FR-11):
 //   0. Search bar (always at top; "/" focuses it).
 //   1. Hero showcase (featured video: most-recently-scanned, full-width ~40vh).
-//   2. Shelves section (horizontal scrollable rows):
+//   2. Continue-watching shelf (T13, IndexedDB-backed; hidden when empty).
+//   3. Shelves section (horizontal scrollable rows):
 //      - Recently Added (always shown)
 //      - Favorites (shown only when owner has ≥1 favorite)
 //      - By Provider (one shelf per connected provider)
-//      - By Folder (one shelf per top-5 folder by count)
-//   3. "All Videos" grid section (poster grid + sort + filter panel + pagination).
+//      - By Folder (one per top-5 folder by count)
+//   4. "All Videos" grid section (poster grid + sort + filter panel + pagination).
 //
 // Search (T9, FR-2): when the debounced query is non-empty, the layout enters
-// a focused search-results mode — hero + shelves are hidden and the grid
-// section shows "Search results for "q"" + count. Search composes with sort
-// and all filters (FR-2.2).
+// a focused search-results mode — hero + shelves (incl. continue-watching)
+// are hidden and the grid section shows "Search results for "q"" + count.
+// Search composes with sort and all filters (FR-2.2).
 //
 // URL state (T10): all filter + sort + search state lives in URL search params
 // via `useBrowseFilters()` for deep-linking + back-button support. `page` is
@@ -42,7 +43,9 @@ import { Shelf } from "../components/shelf";
 import { useConnections } from "../hooks/use-connections";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { useFolders } from "../hooks/use-folders";
+import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
+import { ContinueWatchingCard } from "../components/continue-watching-card";
 import { describeError } from "../lib/format";
 import { useBrowseFilters } from "../lib/filter-state";
 import {
@@ -187,6 +190,9 @@ export function BrowsePage() {
             ratingSlot={<RatingStars video={heroVideo} variant="hero" />}
           />
 
+          {/* T13: continue-watching shelf (IndexedDB-backed) */}
+          <ContinueWatchingShelf />
+
           {/* Shelves */}
           <div className="space-y-6">
             <Shelf
@@ -287,6 +293,48 @@ interface ViewAllFilter {
 // ---------------------------------------------------------------------------
 // Shelf sub-components (own their queries, conditionally render)
 // ---------------------------------------------------------------------------
+
+// Continue-watching shelf (M3 T13, FR-11).
+//
+// Reads from IndexedDB via `useInProgressVideos` — zero server calls per
+// `docs/data-storage-principles.md` anti-pattern #3. Hidden while the query
+// is loading and when no entries exist (FR-11.5). Renders its own row of
+// `ContinueWatchingCard`s rather than reusing `<Shelf>` because the data
+// shape (`ProgressEntry`) differs from `VideoSummaryDto`; a parallel layout
+// keeps the shelf component typed against the catalog DTO and avoids an
+// adapter layer just to share markup.
+function ContinueWatchingShelf() {
+  const query = useInProgressVideos();
+  if (query.isLoading || !query.data || query.data.length === 0) return null;
+  const entries = query.data;
+  // Sibling list for the ephemeral play queue (T11) — every card on this
+  // shelf carries the same `queue` so the watch page can next/prev through
+  // the continue-watching context.
+  const queue = entries.map((e) => e.videoId);
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="text-xl font-semibold tracking-tight">
+          Continue Watching
+        </h2>
+      </div>
+      <div
+        className="no-scrollbar flex gap-4 overflow-x-auto pb-2"
+        style={{ scrollSnapType: "x mandatory" }}
+      >
+        {entries.map((entry) => (
+          <div
+            key={entry.videoId}
+            className="w-[200px] flex-shrink-0"
+            style={{ scrollSnapAlign: "start" }}
+          >
+            <ContinueWatchingCard entry={entry} queue={queue} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function FavoritesShelf({ onViewAll }: { onViewAll: () => void }) {
   const query = useVideos({

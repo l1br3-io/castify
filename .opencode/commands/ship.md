@@ -10,7 +10,7 @@ Invoke the shipping-and-launch skill.
 
 ## Phase A — Parallel fan-out
 
-Spawn three subagents concurrently. The CLI exposes each custom subagent in `agents/` as a tool with the same name — so `code-reviewer.md` becomes a `code-reviewer` tool the main agent can call, and `@code-reviewer` works as an explicit invocation in the prompt. **Issue all three subagent tool calls in a single assistant turn so they execute in parallel** — sequential calls defeat the purpose of this command.
+Spawn three subagents concurrently. The CLI exposes each custom subagent in `.opencode/agents/` as a tool with the same name — so `code-reviewer.md` becomes a `code-reviewer` tool the main agent can call, and `@code-reviewer` works as an explicit invocation in the prompt. **Issue all three subagent tool calls in a single assistant turn so they execute in parallel** — sequential calls defeat the purpose of this command.
 
 Dispatch each persona by tool name:
 
@@ -23,22 +23,22 @@ If subagents are unavailable in the current CLI version, invoke each persona's s
 Constraints (from CLI's subagent model):
 - Subagents run in isolated context loops and return only their report to this main session.
 - Do not let one persona delegate to another — keep the fan-out flat.
-- For richer multi-agent collaboration where teammates talk to each other instead of just reporting back, see `rules/orchestration-patterns.md`.
+- For richer multi-agent collaboration where teammates talk to each other instead of just reporting back, see `.opencode/harness/rules/orchestration-patterns.md`.
 
-**Persona resolution.** If you've defined your own `code-reviewer`, `security-auditor`, or `test-engineer` in `agents/` or your global configuration, those take precedence over this plugin's versions — `/ship` picks up your customizations automatically. This is intentional: plugin subagents sit at the bottom of the CLI's scope priority table, so user-level definitions win by design.
+**Persona resolution.** If you've defined your own `code-reviewer`, `security-auditor`, or `test-engineer` in `.opencode/agents/` or your global configuration, those take precedence over this plugin's versions — `/ship` picks up your customizations automatically. This is intentional: plugin subagents sit at the bottom of the CLI's scope priority table, so user-level definitions win by design.
 
 ## Phase B — Merge in main context
 
 **Standing checklists.** These rules are the launch bar — read them before synthesizing, not from memory:
-`rules/security-checklist.md`, `rules/performance-checklist.md`, `rules/accessibility-checklist.md`, `rules/observability-checklist.md`, and `rules/definition-of-done.md`.
+`.opencode/harness/rules/security-checklist.md`, `.opencode/harness/rules/performance-checklist.md`, `.opencode/harness/rules/accessibility-checklist.md`, `.opencode/harness/rules/observability-checklist.md`, and `.opencode/harness/rules/definition-of-done.md`.
 
 Once all three reports are back, the main agent (not a sub-persona) synthesizes them:
 
-1. **Code Quality** — Aggregate Critical/Important findings from `code-reviewer` and any failing tests, lint, or build output. Resolve duplicates between reviewers. Gate the overall verdict on `rules/definition-of-done.md`.
-2. **Security** — Promote any Critical/High `security-auditor` findings to launch blockers. Cross-reference with `code-reviewer`'s security axis and `rules/security-checklist.md`.
-3. **Performance** — Pull from `code-reviewer`'s performance axis; cross-check Core Web Vitals and `rules/performance-checklist.md` where applicable.
-4. **Accessibility** — Verify keyboard nav, screen reader support, and contrast against `rules/accessibility-checklist.md` (not covered by the three personas — handle directly here).
-5. **Infrastructure** — Env vars, migrations, monitoring, feature flags. Verify monitoring against `rules/observability-checklist.md`.
+1. **Code Quality** — Aggregate Critical/Important findings from `code-reviewer` and any failing tests, lint, or build output. Resolve duplicates between reviewers. Gate the overall verdict on `.opencode/harness/rules/definition-of-done.md`.
+2. **Security** — Promote any Critical/High `security-auditor` findings to launch blockers. Cross-reference with `code-reviewer`'s security axis and `.opencode/harness/rules/security-checklist.md`.
+3. **Performance** — Pull from `code-reviewer`'s performance axis; cross-check Core Web Vitals and `.opencode/harness/rules/performance-checklist.md` where applicable.
+4. **Accessibility** — Verify keyboard nav, screen reader support, and contrast against `.opencode/harness/rules/accessibility-checklist.md` (not covered by the three personas — handle directly here).
+5. **Infrastructure** — Env vars, migrations, monitoring, feature flags. Verify monitoring against `.opencode/harness/rules/observability-checklist.md`.
 6. **Documentation** — README, ADRs, changelog. Verify directly.
 
 ## Phase C — Decision and rollback

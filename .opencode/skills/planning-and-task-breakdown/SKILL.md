@@ -90,7 +90,7 @@ Each task follows this structure:
 - [ ] [Specific, testable condition]
 
 **Verification:**
-- [ ] Tests pass (quiet run; see `rules/verification-commands.md`)
+- [ ] Tests pass (quiet run; see `.opencode/harness/rules/verification-commands.md`)
 - [ ] Build succeeds
 - [ ] Manual check: [description of what to verify]
 
@@ -99,6 +99,9 @@ Each task follows this structure:
 **Files likely touched:**
 - `src/path/to/file.ts`
 - `tests/path/to/test.ts`
+
+**Docs:**
+- Gotchas discovered → default to a `/** GOTCHA */` comment in the code next to the trap; use `docs/gotchas.md#gN` only when there's no code home. AGENTS.md gets at most a one-line index pointer — never the full text.
 
 **Estimated scope:** [Small: 1-2 files | Medium: 3-5 files | Large: 5+ files]
 ```
@@ -185,6 +188,63 @@ If a task is L or larger, it should be broken into smaller tasks. An agent perfo
 - [Question needing human input]
 ```
 
+## Plan File Lifecycle
+
+A plan belongs to one phase or feature, not the whole project. A plan that
+outlives its phase becomes dead weight every time the agent re-reads it — and
+the plan is read on every build step. Keep `tasks/plan.md`, `tasks/todo.md`,
+and the phase's spec phase-scoped: when the phase is done, move them aside and
+start fresh.
+
+### When to archive
+
+Archive when **both** are true:
+
+- Every task in the plan is complete
+- The phase checkpoint is satisfied (tests pass, build is clean, end-to-end flow works)
+
+Do not archive mid-phase. An incomplete plan stays in place and gets refined or
+extended, not moved.
+
+### How to archive
+
+Move the phase's three artifacts together into `tasks/archive/`, keeping them
+as a unit:
+
+- `tasks/plan.md`
+- `tasks/todo.md`
+- the phase's spec (`SPEC.md`, or the `spec/<name>.md` this phase used)
+
+Default archive name: `tasks/archive/YYYY-MM-DD-<slug>/`
+(e.g. `tasks/archive/2026-07-22-accounts/`). Any consistent scheme works; the
+goal is that archived plans sort and stay paired with their spec.
+
+Archival is a plain filesystem move. Whether and when to commit that move is the
+user's call — the agent **suggests** the archive at the right moment; the human
+confirms. The agent never relocates these files on its own.
+
+### After archiving: start fresh
+
+- `/build` regenerates a missing `tasks/plan.md` from the *current* spec
+  (see `.opencode/commands/build.md`). So write the next phase's spec first (`/spec`),
+  then plan. A stale spec regenerates a plan for the old scope — that's why the
+  spec archives *with* the plan, not separately.
+- `/build auto` requires a spec to exist. If `SPEC.md` was archived too, it stops
+  and asks for `/spec` first — that's the intended safety net, not a failure.
+
+### Carry-over between phases
+
+If the next phase depends on decisions from the prior one, **link** the archived
+plan/spec from the new plan's "Architecture Decisions" instead of copying or
+re-reading their full contents. The archive is history the agent points at, not
+context it routinely pulls in.
+
+The same applies to the always-loaded rules file (AGENTS.md): each phase adds
+**at most a one-line index pointer** for new gotchas (linking to
+`docs/gotchas.md#gN` or an inline comment), never the full detail. The rules
+file is linked-to, not pasted-into, per milestone — otherwise it grows linearly
+and never trims.
+
 ## Parallelization Opportunities
 
 When multiple agents or sessions are available:
@@ -201,6 +261,7 @@ When multiple agents or sessions are available:
 | "The tasks are obvious" | Write them down anyway. Explicit tasks surface hidden dependencies and forgotten edge cases. |
 | "Planning is overhead" | Planning is the task. Implementation without a plan is just typing. |
 | "I can hold it all in my head" | Context windows are finite. Written plans survive session boundaries and compaction. |
+| "One plan per project" | Phase-scoped plans keep the active file small and every `/build` step cheap. `/build` regenerates the next plan once the current one is archived. |
 
 ## Red Flags
 
@@ -210,6 +271,7 @@ When multiple agents or sessions are available:
 - All tasks are XL-sized
 - No checkpoints between tasks
 - Dependency order isn't considered
+- `tasks/plan.md` keeps growing across phases — dozens of completed tasks accumulating alongside active ones. Archive the finished phase and start a fresh, phase-scoped plan.
 
 ## Verification
 
@@ -221,5 +283,6 @@ Before starting implementation, confirm:
 - [ ] No task touches more than ~5 files
 - [ ] Checkpoints exist between major phases
 - [ ] The human has reviewed and approved the plan
+- [ ] If the plan covers a completed phase, it has been archived (with its todo and spec) and a fresh plan started
 
 Acceptance criteria are per-task and answer "did we build the right thing?". They sit on top of the project-wide Definition of Done, the standing bar every task clears before it counts as done. See `@rules/definition-of-done.md`.

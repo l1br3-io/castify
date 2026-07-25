@@ -17,4 +17,4 @@ Review the current changes (staged or recent commits) across all five axes:
 Categorize findings as Critical, Important, or Suggestion.
 Output a structured review with specific file:line references and fix recommendations.
 
-Gate the verdict on `rules/definition-of-done.md` — nothing merges until every item there is satisfied.
+Gate the verdict on `.opencode/harness/rules/definition-of-done.md` — nothing merges until every item there is satisfied.

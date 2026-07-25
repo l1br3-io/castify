@@ -58,8 +58,9 @@ test.describe("Catalog flow (e2e mock)", () => {
     ).toBeVisible();
     await expect(page.getByText("4 videos")).toBeVisible();
 
-    // Dedup badge on the shared video
-    await expect(page.getByText(/Also in:/)).toBeVisible();
+    // Dedup badge on the shared video. Multiple shelves (Recently Added,
+    // By Provider, All Videos) render the badge — match the first.
+    await expect(page.getByText(/Also in:/).first()).toBeVisible();
 
     // Verify via API: shared-doc has 2 sources
     const data = await getVideos(page);

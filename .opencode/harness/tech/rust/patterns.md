@@ -1,3 +1,7 @@
+---
+paths:
+  - "**/*.rs"
+---
 # Rust Patterns Rule
 
 Design patterns that make Rust code idiomatic, synthesized from Effective Rust

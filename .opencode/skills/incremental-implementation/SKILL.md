@@ -20,8 +20,8 @@ Build in thin vertical slices — implement one piece, test it, verify it, then 
 
 ## Tech Context
 
-Tech is declared in `rules/tech.md`. Each name maps directly to `tech/<name>/`
-(e.g. `rust` → `tech/rust/`, `react` → `tech/react/`). Read the catalog
+Tech is declared in `.opencode/harness/rules/tech.md`. Each name maps directly to `.opencode/harness/tech/<name>/`
+(e.g. `rust` → `.opencode/harness/tech/rust/`, `react` → `.opencode/harness/tech/react/`). Read the catalog
 matching the concern — one, not all:
 
 - simplicity, earning abstractions (Rule 0) → `common/principles.md` (KISS/YAGNI), `common/code-smells.md` (over-engineering)
@@ -203,7 +203,7 @@ Don't touch the UI yet — we'll do that in the next increment.
 
 After implementing, run the project's verification commands (tests,
 build, lint) to confirm nothing is broken. See
-`rules/verification-commands.md` for the quiet, fail-fast defaults."
+`.opencode/harness/rules/verification-commands.md` for the quiet, fail-fast defaults."
 ```
 
 Be explicit about what's in scope and what's NOT in scope for each increment.
@@ -220,7 +220,7 @@ After each increment, verify:
 - [ ] The new functionality works as expected
 - [ ] The change is committed with a descriptive message
 
-Run each command quietly (exit code is the verdict). See `rules/verification-commands.md` for the per-tool quiet flags, the fail-fast rule for RED→GREEN iteration, and the redirect-and-grep pattern for full-suite runs.
+Run each command quietly (exit code is the verdict). See `.opencode/harness/rules/verification-commands.md` for the per-tool quiet flags, the fail-fast rule for RED→GREEN iteration, and the redirect-and-grep pattern for full-suite runs.
 
 **Note:** Run each verification command after a change that could affect it. After a successful run, don't repeat the same command unless the code has changed since — re-running on unchanged code adds no information.
 

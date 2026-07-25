@@ -136,12 +136,15 @@ test.describe("Browse page (e2e mock)", () => {
       .getByRole("group", { name: "Filter by provider" })
       .getByRole("button", { name: "Dropbox", exact: true })
       .click();
-    // Grid updates: 2 Dropbox videos (screenshots.mp4 + shared-doc.mp4)
+    // Grid updates: 2 Dropbox videos (screenshots.mp4 + shared-doc.mp4).
+    // Scope negative assertions to the #all-videos grid — the hero showcase
+    // and shelves above the grid still show All-videos content.
+    const grid = page.locator("#all-videos");
     await expect(page.getByText("2 videos")).toBeVisible();
-    await expect(page.getByText("screenshots.mp4").first()).toBeVisible();
-    await expect(page.getByText("shared-doc.mp4").first()).toBeVisible();
-    await expect(page.getByText("vacation.mp4")).toHaveCount(0);
-    await expect(page.getByText("concert.mp4")).toHaveCount(0);
+    await expect(grid.getByText("screenshots.mp4").first()).toBeVisible();
+    await expect(grid.getByText("shared-doc.mp4").first()).toBeVisible();
+    await expect(grid.getByText("vacation.mp4")).toHaveCount(0);
+    await expect(grid.getByText("concert.mp4")).toHaveCount(0);
 
     // Clear filter
     await page.getByRole("button", { name: "Clear all" }).click();

@@ -102,6 +102,10 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::get(videos::get_cache_admin),
         )
         .route(
+            "/api/admin/transcode",
+            axum::routing::get(videos::get_transcode_admin),
+        )
+        .route(
             "/api/admin/probe",
             axum::routing::get(videos::get_probe_admin),
         )
@@ -124,6 +128,10 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/videos/{id}/transcode/{variant}/{segment}",
             axum::routing::get(videos::get_transcode_segment),
+        )
+        .route(
+            "/api/videos/{id}/transcode",
+            axum::routing::delete(videos::cancel_transcode),
         );
 
     #[cfg(feature = "e2e")]

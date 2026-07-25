@@ -4,6 +4,7 @@ import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { BrowsePage } from "./browse";
 import { setCsrfToken } from "../api/client";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
+import type { ProgressEntry } from "../lib/player-db";
 
 // BrowsePage issues many GETs on mount:
 //   * GET /api/connections                        — provider shelves data source
@@ -140,7 +141,15 @@ function browseFetch(opts: BrowseFetchOpts = {}) {
 }
 
 describe("BrowsePage", () => {
-  beforeEach(() => setCsrfToken("csrf-test"));
+  // `restoreMocks: true` in vitest config resets the module-level
+  // `vi.mock` factory defaults between tests. Re-establish the
+  // `getInProgressVideos → []` default before every BrowsePage test so
+  // the CW shelf stays hidden by default; the CW describe block below
+  // overrides this per-test with non-empty entries.
+  beforeEach(() => {
+    setCsrfToken("csrf-test");
+    mockGetInProgressVideos.mockResolvedValue([]);
+  });
   afterEach(() => setCsrfToken(null));
 
   // --- Hero ---
@@ -941,5 +950,172 @@ describe("BrowsePage", () => {
       const body = (call![1] as RequestInit).body;
       expect(body).toBe(JSON.stringify({ rating: 4 }));
     });
+  });
+});
+
+// ── M3 T13: continue-watching shelf ────────────────────────────────────────
+//
+// The shelf reads from IndexedDB via `useInProgressVideos`, not from any
+// `/api/*` endpoint. Each test in this block controls the IndexedDB mock
+// directly. The browse-page-wide mock at file scope is intentionally not
+// installed for these tests — the existing browse-fetch mock covers all
+// `/api/*` calls, while the player-db mock controls the shelf content.
+//
+// The mock is hoisted to the top of the module by vitest's plugin, so the
+// import of `getInProgressVideos` below is the mocked version, not the real
+// implementation.
+
+vi.mock("../lib/player-db", () => ({
+  getInProgressVideos: vi.fn().mockResolvedValue([]),
+  // Other exports exist on the module; provide no-op stubs so any
+  // incidental imports elsewhere in the tree don't crash. None are
+  // exercised by these tests.
+  getProgress: vi.fn().mockResolvedValue(null),
+  saveProgressEntry: vi.fn().mockResolvedValue(undefined),
+  clearProgress: vi.fn().mockResolvedValue(undefined),
+  getGlobalPrefs: vi.fn().mockResolvedValue(null),
+  saveGlobalPrefs: vi.fn().mockResolvedValue(undefined),
+  getSubtitlePref: vi.fn().mockResolvedValue(null),
+  saveSubtitlePref: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { getInProgressVideos } from "../lib/player-db";
+
+const mockGetInProgressVideos = vi.mocked(getInProgressVideos);
+
+function inProgressEntry(
+  overrides: Partial<ProgressEntry> = {},
+): ProgressEntry {
+  return {
+    videoId: "cw-1",
+    positionSeconds: 30,
+    durationSeconds: 120,
+    completed: false,
+    updatedAt: 1_000,
+    videoName: "continue-me.mp4",
+    videoDurationMs: 120_000,
+    thumbnailStatus: "cached",
+    height: 1080,
+    provider: "google_drive",
+    ...overrides,
+  };
+}
+
+describe("BrowsePage — continue-watching shelf (T13)", () => {
+  beforeEach(() => {
+    setCsrfToken("csrf-test");
+    mockGetInProgressVideos.mockReset();
+    mockGetInProgressVideos.mockResolvedValue([]);
+  });
+  afterEach(() => setCsrfToken(null));
+
+  it("hides the Continue Watching shelf when no entries exist (FR-11.5)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    expect(
+      screen.queryByRole("heading", { name: "Continue Watching" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the Continue Watching shelf while IndexedDB is still loading", async () => {
+    // Never-resolving promise keeps the query in `isLoading` state.
+    mockGetInProgressVideos.mockReturnValue(new Promise<ProgressEntry[]>(() => {}));
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    expect(
+      screen.queryByRole("heading", { name: "Continue Watching" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the Continue Watching shelf when entries exist (FR-11.1)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    expect(
+      await screen.findByRole("heading", { name: "Continue Watching" }),
+    ).toBeInTheDocument();
+    // Card renders the entry's name.
+    expect(screen.getByText("continue-me.mp4")).toBeInTheDocument();
+  });
+
+  it("renders a progress bar on each continue-watching card (FR-11.3)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { name: "Continue Watching" });
+    const bar = screen.getByRole("progressbar", { name: "Watch progress" });
+    // 30s of 120s = 25%
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+  });
+
+  it("resume link points at /watch/:id (FR-11.4)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { name: "Continue Watching" });
+    const resumeLink = screen.getByRole("link", {
+      name: "Resume continue-me.mp4",
+    });
+    expect(resumeLink).toHaveAttribute("href", "/watch/cw-1");
+  });
+
+  it("places the Continue Watching shelf between hero and Recently Added", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    const cwHeading = await screen.findByRole("heading", {
+      name: "Continue Watching",
+    });
+    const recentlyAddedHeading = screen.getByRole("heading", {
+      name: "Recently Added",
+    });
+
+    // Both headings are h2 siblings in the document; CW must precede
+    // Recently Added in DOM order.
+    expect(
+      cwHeading.compareDocumentPosition(recentlyAddedHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
+  it("hides the Continue Watching shelf during active search (T9 focused-results mode)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { name: "Continue Watching" });
+
+    // Type a query — hero + shelves (incl. CW) hide during search.
+    fireEvent.change(screen.getByRole("textbox", { name: "Search videos" }), {
+      target: { value: "anything" },
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Continue Watching" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("passes the sibling list as router state queue on each card (T11)", async () => {
+    mockGetInProgressVideos.mockResolvedValue([
+      inProgressEntry({ videoId: "cw-a", videoName: "cw-a.mp4" }),
+      inProgressEntry({ videoId: "cw-b", videoName: "cw-b.mp4", updatedAt: 2_000 }),
+    ]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { name: "Continue Watching" });
+
+    // Clicking the first card should navigate to /watch/cw-a carrying the
+    // full sibling list in router state.
+    const link = screen.getByRole("link", { name: "Resume cw-a.mp4" });
+    expect(link).toHaveAttribute("href", "/watch/cw-a");
+    // We can't read router state directly off the link; the existing
+    // PosterCard queue-state probe pattern covers that in unit tests. Here
+    // we assert the link is wired to the right id, which is enough at the
+    // integration level — the queue plumbing through <ContinueWatchingCard>
+    // is unit-tested in continue-watching-card.test.tsx.
   });
 });

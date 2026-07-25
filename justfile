@@ -226,7 +226,11 @@ dev:
     #!/usr/bin/env bash
     set -euo pipefail
     if cargo watch --version >/dev/null 2>&1; then
-        ( cargo watch -x "run -p castify-api" ) &
+        # `-i frontend`: the Rust backend has no reason to watch TS sources, and
+        # ignoring them prevents the editor's TS language server (which rewrites
+        # frontend/tsconfig.tsbuildinfo every second) from triggering an endless
+        # backend restart loop.
+        ( cargo watch -i frontend -x "run -p castify-api" ) &
     else
         echo "note: cargo-watch not installed; backend won't auto-reload. 'cargo install cargo-watch' to enable." >&2
         ( cargo run -p castify-api ) &

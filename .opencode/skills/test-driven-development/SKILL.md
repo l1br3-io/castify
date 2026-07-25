@@ -23,8 +23,8 @@ Write a failing test before writing the code that makes it pass. For bug fixes, 
 
 ## Tech Context
 
-Tech is declared in `rules/tech.md`. Each name maps directly to `tech/<name>/`
-(e.g. `rust` → `tech/rust/`, `react` → `tech/react/`). Read the catalog
+Tech is declared in `.opencode/harness/rules/tech.md`. Each name maps directly to `.opencode/harness/tech/<name>/`
+(e.g. `rust` → `.opencode/harness/tech/rust/`, `react` → `.opencode/harness/tech/react/`). Read the catalog
 matching the phase — one or two, not all:
 
 - REFACTOR: what to extract / clean up    → `common/code-smells.md`, `common/functions.md`
@@ -384,7 +384,7 @@ For detailed testing patterns, examples, and anti-patterns across frameworks, se
 After completing any implementation:
 
 - [ ] Every new behavior has a corresponding test
-- [ ] All tests pass (exit code is the verdict; see `rules/verification-commands.md`)
+- [ ] All tests pass (exit code is the verdict; see `.opencode/harness/rules/verification-commands.md`)
 - [ ] Bug fixes include a reproduction test that failed before the fix
 - [ ] Test names describe the behavior being verified
 - [ ] No tests were skipped or disabled

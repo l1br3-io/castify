@@ -1,8 +1,15 @@
-// Shared e2e helpers: authentication, mock connection seeding, scan lifecycle.
+// Shared e2e helpers: authentication, mock connection seeding, scan lifecycle,
+// play lifecycle (progress, stream-url, IndexedDB).
 //
-// Used by both catalog.spec.ts (M1 catalog flow) and browse.spec.ts (M2 browse
-// features). The helpers assume the e2e compose override is active (binary
-// built with `--features e2e`, which enables the seed endpoint + mock factory).
+// Used by every spec (catalog, browse, streaming, play). The helpers assume
+// the e2e compose override is active (binary built with `--features e2e`,
+// which enables the seed endpoint + mock factory + mock CDN route).
+//
+// CSRF note: the SPA's React Query refetches can rotate the `castify_csrf`
+// cookie mid-test (see M3 deviation #70). Every mutation helper here sends
+// the CSRF token in BOTH the `X-CSRF-Token` header AND an explicit `Cookie`
+// header that overrides the cookie jar — eliminating the race regardless of
+// what the SPA does between capture and mutation.
 
 import { expect, type Page } from "@playwright/test";
 
@@ -17,6 +24,30 @@ export async function getCsrfToken(page: Page): Promise<string> {
   expect(res.ok()).toBeTruthy();
   const body = await res.json();
   return body.token as string;
+}
+
+/**
+ * Build explicit `Cookie` + `X-CSRF-Token` headers for a mutation request.
+ *
+ * Reads the current cookie jar (to preserve `castify_session` and any other
+ * auth cookies), then OVERRIDES `castify_csrf` with the captured token and
+ * sends the same value in the `X-CSRF-Token` header. The double-submit
+ * middleware sees a matched pair regardless of any cookie-jar rotation the
+ * SPA performs between token capture and mutation.
+ */
+async function authHeaders(
+  page: Page,
+  csrfToken: string,
+): Promise<Record<string, string>> {
+  const cookies = await page.context().cookies();
+  const cookieParts = cookies
+    .filter((c) => c.name !== "castify_csrf")
+    .map((c) => `${c.name}=${c.value}`);
+  cookieParts.push(`castify_csrf=${csrfToken}`);
+  return {
+    Cookie: cookieParts.join("; "),
+    "X-CSRF-Token": csrfToken,
+  };
 }
 
 /**
@@ -52,7 +83,7 @@ export async function seedConnection(
   csrf: string,
 ): Promise<string> {
   const res = await page.request.post("/api/__e2e/seed-connection", {
-    headers: { "X-CSRF-Token": csrf },
+    headers: await authHeaders(page, csrf),
     data: { provider, account_email: email },
   });
   expect(res.ok()).toBeTruthy();
@@ -68,7 +99,7 @@ export async function triggerScan(
 ): Promise<void> {
   const res = await page.request.post(
     `/api/connections/${connectionId}/scan`,
-    { headers: { "X-CSRF-Token": csrf } },
+    { headers: await authHeaders(page, csrf) },
   );
   expect(res.status()).toBe(202);
 }
@@ -100,7 +131,7 @@ export async function disconnect(
   csrf: string,
 ): Promise<void> {
   const res = await page.request.delete(`/api/connections/${connectionId}`, {
-    headers: { "X-CSRF-Token": csrf },
+    headers: await authHeaders(page, csrf),
   });
   expect(res.status()).toBe(204);
 }
@@ -146,4 +177,231 @@ export async function getVideos(page: Page): Promise<VideoPage> {
   const res = await page.request.get("/api/videos");
   expect(res.ok()).toBeTruthy();
   return res.json();
+}
+
+// ── Play lifecycle (M3) ─────────────────────────────────────────────
+//
+// Two persistence paths exist:
+//   - Server-side `playback_progress` table + `POST/GET /api/videos/{id}/progress`
+//     (the M3 PRD's documented path; the backend contract works but the
+//     frontend stopped using it after T10).
+//   - Client-side IndexedDB (`castify-player` DB, `playbackProgress` store)
+//     — the actual path the frontend uses for resume + continue-watching.
+// Both are exercisable from e2e; the play.spec.ts suite covers each.
+
+export interface SubtitleTrack {
+  id: string;
+  language: string | null;
+  filename: string;
+  format: string;
+}
+
+export interface VideoDetail {
+  id: string;
+  name: string;
+  provider: string;
+  size_bytes: number;
+  mime_type: string | null;
+  duration_ms: number | null;
+  width: number | null;
+  height: number | null;
+  sources: VideoSource[];
+  created_at: string;
+  path: string | null;
+  is_favorite: boolean;
+  my_rating: number | null;
+  thumbnail_status: string;
+  position_seconds: number | null;
+  duration_seconds: number | null;
+  completed: boolean;
+  subtitle_tracks: SubtitleTrack[];
+}
+
+/** `GET /api/videos/{id}` — full metadata + progress + subtitle tracks. */
+export async function getVideoDetail(
+  page: Page,
+  id: string,
+): Promise<VideoDetail> {
+  const res = await page.request.get(
+    `/api/videos/${encodeURIComponent(id)}`,
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+export interface StreamUrlResponse {
+  url: string;
+  strategy: "direct" | "proxy";
+  expires_at: string | null;
+}
+
+/** `GET /api/videos/{id}/stream-url` — per-provider strategy + URL. */
+export async function getStreamUrl(
+  page: Page,
+  id: string,
+): Promise<StreamUrlResponse> {
+  const res = await page.request.get(
+    `/api/videos/${encodeURIComponent(id)}/stream-url`,
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+export interface ProgressResponse {
+  position_seconds: number;
+  duration_seconds: number | null;
+  completed: boolean;
+  updated_at: string;
+}
+
+/**
+ * `POST /api/videos/{id}/progress` — server-side progress upsert.
+ * Uses the explicit CSRF header path (see `authHeaders`).
+ */
+export async function postProgress(
+  page: Page,
+  id: string,
+  body: {
+    position_seconds: number;
+    duration_seconds?: number;
+    completed?: boolean;
+  },
+  csrf: string,
+): Promise<ProgressResponse> {
+  const res = await page.request.post(
+    `/api/videos/${encodeURIComponent(id)}/progress`,
+    {
+      headers: await authHeaders(page, csrf),
+      data: body,
+    },
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+/**
+ * `GET /api/videos/{id}/progress` — read server-side progress.
+ * Returns `null` on 404 (no progress row yet — the common case).
+ */
+export async function getProgress(
+  page: Page,
+  id: string,
+): Promise<ProgressResponse | null> {
+  const res = await page.request.get(
+    `/api/videos/${encodeURIComponent(id)}/progress`,
+  );
+  if (res.status() === 404) return null;
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+// ── IndexedDB (client-side progress) ───────────────────────────────
+//
+// The frontend's `lib/player-db.ts` writes to a `castify-player` IndexedDB
+// with a `playbackProgress` object store (keyPath: `videoId`). These helpers
+// run inside the page context via `page.evaluate` — they're the only way to
+// read/write entries from the test. The DB schema matches player-db.ts:1-13.
+//
+// We use the string-form of `page.evaluate` because the helpers can't share
+// a closure across the Node ↔ browser boundary. The `openDB()` body is
+// inlined into each operation expression.
+
+const IDB_OPEN = `
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("castify-player", 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("playbackProgress")) {
+        db.createObjectStore("playbackProgress", { keyPath: "videoId" });
+      }
+      if (!db.objectStoreNames.contains("playerPrefs")) {
+        db.createObjectStore("playerPrefs", { keyPath: "key" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+`;
+
+export interface ProgressEntry {
+  videoId: string;
+  positionSeconds: number;
+  durationSeconds: number | null;
+  completed: boolean;
+  updatedAt: number;
+  videoName: string;
+  videoDurationMs: number | null;
+  thumbnailStatus: string;
+  height: number | null;
+  provider: string;
+}
+
+/**
+ * Write a `ProgressEntry` directly to IndexedDB inside the page context.
+ * Used by the resume test to seed a saved position before navigating to
+ * `/watch/:id` — exercising the resume-on-load path.
+ */
+export async function seedProgressEntry(
+  page: Page,
+  entry: ProgressEntry,
+): Promise<void> {
+  await page.evaluate(`
+    (async () => {
+      ${IDB_OPEN}
+      const db = await openDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("playbackProgress", "readwrite")
+          .objectStore("playbackProgress").put(${JSON.stringify(entry)});
+        tx.onsuccess = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+    })()
+  `);
+}
+
+/**
+ * Read a `ProgressEntry` from IndexedDB. Returns `null` if no entry exists
+ * for the given videoId (or if the DB/store doesn't exist yet — fresh page).
+ */
+export async function readProgressEntry(
+  page: Page,
+  videoId: string,
+): Promise<ProgressEntry | null> {
+  return page.evaluate(`
+    (async () => {
+      ${IDB_OPEN}
+      try {
+        const db = await openDB();
+        const result = await new Promise((resolve, reject) => {
+          const req = db.transaction("playbackProgress", "readonly")
+            .objectStore("playbackProgress").get(${JSON.stringify(videoId)});
+          req.onsuccess = () => resolve(req.result ?? null);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return result;
+      } catch {
+        return null;
+      }
+    })()
+  `);
+}
+
+/**
+ * Clear all entries from IndexedDB. Call between sub-tests to ensure a
+ * clean slate — subtitle prefs + progress entries from a prior sub-test
+ * could otherwise bleed into the next one's assertions.
+ */
+export async function clearPlayerDB(page: Page): Promise<void> {
+  await page.evaluate(`
+    new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase("castify-player");
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+      req.onblocked = () => resolve();
+    })
+  `);
 }

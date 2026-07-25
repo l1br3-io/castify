@@ -108,6 +108,17 @@ export function initializeTheme(theme: Theme): void {
 }
 ```
 
+**In the code is the default.** A gotcha lives best next to the trap it warns about — it auto-loads when an agent edits that file, at no always-loaded cost, and it follows the code through refactors. Reach for `docs/gotchas.md` (under a stable `#gN` heading anchor) only for the rare gotcha with no single code home, and then add a one-line index pointer in the rules file. An in-code gotcha needs no index entry — it's self-discovering.
+
+### Gotcha cross-references
+
+When an ADR or task plan refers to a gotcha, cite the **stable anchor**, not its position in a list:
+
+- `docs/gotchas.md#g7` — survives reordering, relocation, and trimming.
+- `gotcha #7` — breaks the moment the list is edited, which locks the list in place and prevents pruning.
+
+Numbering in `docs/gotchas.md` is append-only and never reused, so anchors stay stable for the life of the project.
+
 ## API Documentation
 
 For public APIs (REST, GraphQL, library interfaces):
@@ -210,10 +221,10 @@ For shipped features:
 
 Special consideration for AI agent context:
 
-- **AGENTS.md / rules files** — Document project conventions so agents follow them
+- **AGENTS.md / rules files** — The always-loaded **index**. Document project conventions here, but keep it lean. Gotchas, deep rationale, and per-feature detail do **not** live here full-text — they get a one-line pointer to where the detail lives. See `context-engineering` § Rules File Lifecycle.
 - **Spec files** — Keep specs updated so agents build the right thing
 - **ADRs** — Help agents understand why past decisions were made (prevents re-deciding)
-- **Inline gotchas** — Prevent agents from falling into known traps
+- **Gotchas — in the code first.** The default home for a gotcha is a `/** GOTCHA: ... */` comment next to the trap (see the example above): it loads exactly when an agent edits that file and follows the code through refactors. Reach for `docs/gotchas.md` (stable `#gN` anchor) only when a gotcha has no single code home — and then add just a one-line index pointer in the rules file. Never accumulate gotcha prose in AGENTS.md: it bloats the always-loaded file and can't be trimmed without breaking cross-references.
 
 ## Common Rationalizations
 
@@ -242,6 +253,6 @@ After documenting:
 - [ ] ADRs exist for all significant architectural decisions
 - [ ] README covers quick start, commands, and architecture overview
 - [ ] API functions have parameter and return type documentation
-- [ ] Known gotchas are documented inline where they matter
+- [ ] Known gotchas live in the code (`/** GOTCHA */` next to the trap), or in `docs/gotchas.md#gN` only when there's no code home — never written in full in the rules file
 - [ ] No commented-out code remains
 - [ ] Rules files (AGENTS.md etc.) are current and accurate

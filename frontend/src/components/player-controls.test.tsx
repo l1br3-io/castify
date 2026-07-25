@@ -321,6 +321,50 @@ describe("PlayerControls", () => {
       fireEvent.mouseDown(document.body);
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     });
+
+    // jsdom doesn't materialize TextTrack objects from <track> children, so
+    // the tests above assert menu ARIA state as a proxy. The two tests below
+    // stub video.textTracks directly to verify the PlayerControls effect
+    // actually flips track.mode (the plan's literal AC: "selecting a language
+    // shows that track; 'Off' hides all").
+    function stubTextTracks(video: HTMLElement, n: number) {
+      const tracks = Array.from({ length: n }, () => ({ mode: "disabled" }));
+      Object.defineProperty(video, "textTracks", {
+        value: tracks,
+        configurable: true,
+      });
+      return tracks;
+    }
+
+    it("selecting a language sets that track's mode to 'showing' and others to 'hidden'", () => {
+      render(<Harness subtitleTracks={TRACKS} />);
+      const video = screen.getByTestId("video");
+      const tracks = stubTextTracks(video, TRACKS.length);
+
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "en" }));
+
+      expect(tracks[0].mode).toBe("showing");
+      expect(tracks[1].mode).toBe("hidden");
+    });
+
+    it("'Off' sets all tracks to 'hidden'", () => {
+      render(<Harness subtitleTracks={TRACKS} />);
+      const video = screen.getByTestId("video");
+      const tracks = stubTextTracks(video, TRACKS.length);
+
+      // Select a language first.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "es" }));
+      expect(tracks[1].mode).toBe("showing");
+
+      // Re-open and switch to Off.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
+
+      expect(tracks[0].mode).toBe("hidden");
+      expect(tracks[1].mode).toBe("hidden");
+    });
   });
 
   describe("buffering indicator", () => {

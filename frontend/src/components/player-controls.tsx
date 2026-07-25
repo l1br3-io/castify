@@ -31,6 +31,7 @@ import {
   saveSubtitlePref,
 } from "../lib/player-db";
 import type { SubtitleTrackDto } from "../api/types";
+import type { HlsLevel } from "../hooks/use-hls-stream";
 
 type PlayerControlsProps = {
   videoRef: React.RefObject<HTMLVideoElement>;
@@ -49,6 +50,16 @@ type PlayerControlsProps = {
   onNext?: () => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  /**
+   * Optional HLS variant ladder + manual override (M7 T12). When `levels`
+   * is non-empty, the controls render a quality menu (Auto + each rung)
+   * and a resolution badge next to the time display. Omit for non-transcode
+   * strategies (direct/proxy/cached) where ABR doesn't apply.
+   */
+  levels?: HlsLevel[];
+  /** Active level index, or -1 for Auto. `null` until hls.js reports one. */
+  currentLevel?: number | null;
+  onLevelChange?: (level: number) => void;
 };
 
 /** Inactivity delay before controls hide during playback. */
@@ -71,6 +82,9 @@ export function PlayerControls({
   onNext,
   hasPrev = false,
   hasNext = false,
+  levels,
+  currentLevel,
+  onLevelChange,
 }: PlayerControlsProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -85,6 +99,7 @@ export function PlayerControls({
   const [subtitlesOpen, setSubtitlesOpen] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [speedOpen, setSpeedOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   // `isPlaying` is also kept in a ref so the auto-hide timer (created once on
@@ -273,11 +288,12 @@ export function PlayerControls({
     }
   }, [activeSubtitle, videoRef, subtitleTracks]);
 
-  // --- Popover click-outside (subtitles + speed menus share one listener) ---
+  // --- Popover click-outside (subtitles + speed + quality menus share one listener) ---
   const subtitleMenuRef = useRef<HTMLDivElement>(null);
   const speedMenuRef = useRef<HTMLDivElement>(null);
+  const qualityMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!subtitlesOpen && !speedOpen) return;
+    if (!subtitlesOpen && !speedOpen && !qualityOpen) return;
     const onDocDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (
@@ -294,10 +310,17 @@ export function PlayerControls({
       ) {
         setSpeedOpen(false);
       }
+      if (
+        qualityOpen &&
+        qualityMenuRef.current &&
+        !qualityMenuRef.current.contains(target)
+      ) {
+        setQualityOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDocDown);
     return () => document.removeEventListener("mousedown", onDocDown);
-  }, [subtitlesOpen, speedOpen]);
+  }, [subtitlesOpen, speedOpen, qualityOpen]);
 
   // --- Handlers ---
   //
@@ -667,7 +690,69 @@ export function PlayerControls({
             {formatTime(currentTime)} / {formatTime(duration)}
           </span>
 
+          {levels && levels.length > 0 && (
+            <span
+              className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-white/90"
+              aria-label={`Current quality ${
+                (currentLevel ?? -1) < 0
+                  ? "Auto"
+                  : `${levels[currentLevel ?? 0]?.height ?? "?"}p`
+              }`}
+            >
+              {(currentLevel ?? -1) < 0
+                ? "Auto"
+                : `${levels[currentLevel ?? 0]?.height ?? "?"}p`}
+            </span>
+          )}
+
           <div className="ml-auto flex items-center gap-2">
+            {levels && levels.length > 0 && onLevelChange && (
+              <div ref={qualityMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setQualityOpen((v) => !v)}
+                  aria-label="Quality"
+                  aria-haspopup="menu"
+                  aria-expanded={qualityOpen}
+                  className={`min-w-[2.25rem] rounded px-1.5 py-1.5 text-xs font-semibold uppercase tracking-wide transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                    (currentLevel ?? -1) >= 0
+                      ? "text-[var(--color-castify-accent)]"
+                      : ""
+                  }`}
+                >
+                  {(currentLevel ?? -1) < 0
+                    ? "Auto"
+                    : `${levels[currentLevel ?? 0]?.height ?? "?"}p`}
+                </button>
+                {qualityOpen && (
+                  <ul
+                    role="menu"
+                    className="absolute bottom-full right-0 mb-2 min-w-32 overflow-hidden rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm shadow-lg"
+                  >
+                    <QualityMenuItem
+                      label="Auto"
+                      selected={(currentLevel ?? -1) < 0}
+                      onSelect={() => {
+                        onLevelChange(-1);
+                        setQualityOpen(false);
+                      }}
+                    />
+                    {levels.map((l, i) => (
+                      <QualityMenuItem
+                        key={`${l.height}-${i}`}
+                        label={l.height > 0 ? `${l.height}p` : "Unknown"}
+                        selected={currentLevel === i}
+                        onSelect={() => {
+                          onLevelChange(i);
+                          setQualityOpen(false);
+                        }}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             <div ref={speedMenuRef} className="relative">
               <button
                 type="button"
@@ -844,6 +929,32 @@ function SpeedMenuItem({
         }`}
       >
         {rate}×
+      </button>
+    </li>
+  );
+}
+
+function QualityMenuItem({
+  label,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <li role="none">
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={selected}
+        onClick={onSelect}
+        className={`block w-full px-3 py-1.5 text-left uppercase tracking-wide transition hover:bg-white/10 ${
+          selected ? "text-[var(--color-castify-accent)]" : "text-white"
+        }`}
+      >
+        {label}
       </button>
     </li>
   );

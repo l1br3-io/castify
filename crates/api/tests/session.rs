@@ -354,6 +354,7 @@ async fn session_survives_restart_with_persisted_secret() {
             enabled: false,
             ..Default::default()
         },
+        abr: castify_core::AbrConfig::default(),
     };
     let new_state = castify_api::state::AppState::new(config, pool, secret, token_key);
     let new_app = build_app(new_state);

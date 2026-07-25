@@ -36,7 +36,17 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to resolve token encryption key")?;
 
     let state = AppState::new(config.clone(), pool, session_secret, token_key);
-    let app = build_app(state);
+    let app = build_app(state.clone());
+
+    // M7: spawn the transcode cache LRU sweep loop. The loop sleeps for the
+    // configured interval between passes, so the cost when nothing's cached
+    // is one DB query per `sweep_interval_secs`.
+    if config.transcode.enabled {
+        tokio::spawn(castify_api::routes::videos::transcode_sweep_loop(
+            state.clone(),
+            std::time::Duration::from_secs(config.transcode.sweep_interval_secs),
+        ));
+    }
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await

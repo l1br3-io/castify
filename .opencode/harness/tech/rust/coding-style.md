@@ -1,3 +1,7 @@
+---
+paths:
+  - "**/*.rs"
+---
 # Rust Coding Style Rule
 
 Authoritative style rule, synthesized from *Effective Rust* Items 1–15, 18, 22,

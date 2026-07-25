@@ -20,7 +20,7 @@ Quick mode — default when none of the above are available. Scan source code fo
 
 ## Run the audit
 
-Spawn the `web-performance-auditor` subagent (the CLI exposes each custom subagent in `agents/` as a tool with the same name). Pass it explicitly:
+Spawn the `web-performance-auditor` subagent (the CLI exposes each custom subagent in `.opencode/agents/` as a tool with the same name). Pass it explicitly:
 
 - The files, components, or diff under review
 - Any artifact paths (Lighthouse JSON, PSI JSON, CrUX response, trace) or pasted JSON content

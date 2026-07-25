@@ -66,6 +66,11 @@ pub struct TranscodeConfig {
     pub dir: std::path::PathBuf,
     /// Soft limit for the transcode cache pool (bytes).
     pub cache_max_bytes: u64,
+    /// Interval between background LRU sweeps (seconds). The sweep walks
+    /// `transcode_cache_entries` ordered by `last_accessed_at ASC` and
+    /// deletes entries + their on-disk segments until total cache size
+    /// drops below `cache_max_bytes`. M7 addition.
+    pub sweep_interval_secs: u64,
 }
 
 impl Default for TranscodeConfig {
@@ -75,6 +80,129 @@ impl Default for TranscodeConfig {
             segment_duration_secs: 10,
             dir: std::path::PathBuf::from("./data/transcode-cache"),
             cache_max_bytes: 50 * 1024 * 1024 * 1024, // 50 GiB
+            sweep_interval_secs: 600,                 // 10 min
+        }
+    }
+}
+
+/// One rung on the adaptive-bitrate ladder (M7).
+///
+/// All fields are `'static` because the rung vocabulary is fixed: the
+/// built-in set defined by [`builtin_rungs`]. User-defined rungs are not
+/// supported in M7; PRD M7 §"Out of scope" defers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariantRung {
+    /// Short identifier used in URLs, env vars, and HLS variant tags
+    /// (`"360p"`, `"480p"`, `"720p"`, `"1080p"`).
+    pub name: &'static str,
+    /// Target video height in pixels. The ffmpeg scale filter caps at this
+    /// height without upscaling.
+    pub target_height: u32,
+    /// Target bitrate in kbps. Used as `BANDWIDTH` in the master playlist
+    /// for in-progress variants; completed variants store the actual
+    /// measured bitrate in `transcode_cache_entries.bitrate`.
+    pub target_bitrate_kbps: u32,
+}
+
+/// Built-in rung table. The order is intentional: ascending by height,
+/// matching the PRD M7 default ladder `360p,480p,720p,1080p`.
+///
+/// Bitrates are conservative defaults from PRD M7 §"Bitrate targeting per
+/// rung". Tunable via future config; M7 ships these.
+pub fn builtin_rungs() -> &'static [VariantRung] {
+    static RUNGS: &[VariantRung] = &[
+        VariantRung {
+            name: "360p",
+            target_height: 360,
+            target_bitrate_kbps: 800,
+        },
+        VariantRung {
+            name: "480p",
+            target_height: 480,
+            target_bitrate_kbps: 1500,
+        },
+        VariantRung {
+            name: "720p",
+            target_height: 720,
+            target_bitrate_kbps: 3000,
+        },
+        VariantRung {
+            name: "1080p",
+            target_height: 1080,
+            target_bitrate_kbps: 6000,
+        },
+    ];
+    RUNGS
+}
+
+/// Look up a built-in rung by name (case-sensitive).
+pub fn lookup_rung(name: &str) -> Option<VariantRung> {
+    builtin_rungs().iter().find(|r| r.name == name).copied()
+}
+
+/// Pick the variant to pre-compute at transcode start, per PRD M7 §"Pre-compute
+/// policy": the closest ladder rung at-or-below `min(source_height, cap)`.
+///
+/// Selection rules:
+/// 1. If `source_height` is `None` (probe pending): return `cap`. Default
+///    behavior is to pre-compute the cap rung (e.g., 720p) and let M5's
+///    probe refine it later. The pre-compute is wasted work only if the
+///    source turns out to be smaller than the cap; the cost is bounded.
+/// 2. Filter `ladder` to rungs with `target_height <= min(source_height,
+///    cap.target_height)`. Pick the tallest. This is the "closest at-or-below"
+///    rung.
+/// 3. If no rung satisfies (source smaller than every ladder rung): return
+///    the smallest rung. ffmpeg's scale filter caps down without upscaling,
+///    so any rung produces the same output for a sub-minimum source.
+///    Picking the smallest makes the intent explicit.
+pub fn select_precompute_variant(
+    source_height: Option<u32>,
+    ladder: &[VariantRung],
+    cap: &VariantRung,
+) -> VariantRung {
+    let Some(src) = source_height else {
+        return *cap;
+    };
+    let ceiling = src.min(cap.target_height);
+    // Filter to rungs at-or-below the ceiling, pick tallest.
+    let mut best: Option<VariantRung> = None;
+    for rung in ladder {
+        if rung.target_height <= ceiling {
+            best = Some(match best {
+                Some(b) if b.target_height >= rung.target_height => b,
+                _ => *rung,
+            });
+        }
+    }
+    best.unwrap_or_else(|| {
+        // Source smaller than every rung — return smallest. ffmpeg's scale
+        // filter (`min(target,iw)`) won't upscale, so this is a no-op
+        // resolution change.
+        ladder
+            .iter()
+            .min_by_key(|r| r.target_height)
+            .copied()
+            .unwrap_or(*cap)
+    })
+}
+
+/// Adaptive bitrate configuration (M7). Parsed at startup from
+/// `CASTIFY_ABR_LADDER` and `CASTIFY_ABR_PRECOMPUTE_CAP`.
+#[derive(Debug, Clone)]
+pub struct AbrConfig {
+    /// Ordered list of rungs, lowest to highest. The first rung is the
+    /// smallest variant; the last is the largest.
+    pub ladder: Vec<VariantRung>,
+    /// The rung at-or-below source resolution to pre-compute at transcode
+    /// start. Must be a member of [`Self::ladder`].
+    pub precompute_cap: VariantRung,
+}
+
+impl Default for AbrConfig {
+    fn default() -> Self {
+        Self {
+            ladder: builtin_rungs().to_vec(),
+            precompute_cap: lookup_rung("720p").expect("720p is a built-in rung"),
         }
     }
 }
@@ -93,6 +221,7 @@ pub struct Config {
     pub video_cache: VideoCacheConfig,
     pub probe: ProbeConfig,
     pub transcode: TranscodeConfig,
+    pub abr: AbrConfig,
 }
 
 impl Config {
@@ -131,6 +260,7 @@ impl Config {
         let video_cache = load_video_cache_config(&data_dir)?;
         let probe = load_probe_config()?;
         let transcode = load_transcode_config(&data_dir)?;
+        let abr = load_abr_config()?;
 
         Ok(Self {
             bind_addr,
@@ -145,6 +275,7 @@ impl Config {
             video_cache,
             probe,
             transcode,
+            abr,
         })
     }
 }
@@ -183,12 +314,93 @@ fn load_transcode_config(data_dir: &Path) -> Result<TranscodeConfig> {
         })
         .transpose()?
         .unwrap_or(50 * 1024 * 1024 * 1024);
+    let sweep_interval_secs = std::env::var("CASTIFY_TRANSCODE_SWEEP_INTERVAL_SECS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<u64>().with_context(|| {
+                format!(
+                    "CASTIFY_TRANSCODE_SWEEP_INTERVAL_SECS must be a positive integer; got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(600);
     Ok(TranscodeConfig {
         enabled,
         segment_duration_secs,
         dir,
         cache_max_bytes,
+        sweep_interval_secs,
     })
+}
+
+/// Load adaptive-bitrate config (M7). The ladder is parsed from
+/// `CASTIFY_ABR_LADDER` (comma-separated rung names); the pre-compute cap
+/// from `CASTIFY_ABR_PRECOMPUTE_CAP`. Both must reference built-in rungs.
+fn load_abr_config() -> Result<AbrConfig> {
+    let ladder = match std::env::var("CASTIFY_ABR_LADDER") {
+        Ok(raw) if !raw.is_empty() => parse_ladder(&raw)?,
+        _ => builtin_rungs().to_vec(),
+    };
+    if ladder.is_empty() {
+        bail!("CASTIFY_ABR_LADDER must contain at least one rung. {CONFIG_DOCS_HINT}");
+    }
+    let precompute_cap_name = std::env::var("CASTIFY_ABR_PRECOMPUTE_CAP")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "720p".to_string());
+    let precompute_cap = lookup_rung(&precompute_cap_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "CASTIFY_ABR_PRECOMPUTE_CAP={precompute_cap_name:?} is not a known rung. \
+             Valid rungs: {}. {CONFIG_DOCS_HINT}",
+            builtin_rungs()
+                .iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        )
+    })?;
+    if !ladder.iter().any(|r| r.name == precompute_cap.name) {
+        bail!(
+            "CASTIFY_ABR_PRECOMPUTE_CAP={:?} must be a member of CASTIFY_ABR_LADDER. \
+             {CONFIG_DOCS_HINT}",
+            precompute_cap.name
+        );
+    }
+    Ok(AbrConfig {
+        ladder,
+        precompute_cap,
+    })
+}
+
+/// Parse a comma-separated ladder string into rungs. Validates each name
+/// against the built-in vocabulary. Order is preserved as given.
+fn parse_ladder(raw: &str) -> Result<Vec<VariantRung>> {
+    let mut rungs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for token in raw.split(',') {
+        let name = token.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let rung = lookup_rung(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "CASTIFY_ABR_LADDER contains unknown rung {name:?}. \
+                 Valid rungs: {}. {CONFIG_DOCS_HINT}",
+                builtin_rungs()
+                    .iter()
+                    .map(|r| r.name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        })?;
+        if !seen.insert(rung.name) {
+            bail!("CASTIFY_ABR_LADDER contains duplicate rung {name:?}. {CONFIG_DOCS_HINT}");
+        }
+        rungs.push(rung);
+    }
+    Ok(rungs)
 }
 
 /// Load codec probing config.
@@ -382,6 +594,9 @@ mod tests {
             "CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS",
             "CASTIFY_TRANSCODE_DIR",
             "CASTIFY_TRANSCODE_CACHE_MAX_BYTES",
+            "CASTIFY_TRANSCODE_SWEEP_INTERVAL_SECS",
+            "CASTIFY_ABR_LADDER",
+            "CASTIFY_ABR_PRECOMPUTE_CAP",
             "RUST_LOG",
         ] {
             std::env::remove_var(key);
@@ -681,5 +896,181 @@ mod tests {
 
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.video_cache.dir, custom);
+    }
+
+    // ── ABR config (M7) ───────────────────────────────────────────────
+
+    #[test]
+    fn abr_defaults_to_full_ladder_with_720p_cap() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+
+        let cfg = Config::from_env().unwrap();
+        let names: Vec<_> = cfg.abr.ladder.iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["360p", "480p", "720p", "1080p"]);
+        assert_eq!(cfg.abr.precompute_cap.name, "720p");
+    }
+
+    #[test]
+    fn abr_ladder_custom_subset_parses() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_LADDER", "480p,720p");
+        std::env::set_var("CASTIFY_ABR_PRECOMPUTE_CAP", "480p");
+
+        let cfg = Config::from_env().unwrap();
+        let names: Vec<_> = cfg.abr.ladder.iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["480p", "720p"]);
+        assert_eq!(cfg.abr.precompute_cap.name, "480p");
+    }
+
+    #[test]
+    fn abr_ladder_unknown_rung_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_LADDER", "720p,foo");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_ABR_LADDER"), "msg = {msg}");
+        assert!(msg.contains("foo"), "msg = {msg}");
+    }
+
+    #[test]
+    fn abr_ladder_duplicate_rung_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_LADDER", "720p,720p");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("duplicate"), "msg = {msg}");
+    }
+
+    #[test]
+    fn abr_ladder_empty_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_LADDER", "   ,  ,");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("at least one rung"), "msg = {msg}");
+    }
+
+    #[test]
+    fn abr_precompute_cap_unknown_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_PRECOMPUTE_CAP", "1440p");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_ABR_PRECOMPUTE_CAP"), "msg = {msg}");
+        assert!(msg.contains("1440p"), "msg = {msg}");
+    }
+
+    #[test]
+    fn abr_precompute_cap_must_be_in_ladder() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_ABR_LADDER", "480p,720p");
+        // 1080p is a valid rung but not in the custom ladder.
+        std::env::set_var("CASTIFY_ABR_PRECOMPUTE_CAP", "1080p");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("must be a member"), "msg = {msg}");
+    }
+
+    #[test]
+    fn builtin_rungs_table_matches_prd_defaults() {
+        let rungs = builtin_rungs();
+        assert_eq!(rungs.len(), 4, "PRD M7 default ladder has 4 rungs");
+        assert_eq!(rungs[0].name, "360p");
+        assert_eq!(rungs[0].target_height, 360);
+        assert_eq!(rungs[0].target_bitrate_kbps, 800);
+        assert_eq!(rungs[3].name, "1080p");
+        assert_eq!(rungs[3].target_height, 1080);
+        assert_eq!(rungs[3].target_bitrate_kbps, 6000);
+    }
+
+    // ── select_precompute_variant (M7 T5) ────────────────────────────
+
+    #[test]
+    fn precompute_returns_cap_when_source_height_unknown() {
+        let cfg = AbrConfig::default();
+        let picked = select_precompute_variant(None, &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "720p", "must return cap when probe pending");
+    }
+
+    #[test]
+    fn precompute_picks_tallest_rung_at_or_below_source_capped() {
+        let cfg = AbrConfig::default();
+        // 1080p source: min(1080, 720) = 720 → tallest ≤ 720 is 720p.
+        let picked = select_precompute_variant(Some(1080), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "720p");
+        // 720p source: min(720, 720) = 720 → tallest ≤ 720 is 720p.
+        let picked = select_precompute_variant(Some(720), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "720p");
+        // 500p source: min(500, 720) = 500 → tallest ≤ 500 is 480p.
+        let picked = select_precompute_variant(Some(500), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "480p");
+        // 480p source: tallest ≤ 480 is 480p.
+        let picked = select_precompute_variant(Some(480), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "480p");
+        // 400p source: tallest ≤ 400 is 360p.
+        let picked = select_precompute_variant(Some(400), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "360p");
+    }
+
+    #[test]
+    fn precompute_uses_custom_cap_when_configured() {
+        // Ladder covers 360p-1080p; cap raised to 1080p.
+        let cfg = AbrConfig {
+            ladder: builtin_rungs().to_vec(),
+            precompute_cap: lookup_rung("1080p").unwrap(),
+        };
+        // 1080p source: min(1080, 1080) = 1080 → 1080p.
+        let picked = select_precompute_variant(Some(1080), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "1080p");
+        // 720p source: min(720, 1080) = 720 → 720p.
+        let picked = select_precompute_variant(Some(720), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "720p");
+    }
+
+    #[test]
+    fn precompute_returns_smallest_rung_when_source_below_minimum() {
+        let cfg = AbrConfig::default();
+        // 144p source: no rung ≤ 144 → return smallest (360p).
+        let picked = select_precompute_variant(Some(144), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "360p");
+    }
+
+    #[test]
+    fn precompute_obeys_ladder_subset() {
+        // Ladder reduced to just 720p + 1080p; 480p source must still pick
+        // from the configured ladder (720p — smallest available, since no
+        // rung ≤ 480 in this subset).
+        let cfg = AbrConfig {
+            ladder: vec![lookup_rung("720p").unwrap(), lookup_rung("1080p").unwrap()],
+            precompute_cap: lookup_rung("720p").unwrap(),
+        };
+        let picked = select_precompute_variant(Some(480), &cfg.ladder, &cfg.precompute_cap);
+        assert_eq!(picked.name, "720p", "must pick from configured ladder only");
     }
 }

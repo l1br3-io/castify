@@ -241,6 +241,27 @@ impl CatalogRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Hard-delete all connections with the given `(provider, provider_account_id)`.
+    /// Used by the e2e seed endpoint to make seeding idempotent — re-running a
+    /// spec (CI retry, `CASTIFY_E2E_REUSE=1`) replaces the prior connection
+    /// rather than hitting the `UNIQUE(provider, provider_account_id)` constraint.
+    /// Returns the number of rows deleted.
+    pub async fn delete_connections_by_account(
+        &self,
+        provider: Provider,
+        provider_account_id: &str,
+    ) -> CatalogResult<u64> {
+        let result = sqlx::query(
+            "DELETE FROM provider_connections \
+             WHERE provider = ? AND provider_account_id = ?",
+        )
+        .bind(provider.as_str())
+        .bind(provider_account_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Fetch and decrypt the token bundle for a connection.
     pub async fn fetch_token_bundle(
         &self,

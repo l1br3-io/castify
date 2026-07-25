@@ -1,3 +1,7 @@
+---
+paths:
+  - "**/*.rs"
+---
 # Rust Security Rule
 
 Authority for the security agent and any Rust author handling `unsafe`, FFI,

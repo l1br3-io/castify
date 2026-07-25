@@ -39,6 +39,27 @@ pub const DEFAULT_PROFILE: &str = "h264-high-40-aac128-cpu";
 /// Default variant: source resolution capped at 720p.
 pub const DEFAULT_VARIANT: &str = "720p";
 
+/// Look up the target bitrate (bits/sec) for a variant name via the
+/// built-in ABR rung table. Returns `None` for `"source"` and unknown
+/// variants — the caller treats `None` as "leave the column NULL."
+pub fn variant_target_bitrate(variant: &str) -> Option<u64> {
+    castify_core::lookup_rung(variant).map(|r| r.target_bitrate_kbps as u64 * 1000)
+}
+
+/// Look up the target width for a variant name. The built-in rungs don't
+/// encode a width (only height + bitrate); this returns the conventional
+/// 16:9 width for each rung (`height * 16 / 9`). Returns `None` for
+/// `"source"` and unknown variants.
+pub fn variant_target_width(variant: &str) -> Option<u32> {
+    castify_core::lookup_rung(variant).map(|r| r.target_height * 16 / 9)
+}
+
+/// Look up the target height for a variant name. Returns `None` for
+/// `"source"` and unknown variants.
+pub fn variant_target_height(variant: &str) -> Option<u32> {
+    castify_core::lookup_rung(variant).map(|r| r.target_height)
+}
+
 /// Errors returned by the transcode pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodeError {
@@ -65,6 +86,13 @@ pub struct TranscodeHandle {
     pub completion: Arc<Notify>,
     /// Inner state shared between the handle and the pump task.
     pub state: Arc<TranscodeState>,
+    /// The ffmpeg child process, shared with the watcher task. The watcher
+    /// takes the child out of the mutex and runs `wait_with_output`; cancel
+    /// handlers can `kill()` it before the watcher claims it. There's a
+    /// race — if the watcher has already taken the child, cancel sees `None`
+    /// and the transcode finishes on its own. In practice cancel is called
+    /// long before ffmpeg finishes a long-running transcode.
+    pub child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
 }
 
 /// Shared state for a transcode job.
@@ -196,6 +224,8 @@ pub async fn start_transcode(
     let state = Arc::new(TranscodeState::new());
     let first_segment_ready = Arc::new(Notify::new());
     let completion = Arc::new(Notify::new());
+    let child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
+        Arc::new(tokio::sync::Mutex::new(Some(child)));
 
     // Spawn the stdin pump task: reads from BodyStream, writes to ffmpeg stdin.
     let pump_state = Arc::clone(&state);
@@ -214,7 +244,26 @@ pub async fn start_transcode(
     let watch_notify = Arc::clone(&completion);
     let watch_first = Arc::clone(&first_segment_ready);
     let watch_dir = output_dir.clone();
+    let watch_child = Arc::clone(&child);
     tokio::spawn(async move {
+        // Take the child out of the shared slot. The lock is held only for
+        // the take itself, so cancel handlers can acquire it before this
+        // task gets here. Once taken, the watcher owns the child for the
+        // remainder of ffmpeg's run.
+        let taken = watch_child.lock().await.take();
+        let Some(child) = taken else {
+            // Cancel handler got there first.
+            tracing::info!(
+                output_dir = %watch_dir.display(),
+                "transcode cancelled before watcher could claim child"
+            );
+            watch_state
+                .failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            watch_notify.notify_waiters();
+            watch_first.notify_waiters();
+            return;
+        };
         let output = child.wait_with_output().await;
         match output {
             Ok(out) if out.status.success() => {
@@ -284,6 +333,7 @@ pub async fn start_transcode(
         first_segment_ready,
         completion,
         state,
+        child,
     })
 }
 
@@ -332,13 +382,178 @@ pub async fn read_playlist(dir: &Path) -> Option<String> {
         .ok()
 }
 
-/// Build a master playlist string for a single variant.
-pub fn build_master_playlist(variant: &str, bandwidth: u64, resolution: Option<(u32, u32)>) -> String {
-    let codecs = "avc1.4d401f,mp4a.40.2";
-    let resolution_str = resolution
-        .map(|(w, h)| format!(",RESOLUTION={w}x{h}"))
-        .unwrap_or_default();
-    format!(
-        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}{resolution_str},CODECS=\"{codecs}\"\n{variant}/playlist.m3u8\n"
-    )
+/// Build a master playlist string for a set of variants. Each entry emits
+/// one `#EXT-X-STREAM-INF` line with `BANDWIDTH`, `RESOLUTION`, `CODECS`.
+///
+/// Variants come from `transcode_cache_entries` rows; the row's `bitrate`,
+/// `width`, `height` are populated at `insert_pending_transcode` time from
+/// the rung's target values. For older M6-era rows where these columns are
+/// NULL, we fall back to the built-in rung table (conventional 16:9 width
+/// from the variant name). Unknown variant names (not in the rung table)
+/// are skipped — the master only lists variants hls.js can reason about.
+///
+/// `CODECS` is fixed at `"avc1.4d401f,mp4a.40.2"` (H.264 High@L4.0 + AAC)
+/// because every transcode uses the same encoder settings; only resolution
+/// and bitrate change across rungs.
+pub fn build_master_playlist(entries: &[castify_catalog::TranscodeCacheEntry]) -> String {
+    const CODECS: &str = "avc1.4d401f,mp4a.40.2";
+    let mut lines = vec!["#EXTM3U".to_string(), "#EXT-X-VERSION:6".to_string()];
+
+    for entry in entries {
+        // Resolve (width, height) — prefer manifest, fall back to rung table.
+        let (w, h) = match (entry.width, entry.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => (w as u32, h as u32),
+            _ => match castify_core::lookup_rung(&entry.variant) {
+                Some(r) => (r.target_height * 16 / 9, r.target_height),
+                None => {
+                    tracing::debug!(
+                        variant = %entry.variant,
+                        "skipping master playlist entry: unknown variant (no rung fallback)"
+                    );
+                    continue;
+                }
+            },
+        };
+
+        // Resolve bandwidth — prefer manifest, fall back to rung target.
+        let bandwidth: u64 = entry
+            .bitrate
+            .filter(|b| *b > 0)
+            .map(|b| b as u64)
+            .or_else(|| {
+                castify_core::lookup_rung(&entry.variant)
+                    .map(|r| r.target_bitrate_kbps as u64 * 1000)
+            })
+            .unwrap_or(0);
+        if bandwidth == 0 {
+            continue;
+        }
+
+        lines.push(format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth},RESOLUTION={w}x{h},CODECS=\"{CODECS}\""
+        ));
+        lines.push(format!("{}/playlist.m3u8", entry.variant));
+    }
+
+    lines.join("\n") + "\n"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use castify_catalog::TranscodeCacheEntry;
+
+    fn entry(variant: &str, bitrate: Option<i64>, width: Option<i64>, height: Option<i64>) -> TranscodeCacheEntry {
+        TranscodeCacheEntry {
+            video_id: "vid".into(),
+            variant: variant.into(),
+            profile: "prof".into(),
+            output_dir: "/tmp".into(),
+            total_segments: None,
+            completed_segments: 0,
+            segment_duration_secs: 10,
+            bitrate,
+            width,
+            height,
+            status: "pending".into(),
+            last_error: None,
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_accessed_at: "2024-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn empty_entries_produces_header_only() {
+        let playlist = build_master_playlist(&[]);
+        assert!(playlist.starts_with("#EXTM3U\n#EXT-X-VERSION:6\n"));
+        // No STREAM-INF lines.
+        assert!(!playlist.contains("EXT-X-STREAM-INF"));
+    }
+
+    #[test]
+    fn single_completed_720p_emits_one_stream_inf() {
+        let playlist = build_master_playlist(&[entry("720p", Some(3_000_000), Some(1280), Some(720))]);
+        assert!(playlist.contains("#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720"));
+        assert!(playlist.contains("\n720p/playlist.m3u8\n"));
+    }
+
+    #[test]
+    fn multiple_variants_emit_one_stream_inf_each_in_input_order() {
+        let entries = vec![
+            entry("1080p", Some(6_000_000), Some(1920), Some(1080)),
+            entry("720p", Some(3_000_000), Some(1280), Some(720)),
+            entry("480p", Some(1_500_000), Some(854), Some(480)),
+        ];
+        let playlist = build_master_playlist(&entries);
+        // Three STREAM-INF lines.
+        assert_eq!(
+            playlist.matches("EXT-X-STREAM-INF").count(),
+            3,
+            "{playlist}"
+        );
+        // Order preserved from input.
+        let pos_1080 = playlist.find("RESOLUTION=1920x1080").unwrap();
+        let pos_720 = playlist.find("RESOLUTION=1280x720").unwrap();
+        let pos_480 = playlist.find("RESOLUTION=854x480").unwrap();
+        assert!(pos_1080 < pos_720);
+        assert!(pos_720 < pos_480);
+    }
+
+    #[test]
+    fn null_bitrate_falls_back_to_rung_target() {
+        let playlist = build_master_playlist(&[entry("720p", None, Some(1280), Some(720))]);
+        // 720p target = 3000 kbps = 3,000,000 bps.
+        assert!(playlist.contains("BANDWIDTH=3000000"), "{playlist}");
+    }
+
+    #[test]
+    fn null_width_height_falls_back_to_16_9_from_rung() {
+        let playlist = build_master_playlist(&[entry("480p", Some(1_500_000), None, None)]);
+        // 480 * 16 / 9 = 853 (rounded down to 853).
+        assert!(playlist.contains("RESOLUTION=853x480"), "{playlist}");
+    }
+
+    #[test]
+    fn unknown_variant_with_explicit_data_is_included() {
+        // A variant name not in the rung table is fine as long as the row
+        // carries its own bitrate + width + height. This covers `'source'`
+        // (codec-conversion-only, no ladder rung) and any future custom
+        // variant.
+        let entries = vec![
+            entry("source", Some(8_000_000), Some(1920), Some(1080)),
+            entry("720p", Some(3_000_000), Some(1280), Some(720)),
+        ];
+        let playlist = build_master_playlist(&entries);
+        assert_eq!(playlist.matches("EXT-X-STREAM-INF").count(), 2);
+        assert!(playlist.contains("source/playlist.m3u8"));
+        assert!(playlist.contains("720p/playlist.m3u8"));
+    }
+
+    #[test]
+    fn unknown_variant_with_no_data_is_skipped() {
+        // No explicit bitrate/width/height AND not in the rung table →
+        // can't compute BANDWIDTH or RESOLUTION → must skip.
+        let entries = vec![
+            entry("weird", None, None, None),
+            entry("720p", None, None, None), // rung fallback works
+        ];
+        let playlist = build_master_playlist(&entries);
+        assert_eq!(
+            playlist.matches("EXT-X-STREAM-INF").count(),
+            1,
+            "{playlist}"
+        );
+        assert!(!playlist.contains("weird"));
+        assert!(playlist.contains("720p"));
+    }
+
+    #[test]
+    fn zero_bitrate_is_skipped() {
+        let entries = vec![
+            entry("720p", Some(0), Some(1280), Some(720)), // explicit zero
+        ];
+        let playlist = build_master_playlist(&entries);
+        // Falls back to rung target 3,000,000.
+        assert!(playlist.contains("BANDWIDTH=3000000"));
+    }
 }

@@ -27,8 +27,8 @@ Simplify code by reducing complexity while preserving exact behavior. The goal i
 
 ## Tech Context
 
-Tech is declared in `rules/tech.md`. Each name maps directly to `tech/<name>/`
-(e.g. `rust` → `tech/rust/`, `react` → `tech/react/`). This skill draws on
+Tech is declared in `.opencode/harness/rules/tech.md`. Each name maps directly to `.opencode/harness/tech/<name>/`
+(e.g. `rust` → `.opencode/harness/tech/rust/`, `react` → `.opencode/harness/tech/react/`). This skill draws on
 `common/` and `<name>/coding-style.md` — read them by task in Step 2, not all
 at once. Inline examples use TypeScript for illustration — apply the
 underlying pattern in `<name>`'s idioms, not the literal syntax.

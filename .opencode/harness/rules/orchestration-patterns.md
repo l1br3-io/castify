@@ -120,13 +120,13 @@ This catalog is harness-agnostic in spirit, but this repo targets opencode. Here
 
 ### Where personas live
 
-opencode auto-discovers `agents/*.md` by convention — no per-file registration, no plugin manifest. So `agents/code-reviewer.md`, `agents/security-auditor.md`, `agents/test-engineer.md`, and `agents/web-performance-auditor.md` are picked up automatically when opencode starts. Drop a new `agents/<name>.md` in, restart, and it's available. Same convention applies to `commands/*.md` and `skills/*/SKILL.md`.
+opencode auto-discovers `.opencode/agents/*.md` by convention — no per-file registration, no plugin manifest. So `.opencode/agents/code-reviewer.md`, `.opencode/agents/security-auditor.md`, `.opencode/agents/test-engineer.md`, and `.opencode/agents/web-performance-auditor.md` are picked up automatically when opencode starts. Drop a new `.opencode/agents/<name>.md` in, restart, and it's available. Same convention applies to `.opencode/commands/*.md` and `.opencode/skills/*/SKILL.md`.
 
 ### Subagents are the only fan-out primitive
 
 opencode has one parallelism mechanism for this catalog: **subagents**. Pattern 3 (parallel fan-out with merge) maps to it directly. There is no separate "teammates that message each other" primitive — if you find yourself wanting one, see the "competing-hypothesis debugging" note below for how to fake the effect within the subagent model.
 
-Each `agents/*.md` with `mode: subagent` is exposed by the CLI as a **tool with the same name**. That's what lets `/ship` and `/webperf` fan out: `code-reviewer.md` becomes a `code-reviewer` tool the main agent can call, and `@code-reviewer` works as an explicit invocation. Subagents run in isolated context loops and return only their final report to the calling session.
+Each `.opencode/agents/*.md` with `mode: subagent` is exposed by the CLI as a **tool with the same name**. That's what lets `/ship` and `/webperf` fan out: `code-reviewer.md` becomes a `code-reviewer` tool the main agent can call, and `@code-reviewer` works as an explicit invocation. Subagents run in isolated context loops and return only their final report to the calling session.
 
 ### Platform-enforced rules
 

@@ -77,6 +77,7 @@ The following env vars arrive as the post-launch self-hosted media server milest
 | `CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS`        | `10`                | HLS segment duration.                                            |
 | `CASTIFY_TRANSCODE_DIR`                          | `<DATA_DIR>/transcode-cache` | Directory for transcode output.                          |
 | `CASTIFY_TRANSCODE_CACHE_MAX_BYTES`              | `53687091200` (50 GiB) | Soft limit for transcode cache pool.                          |
+| `CASTIFY_TRANSCODE_SWEEP_INTERVAL_SECS`          | `600`               | Background LRU sweep interval (seconds). The sweep deletes oldest completed variants until cache size drops below `CACHE_MAX_BYTES`. |
 
 ### M7 — Adaptive bitrate
 

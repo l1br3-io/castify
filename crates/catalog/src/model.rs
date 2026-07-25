@@ -399,3 +399,34 @@ pub struct VideoCacheEntry {
     pub pinned: bool,
     pub created_at: String,
 }
+
+/// Manifest row for a transcode cache entry (M7). One row per
+/// `(video_id, variant, profile)` — the HLS segments + playlist live on
+/// disk under `output_dir`; this row is the manifest the API layer
+/// consults to enumerate variants, drive LRU eviction, and report stats.
+///
+/// M6 left this table unused (filesystem checks only). M7 wires it.
+#[derive(Debug, Clone)]
+pub struct TranscodeCacheEntry {
+    pub video_id: String,
+    pub variant: String,
+    pub profile: String,
+    pub output_dir: String,
+    /// `NULL` until ffmpeg finishes successfully; then the total segment
+    /// count it produced.
+    pub total_segments: Option<i64>,
+    /// Number of segments currently on disk. Updated as ffmpeg produces
+    /// them; equals `total_segments` once `status = "completed"`.
+    pub completed_segments: i64,
+    pub segment_duration_secs: i64,
+    /// Target bitrate in bits/sec (from `VariantRung::target_bitrate_kbps`
+    /// × 1000). `NULL` for the `'source'` variant where we don't transcode.
+    pub bitrate: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    /// One of `pending`, `in_progress`, `completed`, `failed`.
+    pub status: String,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub last_accessed_at: String,
+}
