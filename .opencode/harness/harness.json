@@ -4,16 +4,14 @@
     ".opencode/agents/security-auditor.md": "de35a88e91eead0c1e38f7e47fa5f3951a6de3035358dce40e643821299e2111",
     ".opencode/agents/test-engineer.md": "c853fbe06a00533efe93fb9acf269b0899fd6434597919a65b2f733126b378d2",
     ".opencode/agents/web-performance-auditor.md": "79d011dc4586327fc20b214bb4cd7c45d11958772553de9a8e5cff0eaefb1012",
-    ".opencode/commands/adopt.md": "4dc8b1c9ca66a47505182cb0f7d25c32a22e515158acb50add32020e4ed39ee4",
+    ".opencode/commands/adopt.md": "5bfc7da81d756b63a73750f65e5341a6aee188caeddc46aeb7ac399fcde06a54",
     ".opencode/commands/build.md": "aab847ca63518713322c6c79c59d516cfc030bf70e73548f3142fc75ec39d4fc",
     ".opencode/commands/code-simplify.md": "bd6169df3f1e134a50079a134c083e763b15163a3ad8475c3432f27aba6268b9",
     ".opencode/commands/how-to-guide.md": "4de6f702b1312203a899d279e8dfe4d3e97bafeb61e029ffa39ead95561e1fd9",
-    ".opencode/commands/migrate.md": "c8b6a162fea02bd655d9c4b527a63f0bda77b40f54e82904ada18571cc2e05fa",
     ".opencode/commands/planning.md": "dd4f0e1a6aa237a505e59ff7c3d580048bff8730643fb8e52a7ebd6cad32173b",
     ".opencode/commands/review.md": "47f3ea98c630772fb452bbc32843739b9ead2159fbcd32b5f2bb59b3f1a00dea",
     ".opencode/commands/ship.md": "4d445fc2782f7c07c5267444517053ce9eb47b41d9696acb854a76561336bb25",
     ".opencode/commands/spec.md": "3c28216b1d2510f2514e1286b54e27af777c0f732c2cade1d9e74b81bd1835c8",
-    ".opencode/commands/status.md": "943a61cfbf63d8ae1e333b13386493bdad906d2796986505420449637e221db2",
     ".opencode/commands/test.md": "f1201d66e935453069a7fc5736c52375eae350e9dffc96229cd1e7423c2e9154",
     ".opencode/commands/webperf.md": "c90c78cd124cb526807ded11a701a2fcb90a6371d7d4514a408ad79c95bf794e",
     ".opencode/harness/references/how-to-guide.md": "1c88f023aa5b2c3025772d78af2d3378f8c7da658b31706ba91af9ee49a0c7db",
@@ -23,7 +21,7 @@
     ".opencode/harness/rules/orchestration-patterns.md": "a7a2d3929dcc7aac7be7e3fb4deb19a4c2378bce3a637aabcc580fcaa91a923d",
     ".opencode/harness/rules/performance-checklist.md": "f6077321aecfb46615ec9544977db7839a6a7bbccf1aa4aeb0130780170f5676",
     ".opencode/harness/rules/security-checklist.md": "f8b6c89465cf835c0e89b466b0b2b277bb3312a923b3f3ff408c61c97665d982",
-    ".opencode/harness/rules/tech.md": "7d9055a8fe077cba84fb630eabf4776797e859d623565d65c069642f212f6d11",
+    ".opencode/harness/rules/tech.md": "e218c9858df6e7571085c10795518c0e5522b8dbf28aa1ff6d3777ce5c16812f",
     ".opencode/harness/rules/testing-patterns.md": "901171e73693f068a07ea92da363303d904da4e54372b16c7921ff5706fb7638",
     ".opencode/harness/rules/verification-commands.md": "2ebc4cb6c6a463b52f5e349d8a693576ec8419c222b9bdeb8eabbf2b23d9ac08",
     ".opencode/harness/scripts/check-refs.py": "1fbba3d5028ddabb769d7fc10e9cb7187d6d65cca872c56e23f71cad337118e4",
@@ -167,8 +165,5 @@
     ".opencode/skills/test-driven-development/SKILL.md": "b44e2a0e84690ed540f46926fbecc0b78d249d7e6591b2fe9d4239594165200b",
     ".opencode/skills/using-agent-skills/SKILL.md": "e99214ceaa532e8d3f1b3ecebe36869a755209f1e697c4f2d675cdd5b526e768"
   },
-  "migrations": [
-    "001-harness-relocate"
-  ],
-  "version": "v0.2.0"
+  "version": "v0.4.0"
 }

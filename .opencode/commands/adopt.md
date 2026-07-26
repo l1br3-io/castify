@@ -36,44 +36,37 @@ diff first):
 
 ## Steps
 
-1. **Legacy layout check.** Two relocations have happened — detect both and
-   delegate to the deterministic engine (`install.py migrate`) rather than
-   moving files by hand. Show what will change; write only on confirmation.
-   - **Pre-0.1** — harness folders at the project root (`agents/`,
-     `commands/`, `skills/` instead of under `.opencode/`): offer to move them
-     under `.opencode/` and fix root-relative references.
-   - **Pre-harness-tree** — `rules/` or `tech/` at the `.opencode/` root
-     instead of under `.opencode/harness/` (the 0.1 layout move): run
-     `python3 install.py migrate --from <this-repo> --dry-run`, show the plan,
-     and on approval apply it (add `--force`). The engine relocates the dirs,
-     removes the legacy orphans, fixes the config path, ports the tech router,
-     and writes the manifest. Do **not** relocate these by hand.
-   If `.opencode/` already has the modern layout (`harness/rules/` present, no
-   `.opencode/rules/`), skip.
-2. **Guard.** Confirm `.opencode/` has the harness folders (`agents/`,
+1. **Guard.** Confirm `.opencode/` has the harness folders (`agents/`,
    `commands/`, `skills/`, `harness/rules/`). If not, stop — `/adopt`
    configures an *existing* harness, it doesn't fetch one. Point the user to
    the installer: `python3 install.py install` (or see README § Quick start).
-3. **Tech + config.** Run `init-tech-declaration` (detect-tech →
+2. **Tech + config.** Run `init-tech-declaration` (detect-tech →
    `.opencode/harness/rules/tech.md` router → config `instructions` wiring),
    following its diff-first rule.
-4. **Agent map.** Reconcile `AGENTS.md` per the handling above.
-5. **Health summary.** Collect the `init-tech-declaration` report, then add:
+3. **Agent map.** Reconcile `AGENTS.md` per the handling above.
+4. **Health summary.** Collect the `init-tech-declaration` report, then add:
    - `AGENTS.md` status (absent / stock-harness / customized).
-   - Manifest: if `.opencode/harness/harness.json` exists, show installed
-     version and whether an update is available. Note that `install.py` is the
-     *installer* — it lives in the harness source repo, not under `.opencode/`,
-      so it is never copied into downstream projects; to run `update`/`status`,
-      invoke it by absolute path with the project as cwd, e.g.
-     `python3 /path/to/opencode-agent-harness/install.py status`. A version of
-     `local` only means it was installed from a local clone (`--from <dir>`)
-     rather than a GitHub tag — it is not an error. If the manifest is absent,
-     it wasn't written (manual install); the manifest enables
-     `install.py update`/`status`.
-6. **Post-adopt verification.** Remind the user to restart opencode (config
+   - Manifest: if `.opencode/harness/harness.json` exists, show the installed
+     version and whether a newer harness release exists. Note that `install.py`
+     is the *installer* — it lives in the harness source repo, not under
+     `.opencode/`, so it is never copied into downstream projects; to inspect,
+     invoke it by absolute path with the project as cwd, e.g.
+     `python3 /path/to/opencode-agent-harness/install.py status`. There is no
+     `update` step — to refresh, re-run `install` (it is idempotent; divergent
+     local files are reported with an overwrite warning before anything
+     changes). A version of `local` only means it was installed from a local
+      clone (`--from <dir>`) rather than a GitHub tag — it is not an error. If
+      the manifest is absent, it wasn't written (manual file copy).
+   - Orphans: glob `.opencode/` and subtract the paths recorded in
+     `harness.json`'s `files`. Any leftovers are files the current harness no
+     longer ships — typically deprecated commands from a prior version (e.g.
+     `migrate.md` from ≤0.2.0). Report them as safe to delete. This is the
+     session-side view of what `install` reports with full deprecation reasons;
+     re-run `install` (or `install --prune-deprecated`) to act on them.
+5. **Post-adopt verification.** Remind the user to restart opencode (config
    loads once at startup), then in a new session verify the router is active:
    ask "what tech conventions should I load?" — the agent should cite the
    stacks from `.opencode/harness/rules/tech.md`.
-7. **Hand off.** Suggest `/spec` to define what to build, or `/planning` if a
+6. **Hand off.** Suggest `/spec` to define what to build, or `/planning` if a
    spec already exists. Run `python3 .opencode/harness/scripts/check-refs.py`
    if any `.md` was added or moved.
