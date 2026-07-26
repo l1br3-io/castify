@@ -80,7 +80,7 @@ The always-loaded rules file (AGENTS.md) is an **index, not an archive**. It ear
 - **Size guard.** If Level 1 exceeds roughly **15 KB / ~400 lines**, split detail out until it's back to a lean index. Treat the threshold as a tripwire, not a budget to spend.
 - **No per-milestone paste.** A common failure mode: each milestone adds a full gotcha or convention block to the rules file and nothing ever gets trimmed. The rules file is linked-to, not pasted-into, per milestone. See `documentation-and-adrs` for where gotchas canonically live.
 
-This mirrors the `planning-and-task-breakdown` Plan File Lifecycle: phase-scoped, archived when done, linked rather than copied.
+This mirrors the `planning-and-task-breakdown` Effort File Lifecycle: branch-scoped, status-flipped to `shipped` on merge, linked rather than copied.
 
 ### Level 2: Specs and Architecture
 

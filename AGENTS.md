@@ -5,9 +5,11 @@
 Castify is a free, open-source personal media server (Rust workspace + Vite/React SPA).
 Connect cloud providers, unify them into one catalog, browse, and play. See
 [`docs/VISION.md`](docs/VISION.md) for the *why* and [`docs/ROADMAP.md`](docs/ROADMAP.md)
-for direction + the delivery lifecycle. Current-phase requirements live in
-[`SPEC.md`](SPEC.md); current work in [`tasks/plan.md`](tasks/plan.md) +
-[`tasks/todo.md`](tasks/todo.md).
+for direction + the delivery lifecycle. The current effort (M8 — Advanced subtitles)
+lives under [`docs/specs/advanced-subtitles/`](docs/specs/advanced-subtitles/):
+[`spec.md`](docs/specs/advanced-subtitles/spec.md) +
+[`plan.md`](docs/specs/advanced-subtitles/plan.md) +
+[`todo.md`](docs/specs/advanced-subtitles/todo.md).
 
 ## Commands
 
@@ -32,7 +34,7 @@ files for the stack you are touching.
 
 ## Skill-driven execution
 
-Non-trivial work is driven by skills rather than ad-hoc steps. Notably: new phases run
+Non-trivial work is driven by skills rather than ad-hoc steps. Notably: new efforts run
 through `/spec` → `/planning` → `/build` → `/test` → `/review` → `/ship`
 (see [`docs/ROADMAP.md`](docs/ROADMAP.md) § How we plan). Match the skill to the task —
 e.g. test-driven-development for behavior changes, debugging-and-error-recovery for
@@ -40,10 +42,13 @@ failures, code-review-and-quality before merge.
 
 ## Orchestration
 
-Single-phase, single-plan: `tasks/plan.md` + `tasks/todo.md` hold the **current phase
-only** (M8). Finished phases live as units under [`tasks/archive/`](tasks/archive/) —
-do not split an archive's SPEC.md from its plan.md/todo.md. Status lives in the
-checklist, not in a duplicate table elsewhere.
+One directory per effort, in place forever: each effort lives at
+`docs/specs/<effort-slug>/` with `spec.md` + `plan.md` + `todo.md`. Status lives in the
+spec.md frontmatter (`status: draft | active | shipped`) and the todo.md checkboxes —
+not in a duplicate table elsewhere. Shipped efforts stay put; their spec.md frontmatter
+flips to `status: shipped` (no archive step). Past efforts: M0–M7 under
+[`docs/specs/`](docs/specs/) (each `mN-*` directory); current effort: M8 at
+[`docs/specs/advanced-subtitles/`](docs/specs/advanced-subtitles/).
 
 ## Boundaries
 
@@ -51,7 +56,7 @@ checklist, not in a duplicate table elsewhere.
   server requests, consult
   [`docs/data-storage-principles.md`](docs/data-storage-principles.md). Default to
   client-side storage (IndexedDB) for per-device data; justify every server-side write.
-- **ADR immutability.** `docs/adr/` (when present) is immutable; supersede a decision
+- **ADR immutability.** `docs/adrs/` (when present) is immutable; supersede a decision
   with a new ADR, never rewrite one.
 - **`.opencode/` is out of scope** here — the harness is replaced separately. This file
   intentionally carries no harness-internal path references.

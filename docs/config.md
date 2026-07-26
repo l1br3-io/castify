@@ -52,7 +52,7 @@ To connect a cloud provider you register an OAuth app with the provider and set 
 
 ## Media server features (M4–M8)
 
-The following env vars arrive as the self-hosted media server milestones land. M4–M7 are implemented; M8 is the current phase. See [`ROADMAP.md`](./ROADMAP.md) for sequencing and the per-milestone archives under [`../tasks/archive/`](../tasks/archive/) for design detail.
+The following env vars arrive as the self-hosted media server milestones land. M4–M7 are implemented; M8 is the current effort. See [`ROADMAP.md`](./ROADMAP.md) for sequencing and the per-effort specs under [`./specs/`](./specs/) for design detail.
 
 ### M4 — Hot video disk cache
 

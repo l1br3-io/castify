@@ -1,8 +1,9 @@
 # Changelog
 
-Reverse-chronological ship history. Finished phases archive as units under
-[`tasks/archive/`](./tasks/archive/); this file is the human-facing summary.
-Direction and sequencing live in [`docs/ROADMAP.md`](./docs/ROADMAP.md).
+Reverse-chronological ship history. Shipped efforts live in place under
+[`docs/specs/`](./docs/specs/) with `status: shipped` in their spec.md frontmatter;
+this file is the human-facing summary. Direction and sequencing live in
+[`docs/ROADMAP.md`](./docs/ROADMAP.md).
 
 ## M7 — Adaptive bitrate (shipped)
 

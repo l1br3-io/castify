@@ -14,4 +14,15 @@ Begin by understanding what the user wants to build. Ask clarifying questions ab
 
 Then generate a structured spec covering all six core areas: objective, commands, project structure, code style, testing strategy, and boundaries.
 
-Save the spec as SPEC.md in the project root and confirm with the user before proceeding.
+Save the spec to `docs/specs/<effort-slug>/spec.md` (create the directory). The `<effort-slug>` should match the branch name — pick it once, use it consistently as the branch name and the directory name. Use clean slugs (e.g. `auth-google-oauth`, `billing-refunds`); no numeric prefix.
+
+Add frontmatter tracking the effort's lifecycle:
+
+```yaml
+---
+status: draft        # draft → active → shipped (flipped by /build and on merge)
+started: YYYY-MM-DD
+---
+```
+
+Confirm with the user before proceeding.

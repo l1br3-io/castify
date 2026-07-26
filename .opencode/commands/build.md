@@ -13,7 +13,7 @@ The arguments select the mode. Treat `auto` (canonical) or `all` as autonomous m
 
 ## Default: one task
 
-Pick the next pending task from `tasks/todo.md` (the lightweight checklist), then read **only that task's section** from `tasks/plan.md` — not the whole file. Pull in the plan's Overview / Architecture Decisions only if the task needs that context; skip other tasks' completed detail. Then:
+Pick the next pending task from `docs/specs/<effort-slug>/todo.md` (the lightweight checklist), then read the corresponding file from `docs/specs/<effort-slug>/tasks/00N-<task-slug>.md` — not the whole plan. Pull in `plan.md`'s Overview / Architecture Decisions only if the task needs that context; skip other tasks' detail files. Then:
 
 1. Read the task's acceptance criteria
 2. Load relevant context (existing code, patterns, types)
@@ -28,16 +28,16 @@ Pick the next pending task from `tasks/todo.md` (the lightweight checklist), the
 
 Use this once a spec exists and you want to collapse plan + build into one run. It removes the manual stepping between tasks — not the verification. Every task still earns a passing test and its own commit.
 
-1. Require a spec. Look only for a spec at a known path: SPEC.md at the repo root, docs/SPEC.md, or a file under spec/. A README or arbitrary doc does NOT count. If none exists, stop and tell the user to run /spec first — do not invent requirements.
-2. Establish a clean baseline. Run `git status --porcelain`. If there are uncommitted changes outside the expected planning artifacts (SPEC.md, docs/SPEC.md, spec/*, tasks/plan.md, tasks/todo.md), stop and ask the user to commit, stash, or confirm how to handle them. Autonomous per-task commits must not absorb unrelated local work, or the clean-rollback guarantee breaks.
-3. Plan if needed. If there is no tasks/plan.md, invoke the planning-and-task-breakdown skill to generate one.
-4. Single checkpoint. Present the full plan and wait for an unambiguous affirmative (e.g. "approve", "go", "yes"). Treat hedged responses ("looks reasonable", "I guess") as NOT approved. This is the only human gate — after approval, run autonomously. If you generated tasks/plan.md, commit it as a single preparatory commit now so it doesn't bleed into the first task's commit.
+1. Require a spec. Look only for a spec at `docs/specs/<effort-slug>/spec.md`. A README, AGENTS.md, or arbitrary doc does NOT count. If none exists, stop and tell the user to run /spec first — do not invent requirements.
+2. Establish a clean baseline. Run `git status --porcelain`. If there are uncommitted changes outside the expected planning artifacts (`docs/specs/<effort-slug>/`), stop and ask the user to commit, stash, or confirm how to handle them. Autonomous per-task commits must not absorb unrelated local work, or the clean-rollback guarantee breaks.
+3. Plan if needed. If there is no `docs/specs/<effort-slug>/plan.md`, invoke the planning-and-task-breakdown skill to generate one.
+4. Single checkpoint. Present the full plan and wait for an unambiguous affirmative (e.g. "approve", "go", "yes"). Treat hedged responses ("looks reasonable", "I guess") as NOT approved. This is the only human gate — after approval, run autonomously. If you generated `docs/specs/<effort-slug>/plan.md`, commit it as a single preparatory commit now so it doesn't bleed into the first task's commit. Also flip `spec.md` frontmatter `status: draft` → `status: active` in the same commit.
 5. Execute every task in dependency order. Use each task's declared dependencies; if they aren't explicit, execute in the order the plan lists them. For each task, run the full default loop above (RED → GREEN → regression → build → commit → mark complete). Stage only the files that task touched plus its task-status update — never `git add -A` blindly — and make one commit per task so any point is a clean rollback.
 6. Stop and ask the user (do not push through) when:
    - a test can't be made to pass or the build breaks without an obvious fix → follow the debugging-and-error-recovery skill
    - the spec is ambiguous, or a task needs a decision the spec doesn't cover
    - a task is high-risk or irreversible — auth/permission changes, destructive data migrations, payments, deletions, deploys, anything touching secrets, or anything you can't undo with `git revert` → follow the doubt-driven-development skill and get explicit sign-off before continuing
    After the user resolves a blocker, they re-invoke /build auto — it resumes from the next pending task.
-7. Summarize at the end: tasks completed, tests added, commits made, and anything skipped, flagged, or left for the user. If all tasks in the plan are complete, suggest archiving the phase — move `tasks/plan.md`, `tasks/todo.md`, and the phase's spec into `tasks/archive/YYYY-MM-DD-<slug>/` (see `planning-and-task-breakdown` § Plan File Lifecycle) so the next `/build` starts a fresh, phase-scoped plan. Do not move the files until the user confirms.
+7. Summarize at the end: tasks completed, tests added, commits made, and anything skipped, flagged, or left for the user. If all tasks in the plan are complete and the checkpoint passes, suggest opening a PR. On merge, the merge commit flips `spec.md` frontmatter to `status: shipped` with the shipped date — the directory stays in place at `docs/specs/<effort-slug>/`, do not move or delete it. The next effort starts on a fresh branch with a fresh directory (see `planning-and-task-breakdown` § Effort File Lifecycle).
 
 If any step fails, follow the debugging-and-error-recovery skill.

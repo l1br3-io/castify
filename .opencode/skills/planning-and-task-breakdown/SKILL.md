@@ -78,10 +78,12 @@ Each vertical slice delivers working, testable functionality.
 
 ### Step 4: Write Tasks
 
-Each task follows this structure:
+Each task becomes **its own file** under `docs/specs/<effort-slug>/tasks/00N-<task-slug>.md`. This keeps `plan.md` a thin index (cheap for `/build` to scan) and gives each task a dedicated, scoped detail file (cheap for `/build` to load one at a time). See § Effort File Lifecycle below for the full file model.
+
+Per-task file template:
 
 ```markdown
-## Task [N]: [Short descriptive title]
+# Task 00N: [Short descriptive title]
 
 **Description:** One paragraph explaining what this task accomplishes.
 
@@ -145,8 +147,12 @@ If a task is L or larger, it should be broken into smaller tasks. An agent perfo
 
 ## Plan Document Template
 
+The plan is a **thin index**, not a thick document. Per-task detail (acceptance, files, verify, dependencies) lives in `tasks/00N-<task-slug>.md` files (see Step 4 above). The plan just lists tasks in order, names the architecture decisions, and marks the checkpoints.
+
+Save to `docs/specs/<effort-slug>/plan.md`:
+
 ```markdown
-# Implementation Plan: [Feature/Project Name]
+# Plan: [Effort Name]
 
 ## Overview
 [One paragraph summary of what we're building]
@@ -155,25 +161,25 @@ If a task is L or larger, it should be broken into smaller tasks. An agent perfo
 - [Key decision 1 and rationale]
 - [Key decision 2 and rationale]
 
-## Task List
+## Task Index
 
 ### Phase 1: Foundation
-- [ ] Task 1: ...
-- [ ] Task 2: ...
+- [ ] Task 1: [title] → `tasks/001-<slug>.md`
+- [ ] Task 2: [title] → `tasks/002-<slug>.md`
 
 ### Checkpoint: Foundation
 - [ ] Tests pass, builds clean
 
 ### Phase 2: Core Features
-- [ ] Task 3: ...
-- [ ] Task 4: ...
+- [ ] Task 3: [title] → `tasks/003-<slug>.md`
+- [ ] Task 4: [title] → `tasks/004-<slug>.md`
 
 ### Checkpoint: Core Features
 - [ ] End-to-end flow works
 
 ### Phase 3: Polish
-- [ ] Task 5: ...
-- [ ] Task 6: ...
+- [ ] Task 5: [title] → `tasks/005-<slug>.md`
+- [ ] Task 6: [title] → `tasks/006-<slug>.md`
 
 ### Checkpoint: Complete
 - [ ] All acceptance criteria met
@@ -188,62 +194,90 @@ If a task is L or larger, it should be broken into smaller tasks. An agent perfo
 - [Question needing human input]
 ```
 
-## Plan File Lifecycle
+The matching flat checkbox list — one line per task, mirroring the index above — lives in `docs/specs/<effort-slug>/todo.md` and is the **single status source** the project resumes from.
 
-A plan belongs to one phase or feature, not the whole project. A plan that
-outlives its phase becomes dead weight every time the agent re-reads it — and
-the plan is read on every build step. Keep `tasks/plan.md`, `tasks/todo.md`,
-and the phase's spec phase-scoped: when the phase is done, move them aside and
-start fresh.
+## Effort File Lifecycle
 
-### When to archive
+### Mental model: four files, four jobs
 
-Archive when **both** are true:
+One effort = one branch = one directory at `docs/specs/<effort-slug>/`. Inside that directory, four files do four distinct jobs. **The split exists so each file stays thin** — a thick plan bloats every `/build` step that has to read it.
 
-- Every task in the plan is complete
-- The phase checkpoint is satisfied (tests pass, build is clean, end-to-end flow works)
+| File                          | Metaphor                    | Answers                              | Goes in                                                       | Does NOT go in                                  |
+| ----------------------------- | --------------------------- | ------------------------------------ | ------------------------------------------------------------- | ----------------------------------------------- |
+| `spec.md`                       | **Destination**                 | What does done look like?            | Problem, user, success criteria, out-of-scope, open questions | Implementation detail, task lists, file paths    |
+| `plan.md`                       | **Route** (outline)            | What are the major steps in order?   | Approach, architecture decisions, task *index*, checkpoints, risks | Per-task acceptance criteria, file lists, verify steps |
+| `todo.md`                       | **Progress**                    | Which steps are checked off?         | One checkbox per task, mirroring the plan's task index        | Anything that isn't a checkbox                    |
+| `tasks/00N-<slug>.md`           | **Turn-by-turn directions**     | What exactly does this one step entail? | Per-task acceptance, files to touch, verification, dependencies | Anything about other tasks                        |
 
-Do not archive mid-phase. An incomplete plan stays in place and gets refined or
-extended, not moved.
+If you find yourself writing acceptance criteria or file lists inside `plan.md`, stop — that content belongs in the corresponding `tasks/00N-*.md` file. The plan is the outline; the task files are the body.
 
-### How to archive
+### Directory layout per effort
 
-Move the phase's three artifacts together into `tasks/archive/`, keeping them
-as a unit:
+```
+docs/specs/<effort-slug>/
+  spec.md                   ← what & why (frontmatter: status, started, shipped)
+  plan.md                   ← thin index (overview + architecture + task list + checkpoints + risks)
+  todo.md                   ← flat checkboxes only — the single status source
+  tasks/
+    001-<task-slug>.md      ← per-task detail (acceptance, files, verify, deps)
+    002-<task-slug>.md
+    ...
+```
 
-- `tasks/plan.md`
-- `tasks/todo.md`
-- the phase's spec (`SPEC.md`, or the `spec/<name>.md` this phase used)
+The `<effort-slug>` is the branch name and the directory name — pick once, use consistently. Use clean slugs (no numeric prefix); order is reconstructed from git history or a `docs/specs/README.md` index if you want one.
 
-Default archive name: `tasks/archive/YYYY-MM-DD-<slug>/`
-(e.g. `tasks/archive/2026-07-22-accounts/`). Any consistent scheme works; the
-goal is that archived plans sort and stay paired with their spec.
+### Scope: not every change needs an effort directory
 
-Archival is a plain filesystem move. Whether and when to commit that move is the
-user's call — the agent **suggests** the archive at the right moment; the human
-confirms. The agent never relocates these files on its own.
+This flow is for **non-trivial work** — anything that benefits from written acceptance criteria before code. Trivial fixes (typos, one-line bugs, obvious single-file changes) go directly on a branch with no `docs/specs/<slug>/` entry; the harness flow is overhead for them. See `spec-driven-development`'s "When NOT to use" for the boundary.
 
-### After archiving: start fresh
+### Status lifecycle (no archive, no move)
 
-- `/build` regenerates a missing `tasks/plan.md` from the *current* spec
-  (see `.opencode/commands/build.md`). So write the next phase's spec first (`/spec`),
-  then plan. A stale spec regenerates a plan for the old scope — that's why the
-  spec archives *with* the plan, not separately.
-- `/build auto` requires a spec to exist. If `SPEC.md` was archived too, it stops
-  and asks for `/spec` first — that's the intended safety net, not a failure.
+`spec.md` carries a `status` field in its frontmatter that tracks the effort's phase. **Nothing moves when the status changes** — the directory stays at `docs/specs/<slug>/` forever.
 
-### Carry-over between phases
+```
+draft  ──→  active  ──→  shipped
+                              ↘
+                               abandoned   (branch deleted before shipping)
+```
 
-If the next phase depends on decisions from the prior one, **link** the archived
-plan/spec from the new plan's "Architecture Decisions" instead of copying or
-re-reading their full contents. The archive is history the agent points at, not
-context it routinely pulls in.
+- `draft` — `/spec` wrote it; user is reviewing or refining.
+- `active` — `/build` is executing the approved plan.
+- `shipped` — PR merged to main. The merge commit flips the status and records the shipped date.
+- `abandoned` — effort stopped before shipping. Either the branch was deleted (the directory never reached main) or, if it landed on main, the status is flipped explicitly so it's not mistaken for active work.
 
-The same applies to the always-loaded rules file (AGENTS.md): each phase adds
-**at most a one-line index pointer** for new gotchas (linking to
-`docs/gotchas.md#gN` or an inline comment), never the full detail. The rules
-file is linked-to, not pasted-into, per milestone — otherwise it grows linearly
-and never trims.
+`docs/specs/` accumulates shipped and abandoned efforts alongside active ones. Git is the history; the filesystem is the index.
+
+### When the effort ships
+
+When the plan's checkpoint passes and the PR merges to main, the merge commit:
+
+1. Flips `spec.md` frontmatter: `status: shipped`, plus `shipped: YYYY-MM-DD`.
+2. Leaves the directory in place. **Do not move, rename, or delete it.**
+
+There is no `archive/` directory. Past efforts are browsed by `ls docs/specs/` (current state) or `git log` (full history).
+
+### Carry-over between efforts
+
+If a new effort depends on decisions from a prior one, **link the prior effort's PR or merge SHA** from the new `spec.md`'s "Architecture Decisions" or "Open Questions" section. Don't copy or re-read the prior effort's files — they're history to point at, not context to routinely load.
+
+For cross-cutting decisions that span multiple efforts, write an ADR (see `documentation-and-adrs`) at `docs/adrs/`. ADRs are the permanent record; effort specs are the per-effort record.
+
+The same linking discipline applies to the always-loaded rules file (AGENTS.md): each effort adds **at most a one-line index pointer** for new gotchas (linking to `docs/gotchas.md#gN` or an inline code comment), never the full detail. The rules file is linked-to, not pasted-into, per milestone — otherwise it grows linearly and never trims.
+
+### After shipping: start the next effort
+
+A new effort starts on a fresh branch with a fresh `docs/specs/<slug>/` directory:
+
+1. `git checkout -b <new-effort-slug>`
+2. `/spec` writes the new `docs/specs/<new-effort-slug>/spec.md` (status: `draft`).
+3. `/planning` generates `plan.md`, `todo.md`, and `tasks/*`.
+4. `/build` executes.
+
+The presence of prior shipped directories in `docs/specs/` is irrelevant to the new effort — `/spec` always writes to a new directory, `/build` always reads from the current branch's directory.
+
+### `/build`'s safety net
+
+`/build auto` requires an active spec at `docs/specs/<effort-slug>/spec.md`. If no such directory exists on the current branch, it stops and asks the user to run `/spec` first — that's the intended safety net, not a failure. `/build` (single-task mode) is less strict: it operates on whatever `todo.md` is present, useful for small focused work that skipped the spec flow.
 
 ## Parallelization Opportunities
 
@@ -261,7 +295,8 @@ When multiple agents or sessions are available:
 | "The tasks are obvious" | Write them down anyway. Explicit tasks surface hidden dependencies and forgotten edge cases. |
 | "Planning is overhead" | Planning is the task. Implementation without a plan is just typing. |
 | "I can hold it all in my head" | Context windows are finite. Written plans survive session boundaries and compaction. |
-| "One plan per project" | Phase-scoped plans keep the active file small and every `/build` step cheap. `/build` regenerates the next plan once the current one is archived. |
+| "One plan per project" | One directory per effort. Effort-scoped plans keep the active files small and every `/build` step cheap. Past efforts stay in `docs/specs/` as shipped; the next effort starts fresh on its own branch. |
+| "Put everything in one big plan" | A thick plan bloats every `/build` step that reads it. Keep `plan.md` a thin index; put per-task detail in `tasks/00N-*.md` files. |
 
 ## Red Flags
 
@@ -271,18 +306,20 @@ When multiple agents or sessions are available:
 - All tasks are XL-sized
 - No checkpoints between tasks
 - Dependency order isn't considered
-- `tasks/plan.md` keeps growing across phases — dozens of completed tasks accumulating alongside active ones. Archive the finished phase and start a fresh, phase-scoped plan.
+- `plan.md` growing thick with per-task detail (acceptance criteria, file lists) — that content belongs in `tasks/00N-*.md`, not the plan index
+- An effort's `spec.md` left at `status: draft` or `status: active` after the PR merged — flip to `shipped` in the merge commit
 
 ## Verification
 
 Before starting implementation, confirm:
 
-- [ ] Every task has acceptance criteria
-- [ ] Every task has a verification step
+- [ ] Every task has a corresponding `tasks/00N-<slug>.md` file with acceptance criteria
+- [ ] Every task file has a verification step
 - [ ] Task dependencies are identified and ordered correctly
 - [ ] No task touches more than ~5 files
 - [ ] Checkpoints exist between major phases
 - [ ] The human has reviewed and approved the plan
-- [ ] If the plan covers a completed phase, it has been archived (with its todo and spec) and a fresh plan started
+- [ ] `plan.md` is a thin index (overview + decisions + task pointers + checkpoints + risks), not a thick document
+- [ ] If the effort has shipped, `spec.md` frontmatter reads `status: shipped` with the merge date; new efforts start on fresh branches
 
 Acceptance criteria are per-task and answer "did we build the right thing?". They sit on top of the project-wide Definition of Done, the standing bar every task clears before it counts as done. See `@rules/definition-of-done.md`.

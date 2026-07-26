@@ -14,17 +14,17 @@ whole file.
 1. **Ask what they want to explore.** Offer the categories (one line each),
    then wait for the user to pick one, ask a specific question, or type their
    own:
-   - **Resuming work** — coming back after a break, forgot where I was
-   - **Artifacts & files** — what `SPEC.md` / `plan.md` / `todo.md` / `archive/`
-     are for
-   - **Phases & tasks** — what a "phase" means, vertical vs horizontal slicing
-   - **Methodology & fit** — agile-coupled? project-agnostic? OSS-friendly?
-   - **Conventions** — commit messages, status source, where ROADMAP/VISION fit
+    - **Resuming work** — coming back after a break, forgot where I was
+    - **Artifacts & files** — what `spec.md` / `plan.md` / `todo.md` / `tasks/`
+      are for
+    - **Phases & tasks** — what an "effort" means, vertical vs horizontal slicing
+    - **Methodology & fit** — agile-coupled? project-agnostic? OSS-friendly?
+    - **Conventions** — commit messages, status source, where ROADMAP/VISION fit
 
 2. **Read the matching section** from the reference. Do NOT paste it verbatim —
    re-explain in your own words, adapt to what the user already knows (ask if
-   unsure), and use their project's actual files (`tasks/todo.md`, current
-   `SPEC.md`, archived phases) as concrete examples where useful.
+   unsure), and use their project's actual files (`docs/specs/<effort-slug>/todo.md`,
+   current `spec.md`, shipped efforts) as concrete examples where useful.
 
 3. **End every answer with a follow-up offer**, e.g.:
    - "Want to go deeper on X?"

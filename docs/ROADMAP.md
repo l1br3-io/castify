@@ -1,9 +1,8 @@
 # Roadmap
 
 > **Companion:** [`VISION.md`](./VISION.md) — the problem and goals. This roadmap
-> communicates direction and sequencing only; per-phase requirements live in
-> [SPEC.md](../SPEC.md) (root) for the current phase and under
-> [`tasks/archive/`](../tasks/archive/) for shipped phases.
+> communicates direction and sequencing only; per-effort requirements live in
+> [`docs/specs/<effort-slug>/spec.md`](./specs/) — one directory per effort.
 
 Castify is a free, open-source **personal media server**: connect the cloud storage
 you already pay for, unify every provider into one library, organize and browse your
@@ -22,23 +21,24 @@ VISION   "What problem are we solving?"   docs/VISION.md
   │
 ROADMAP  "What directions / milestones?"  docs/ROADMAP.md  (this)
   │
-SPEC     "Current phase requirements"     SPEC.md  (root, one per phase)
+SPEC     "Current effort requirements"    docs/specs/<effort-slug>/spec.md
 ```
 
-### Each milestone ships through the harness lifecycle
+### Each effort ships through the harness lifecycle
 
 ```text
-DEFINE → /spec       spec-driven-development             → SPEC.md
-PLAN   → /planning   planning-and-task-breakdown          → tasks/plan.md + tasks/todo.md
-BUILD  → /build      incremental-implementation + TDD     → source + tests
-VERIFY → /test       debugging-and-error-recovery         → pnpm verify green
-REVIEW → /review     code-review-and-quality              → sign-off
-SHIP   → /ship       shipping-and-launch                  → tasks/archive/<date>-<slug>/{SPEC.md, plan.md, todo.md}
+DEFINE → /spec       spec-driven-development             → docs/specs/<slug>/spec.md (status: draft)
+PLAN   → /planning   planning-and-task-breakdown         → docs/specs/<slug>/{plan.md, todo.md, tasks/00N-*.md}
+BUILD  → /build      incremental-implementation + TDD    → source + tests (flips spec status: draft → active)
+VERIFY → /test       debugging-and-error-recovery        → pnpm verify green
+REVIEW → /review     code-review-and-quality             → sign-off
+SHIP   → /ship       shipping-and-launch                 → merge PR; spec status flips to shipped (dir stays in place)
 ```
 
-When a phase ships, its SPEC.md + plan.md + todo.md archive **together** under
-`tasks/archive/YYYY-MM-DD-<slug>/`, and the next phase starts fresh at `/spec`. A plan
-never outlives its phase; a spec never outlives its plan.
+When an effort ships, its spec.md frontmatter flips to status: shipped with the merge
+date. The directory stays at `docs/specs/<slug>/` forever — no archive step, no move.
+Git is the full history; the filesystem is the browsable index. The next effort starts
+on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 
 ---
 
@@ -55,7 +55,7 @@ never outlives its phase; a spec never outlives its plan.
 
 ## Milestones
 
-> **Current phase: M8 — Advanced subtitles** (see [`SPEC.md`](../SPEC.md)).
+> **Current effort: M8 — Advanced subtitles** (see [`docs/specs/advanced-subtitles/spec.md`](./specs/advanced-subtitles/spec.md)).
 
 | Milestone | State |
 |-----------|-------|

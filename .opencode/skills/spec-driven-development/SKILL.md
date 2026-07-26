@@ -169,12 +169,13 @@ Execute tasks one at a time following `.opencode/skills/incremental-implementati
 
 ## Keeping the Spec Alive
 
-The spec is a living document, not a one-time artifact:
+The spec is a living document, not a one-time artifact. It lives at `docs/specs/<effort-slug>/spec.md` and stays there for the life of the effort — no archival, no move.
 
 - **Update when decisions change** — If you discover the data model needs to change, update the spec first, then implement.
 - **Update when scope changes** — Features added or cut should be reflected in the spec.
 - **Commit the spec** — The spec belongs in version control alongside the code.
 - **Reference the spec in PRs** — Link back to the spec section that each PR implements.
+- **Status transitions happen in place via frontmatter** — `status: draft` (just written, user reviewing) → `status: active` (the `/build` checkpoint was approved, work in progress) → `status: shipped` (PR merged, the merge commit flips it and records `shipped: YYYY-MM-DD`). The directory never moves; only the frontmatter changes. See `planning-and-task-breakdown` § Effort File Lifecycle for the full model.
 
 ## Common Rationalizations
 
@@ -202,4 +203,5 @@ Before proceeding to implementation, confirm:
 - [ ] The human has reviewed and approved the spec
 - [ ] Success criteria are specific and testable
 - [ ] Boundaries (Always/Ask First/Never) are defined
+- [ ] The spec is saved to `docs/specs/<effort-slug>/spec.md` with `status: draft` frontmatter
 - [ ] The spec is saved to a file in the repository
