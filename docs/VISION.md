@@ -42,12 +42,6 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 
 | Goal | Target |
 |------|--------|
-| Unify every connected provider into one browsable library | Set up and see a unified catalog in under 10 minutes |
-| Single command to a running app | `docker compose up` → app serving in under 30 seconds |
-| Major cloud providers from day one | 3 providers at launch (Google Drive, Dropbox, OneDrive) |
-| Snappy unified library | Renders across all connected providers in under 500 ms |
-| Deduplicate across providers | A majority of libraries deduplicated |
-| Direct cloud playback | Video starts within 3 seconds |
 | Genuinely free | $0 monthly app cost |
 | Community adoption | Growing pulls, stars, and contributors |
 
@@ -66,7 +60,6 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 - Our own cloud media storage service — always bring-your-own-cloud; the user's media stays in their cloud.
 - Paid subscription tiers — the app is always free and AGPL-3.0.
 - Email/password accounts — signing in happens through the user's cloud provider.
-- Server-side video transcoding — out of launch scope; revisit when codec coverage becomes a real blocker. See the [Self-Hosted Media Server roadmap](./ROADMAP-self-hosted-media-server.md) for the post-launch arc (M3.5 → M8) that adds disk caching, codec probing, transcoding, adaptive bitrate, and advanced subtitles.
 
 ---
 
@@ -83,20 +76,4 @@ Castify solves this by connecting to the cloud storage users *already pay for*, 
 
 ## Where this fits
 
-This vision is the top of the planning hierarchy. Direction and milestones live in [`ROADMAP.md`](./ROADMAP.md).
-
-```text
-VISION   "What problem does this project solve?"     VISION.md  (this)
-  │
-ROADMAP  "What directions / milestones?"              ROADMAP.md
-  │
-PRDs     "Detailed requirements per area"            docs/prds/   (forthcoming)
-  │
-EPICS    "Trackable feature groups"
-  │
-ISSUES   "Specific, actionable work items"
-  │
-PRs      "Implementation against issues"
-  │
-RELEASES "Ship it, tag it, communicate it"
-```
+This vision is the top of the planning hierarchy — the *why*. Direction, milestones, and the delivery lifecycle (DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP) live in [`ROADMAP.md`](./ROADMAP.md).

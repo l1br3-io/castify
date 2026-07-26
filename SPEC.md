@@ -1,7 +1,8 @@
-# PRD: M8 — Advanced Subtitles
+# SPEC: M8 — Advanced Subtitles
 
-> **Status:** Baseline — sixth milestone of the self-hosted media server arc.
-> **Companion:** [`ROADMAP-self-hosted-media-server.md`](../ROADMAP-self-hosted-media-server.md), [`m6-transcoding.md`](./m6-transcoding.md).
+> **Current phase.** Direction: [`docs/ROADMAP.md`](docs/ROADMAP.md). Plan:
+> [`tasks/plan.md`](tasks/plan.md). M6 (transcoding, this spec's prerequisite) is
+> shipped under [`tasks/archive/2026-07-25-m6-transcoding/`](tasks/archive/2026-07-25-m6-transcoding/).
 
 ## Purpose
 
