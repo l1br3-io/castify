@@ -9,8 +9,8 @@ use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, guess_language, has_subtitle_extension, infer_image_mime,
-    response_to_stream, to_hex, TokenResponse,
+    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
+    infer_image_mime, response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -374,41 +374,58 @@ impl GoogleDriveClient {
                 .and_then(|pid| folder_cache.get(pid))
                 .map(|folder_path| format!("{folder_path}/{}", f.name));
 
-            if has_subtitle_extension(&f.name) {
-                let language = guess_language(&f.name);
-                subtitles.push(DiscoveredSubtitle {
-                    provider_file_id: f.id,
-                    name: f.name,
-                    path,
-                    language,
-                });
-            } else {
-                let native_hash = f.sha256_checksum.clone().or(f.md5_checksum.clone());
-                let native_hash_algo = if f.sha256_checksum.is_some() {
-                    Some("sha256".to_string())
-                } else if f.md5_checksum.is_some() {
-                    Some("md5".to_string())
-                } else {
-                    None
-                };
+            let class = classify_drive_file(&f);
+            match class {
+                DriveFileClass::Subtitle => {
+                    let language = guess_language(&f.name);
+                    subtitles.push(DiscoveredSubtitle {
+                        provider_file_id: f.id,
+                        name: f.name,
+                        path,
+                        language,
+                    });
+                }
+                DriveFileClass::Video => {
+                    // Defense in depth: Drive's `mimeType contains 'video/'`
+                    // query can match files that aren't actually playable
+                    // videos (Google-internal types, mock files, mislabeled
+                    // uploads). Require a known video extension before
+                    // treating something as a video — matches Dropbox +
+                    // OneDrive's contract.
+                    let native_hash = f.sha256_checksum.clone().or(f.md5_checksum.clone());
+                    let native_hash_algo = if f.sha256_checksum.is_some() {
+                        Some("sha256".to_string())
+                    } else if f.md5_checksum.is_some() {
+                        Some("md5".to_string())
+                    } else {
+                        None
+                    };
 
-                videos.push(DiscoveredVideo {
-                    provider_file_id: f.id,
-                    name: f.name,
-                    path,
-                    size_bytes: f.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
-                    mime_type: Some(f.mime_type),
-                    duration_ms: f
-                        .video_media_metadata
-                        .as_ref()
-                        .and_then(|v| v.duration_millis.as_deref())
-                        .and_then(|d| d.parse().ok()),
-                    width: f.video_media_metadata.as_ref().and_then(|v| v.width),
-                    height: f.video_media_metadata.as_ref().and_then(|v| v.height),
-                    native_hash,
-                    native_hash_algo,
-                    provider_modified_at: f.modified_time,
-                });
+                    videos.push(DiscoveredVideo {
+                        provider_file_id: f.id,
+                        name: f.name,
+                        path,
+                        size_bytes: f.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
+                        mime_type: Some(f.mime_type.clone()),
+                        duration_ms: f
+                            .video_media_metadata
+                            .as_ref()
+                            .and_then(|v| v.duration_millis.as_deref())
+                            .and_then(|d| d.parse().ok()),
+                        width: f.video_media_metadata.as_ref().and_then(|v| v.width),
+                        height: f.video_media_metadata.as_ref().and_then(|v| v.height),
+                        native_hash,
+                        native_hash_algo,
+                        provider_modified_at: f.modified_time.clone(),
+                    });
+                }
+                DriveFileClass::Other => {
+                    tracing::debug!(
+                        name = %f.name,
+                        mime_type = %f.mime_type,
+                        "skipping Drive file matched by query but lacking a recognized video extension"
+                    );
+                }
             }
         }
 
@@ -800,7 +817,10 @@ impl GoogleDriveClient {
                 );
                 return Ok(Some(final_url));
             }
-            ProbeOutcome::ServedInline { status, content_type } => {
+            ProbeOutcome::ServedInline {
+                status,
+                content_type,
+            } => {
                 tracing::info!(
                     file_id,
                     status,
@@ -816,11 +836,7 @@ impl GoogleDriveClient {
     /// response as `Redirected` (we captured a new URL via redirect-following),
     /// `ServedInline` (Drive returned 200/206 with no redirect), or propagate
     /// the usual errors (`Unauthorized`, `RateLimited`, `Api`).
-    async fn probe_redirect(
-        &self,
-        url: &str,
-        access_token: &str,
-    ) -> ProviderResult<ProbeOutcome> {
+    async fn probe_redirect(&self, url: &str, access_token: &str) -> ProviderResult<ProbeOutcome> {
         let resp = self
             .http_download
             .get(url)
@@ -887,6 +903,35 @@ enum ProbeOutcome {
         status: u16,
         content_type: Option<String>,
     },
+}
+
+// ── Drive file classification ────────────────────────────────────────
+
+/// How a Drive file should be classified by `list_drive_videos`. Extracted
+/// from the partition loop so the rule (subtitle extension → subtitle,
+/// known video extension → video, anything else → skip) is testable
+/// without spinning up a mock HTTP server.
+///
+/// Defense in depth: Drive's `mimeType contains 'video/'` query can match
+/// files that aren't actually playable videos (Google-internal types, mock
+/// files, mislabeled uploads). The classifier requires a known video
+/// extension before classifying as `Video` — matches Dropbox + OneDrive's
+/// contract.
+#[derive(Debug, PartialEq, Eq)]
+enum DriveFileClass {
+    Video,
+    Subtitle,
+    Other,
+}
+
+fn classify_drive_file(file: &DriveFile) -> DriveFileClass {
+    if has_subtitle_extension(&file.name) {
+        DriveFileClass::Subtitle
+    } else if has_video_extension(&file.name) {
+        DriveFileClass::Video
+    } else {
+        DriveFileClass::Other
+    }
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -1151,6 +1196,77 @@ mod tests {
     }
 
     #[test]
+    fn classify_drive_file_picks_up_known_video_extensions() {
+        // Even when the Drive API returns a `mimeType contains 'video/'`
+        // match, the classifier requires a known video extension. This is
+        // defense in depth against Drive's broad query.
+        for name in ["vacation.mp4", "clip.MKV", "a.b.c.webm", "old.mov"] {
+            let file = DriveFile {
+                id: "x".into(),
+                name: name.into(),
+                mime_type: "video/mp4".into(),
+                size: None,
+                modified_time: None,
+                md5_checksum: None,
+                sha256_checksum: None,
+                video_media_metadata: None,
+                parents: None,
+            };
+            assert_eq!(classify_drive_file(&file), DriveFileClass::Video, "{name}");
+        }
+    }
+
+    #[test]
+    fn classify_drive_file_skips_non_video_extensions_even_when_drive_labeled_them_video() {
+        // The bug this guards against: Drive assigns `mimeType: video/*` to
+        // files matching its internal heuristics — not always playable videos.
+        // Documents, mock files, or mislabeled uploads would all end up in
+        // the catalog with a play button if we trusted mimeType alone.
+        for name in [
+            "notes.txt",
+            "photo.jpg",
+            "archive.zip",
+            "noext",
+            "video.mp4.part",
+        ] {
+            let file = DriveFile {
+                id: "x".into(),
+                name: name.into(),
+                mime_type: "video/mp4".into(),
+                size: None,
+                modified_time: None,
+                md5_checksum: None,
+                sha256_checksum: None,
+                video_media_metadata: None,
+                parents: None,
+            };
+            assert_eq!(classify_drive_file(&file), DriveFileClass::Other, "{name}");
+        }
+    }
+
+    #[test]
+    fn classify_drive_file_routes_sidecar_subtitles_to_subtitle_class() {
+        for name in ["movie.srt", "clip.VTT", "vacation.en.srt"] {
+            let file = DriveFile {
+                id: "x".into(),
+                name: name.into(),
+                mime_type: "application/octet-stream".into(),
+                size: None,
+                modified_time: None,
+                md5_checksum: None,
+                sha256_checksum: None,
+                video_media_metadata: None,
+                parents: None,
+            };
+            assert_eq!(
+                classify_drive_file(&file),
+                DriveFileClass::Subtitle,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn drive_folder_meta_parses() {
         let json = r#"{ "id": "f1", "name": "Movies", "parents": ["root-folder"] }"#;
         let meta: DriveFolderMeta = serde_json::from_str(json).unwrap();
@@ -1342,8 +1458,8 @@ mod tests {
     // and `http_download` clients used in production work as-is against
     // localhost.
 
-    use wiremock::{Mock, MockServer, ResponseTemplate};
     use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Build a `GoogleDriveClient` whose Drive API URL points at a wiremock
     /// server. Both HTTP clients are the production-shaped `reqwest::Client`s
@@ -1371,9 +1487,7 @@ mod tests {
         let cdn_url = format!("{}/cdn/download?id=f1&authuser=0", server.uri());
         Mock::given(method("GET"))
             .and(path("/drive/v3/files/f1"))
-            .respond_with(
-                ResponseTemplate::new(302).insert_header("Location", cdn_url.as_str()),
-            )
+            .respond_with(ResponseTemplate::new(302).insert_header("Location", cdn_url.as_str()))
             .mount(&server)
             .await;
         // reqwest will follow the redirect and GET this URL — needs a mock

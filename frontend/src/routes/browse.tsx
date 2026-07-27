@@ -330,8 +330,8 @@ function ContinueWatchingShelf() {
         </h2>
       </div>
       <div
-        className="no-scrollbar flex gap-4 overflow-x-auto pb-2"
-        style={{ scrollSnapType: "x mandatory" }}
+        className="no-scrollbar flex gap-4 overflow-x-auto pb-2 pr-4"
+        style={{ scrollSnapType: "x proximity" }}
       >
         {entries.map((entry) => (
           <div
@@ -342,6 +342,8 @@ function ContinueWatchingShelf() {
             <ContinueWatchingCard entry={entry} queue={queue} />
           </div>
         ))}
+        {/* Trailing spacer so the last card can scroll fully into view. */}
+        <div aria-hidden className="w-1 flex-shrink-0" />
       </div>
     </section>
   );

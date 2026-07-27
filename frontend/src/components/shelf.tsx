@@ -56,8 +56,12 @@ export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
         )}
       </div>
       <div
-        className="no-scrollbar flex gap-4 overflow-x-auto pb-2"
-        style={{ scrollSnapType: "x mandatory" }}
+        className="no-scrollbar flex gap-4 overflow-x-auto pb-2 pr-4"
+        // `proximity` (not `mandatory`) lets the user settle between cards and
+        // — importantly — freely scroll the last card fully into view. With
+        // `mandatory`, the scroll container resists scrolling past the final
+        // snap point, which is why the trailing card was cut at ~80%.
+        style={{ scrollSnapType: "x proximity" }}
       >
         {videos.map((video) => (
           <div
@@ -74,6 +78,10 @@ export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
             />
           </div>
         ))}
+        {/* Trailing spacer so the last card can scroll past the viewport
+            edge and be fully visible. Without this, the container ends
+            flush with the last card's right edge. */}
+        <div aria-hidden className="w-1 flex-shrink-0" />
       </div>
     </section>
   );
