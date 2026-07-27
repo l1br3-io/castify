@@ -322,4 +322,81 @@ describe("ConnectionsPage", () => {
       await screen.findByText(/already in progress/i),
     ).toBeInTheDocument();
   });
+
+  // ── Cache invalidation after connection state changes ─────────────────
+  //
+  // Disconnecting or rescanning a connection can change which /stream-url
+  // responses are valid (the grant may have been rotated, the connection
+  // may be gone entirely). Any cached /stream-url error — including the
+  // structured `reauth_required` that routed the user here — must be
+  // invalidated so a stale Reconnect card doesn't keep rendering on the
+  // watch page after the user reconnects.
+
+  it("invalidates cached stream-url queries on disconnect", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const { queryClient } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1" && method === "DELETE")
+          return new Response(null, { status: 204 });
+        return jsonError(404, "unmocked");
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await screen.findByText("user@example.com");
+    fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
+
+    await waitFor(() => {
+      expect(
+        invalidateSpy,
+      ).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["videos"] }));
+    });
+
+    confirmSpy.mockRestore();
+  });
+
+  it("invalidates cached stream-url queries on rescan", async () => {
+    const { queryClient, fetchSpy } = renderWithProviders(
+      <ConnectionsPage />,
+      {
+        initialEntries: ["/connections"],
+        fetchImplementation: (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+          if (url === "/api/connections" && method === "GET")
+            return jsonResponse([GOOGLE_CONNECTED]);
+          if (url === "/api/connections/available")
+            return jsonResponse(ALL_AVAILABLE);
+          if (url === "/api/connections/c1/scan" && method === "POST")
+            return new Response(null, { status: 202 });
+          return jsonError(404, "unmocked");
+        },
+      },
+    );
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await screen.findByText("user@example.com");
+    fireEvent.click(screen.getByRole("button", { name: /rescan/i }));
+
+    await waitFor(() => {
+      const rescanCall = fetchSpy.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/connections/c1/scan" &&
+          (init as RequestInit)?.method === "POST",
+      );
+      expect(rescanCall).toBeDefined();
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["videos"] }),
+    );
+  });
 });

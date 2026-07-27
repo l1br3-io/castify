@@ -35,6 +35,7 @@ import {
   CONNECTIONS_QUERY_KEY,
   useConnections,
 } from "../hooks/use-connections";
+import { VIDEOS_QUERY_KEY } from "../hooks/use-videos";
 import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
 import { ErrorState } from "../components/ui/error-state";
@@ -233,6 +234,11 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
     mutationFn: () => triggerRescan(connection.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CONNECTIONS_QUERY_KEY });
+      // A rescan re-establishes the provider grant (and may rotate the
+      // access/refresh tokens). Any cached `/stream-url` error — including
+      // a stale `reauth_required` from a previously-dead grant — must be
+      // cleared so the watch page re-fetches with the live token state.
+      void queryClient.invalidateQueries({ queryKey: VIDEOS_QUERY_KEY });
       toast.info(`Rescanning ${PROVIDER_LABELS[connection.provider]}…`);
     },
     onError: (err: unknown) => setError(describeError(err)),
@@ -278,6 +284,12 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
       void queryClient.invalidateQueries({
         queryKey: AVAILABLE_PROVIDERS_QUERY_KEY,
       });
+      // Disconnecting kills the grant for every video owned by this
+      // connection. Invalidate any cached `/stream-url` responses (including
+      // the `reauth_required` error that prompted the user to disconnect) so
+      // the watch page doesn't keep rendering a stale Reconnect card or
+      // serving a now-invalid CDN URL after the user reconnects.
+      void queryClient.invalidateQueries({ queryKey: VIDEOS_QUERY_KEY });
       toast.success(
         `Disconnected from ${PROVIDER_LABELS[connection.provider]}.`,
       );

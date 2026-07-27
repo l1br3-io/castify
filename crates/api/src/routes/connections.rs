@@ -30,6 +30,19 @@ pub struct CallbackParams {
     pub error: Option<String>,
 }
 
+/// Query params for `POST /api/connections/{provider}/start`.
+///
+/// `return_to` is an optional relative path the browser should land on after
+/// the OAuth round-trip (e.g. `/watch/v1` when the user kicked off a reconnect
+/// from the watch page's "Try again" button). Validated to a server-relative
+/// path (starts with `/`, no scheme/host) to prevent open-redirect abuse —
+/// anything failing validation is silently dropped, falling back to the
+/// default `/connections?connected={provider}` redirect.
+#[derive(Debug, Default, Deserialize)]
+pub struct StartParams {
+    pub return_to: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct StartResponse {
     pub auth_url: String,
@@ -120,6 +133,7 @@ pub async fn start(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(provider_str): Path<String>,
+    Query(params): Query<StartParams>,
 ) -> ApiResult<Json<StartResponse>> {
     let provider = parse_provider(&provider_str)?;
     let factory = state
@@ -138,6 +152,8 @@ pub async fn start(
 
     let auth_url = factory.authorization_url(&redir, &state_param, &pkce.challenge);
 
+    let return_to = sanitize_return_to(params.return_to);
+
     state.oauth_store().insert(
         state_param,
         OAuthStateEntry {
@@ -145,10 +161,34 @@ pub async fn start(
             owner_id: owner.id.clone(),
             pkce_verifier: pkce.verifier,
             created_at: Instant::now(),
+            return_to,
         },
     );
 
     Ok(Json(StartResponse { auth_url }))
+}
+
+/// Validate that `return_to` is a safe server-relative path. Rejects
+/// anything that isn't `/`-prefixed (so `//evil.com/...` and
+/// `https://evil.com/` can't be smuggled into a redirect), and strips any
+/// `?`/`#` so callers can't forge provider banners via query strings.
+/// Returns `None` when the input is missing or fails validation.
+fn sanitize_return_to(raw: Option<String>) -> Option<String> {
+    let path = raw?;
+    if !path.starts_with('/') || path.starts_with("//") {
+        tracing::warn!(return_to = %path, "rejecting open-redirect return_to");
+        return None;
+    }
+    // Strip query/fragment — the callback appends its own success/error
+    // indicators, and an attacker-supplied `?connected=...` could spoof the
+    // Connections-page banner.
+    let stripped = path.split(['?', '#']).next().unwrap_or(&path);
+    if stripped.is_empty() || stripped == "/" {
+        // "/" alone is fine for a generic "back to app" landing, but offers
+        // no recovery context — treat as "no preference, use default".
+        return None;
+    }
+    Some(stripped.to_string())
 }
 
 pub async fn callback(
@@ -158,7 +198,16 @@ pub async fn callback(
     Query(params): Query<CallbackParams>,
 ) -> Response {
     match callback_inner(&state, &jar, &provider_str, &params).await {
-        Ok(provider) => Redirect::to(&format!("/connections?connected={provider}")).into_response(),
+        Ok((provider, return_to)) => {
+            // Honor a caller-supplied return path (e.g. the watch page's
+            // "Try again" → reconnect flow). Tag it with a success banner
+            // param so the landing route can surface "Reconnected" UX.
+            let dest = match return_to {
+                Some(path) => format!("{path}?reconnected={provider}"),
+                None => format!("/connections?connected={provider}"),
+            };
+            Redirect::to(&dest).into_response()
+        }
         Err(msg) => {
             tracing::warn!(error = %msg, "OAuth callback failed");
             Redirect::to("/connections?error=oauth_failed").into_response()
@@ -171,7 +220,7 @@ async fn callback_inner(
     jar: &CookieJar,
     provider_str: &str,
     params: &CallbackParams,
-) -> Result<Provider, String> {
+) -> Result<(Provider, Option<String>), String> {
     let provider = parse_provider(provider_str).map_err(|e| e.to_string())?;
 
     if let Some(err) = &params.error {
@@ -218,6 +267,40 @@ async fn callback_inner(
         .await
         .map_err(|e| format!("failed to fetch user info: {e}"))?;
 
+    let repo = state.catalog_repository();
+
+    // Reconnect path: if the same `(provider, account_id)` is already
+    // connected, treat this as a token rotation on the existing row rather
+    // than a brand-new connection. This preserves the video library +
+    // stable connection_id, which matters for the watch page's "Try again"
+    // flow (the cached `reauth_required` error is invalidated client-side,
+    // the live token rotates server-side, playback resumes on the same URL
+    // without the user losing their place in the catalog).
+    if let Some(account_id) = account_id.as_deref() {
+        if let Some(existing) = repo
+            .find_active_connection_by_account(provider, account_id)
+            .await
+            .map_err(|e| format!("failed to look up existing connection: {e}"))?
+        {
+            tracing::info!(
+                connection_id = %existing.id,
+                %provider,
+                %account_id,
+                "reconnect: rotating token on existing connection"
+            );
+            repo.update_token_bundle(&existing.id, &token_bundle)
+                .await
+                .map_err(|e| format!("failed to update token: {e}"))?;
+            // A reconnect invalidates any cached provider-side metadata
+            // (Drive file IDs are stable, but the user might have
+            // re-granted after shrinking scope). Kick off a fresh scan so
+            // the catalog reflects the current grant.
+            spawn_scan(state, &existing.id, provider);
+            return Ok((provider, entry.return_to));
+        }
+    }
+
+    // Fresh-connect path: insert a new row, spawn the initial scan.
     let conn = state
         .catalog_repository()
         .create_connection(&NewConnection {
@@ -231,7 +314,7 @@ async fn callback_inner(
 
     spawn_scan(state, &conn.id, provider);
 
-    Ok(provider)
+    Ok((provider, entry.return_to))
 }
 
 pub async fn disconnect(
@@ -327,4 +410,70 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     tokio::spawn(async move {
         castify_catalog::scanner::run_scan(repo, conn_id, provider, factory).await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Relative path inside the app passes the sanitizer unchanged (minus any
+    /// query/fragment — those get appended by the callback).
+    #[test]
+    fn sanitize_return_to_accepts_relative_path() {
+        assert_eq!(
+            sanitize_return_to(Some("/watch/v1".into())).as_deref(),
+            Some("/watch/v1")
+        );
+        assert_eq!(
+            sanitize_return_to(Some("/watch/v1?connected=google_drive".into())).as_deref(),
+            Some("/watch/v1"),
+            "caller-supplied query must be stripped (callback appends its own)"
+        );
+        assert_eq!(
+            sanitize_return_to(Some("/watch/v1#frag".into())).as_deref(),
+            Some("/watch/v1"),
+            "fragments stripped for the same reason"
+        );
+    }
+
+    /// `None` and empty inputs pass through as `None` (caller falls back to
+    /// the default `/connections?connected=...` redirect).
+    #[test]
+    fn sanitize_return_to_passes_none_through() {
+        assert!(sanitize_return_to(None).is_none());
+        assert!(
+            sanitize_return_to(Some("".into())).is_none(),
+            "empty string is not a usable destination"
+        );
+    }
+
+    /// Bare `/` is rejected — it offers no recovery context (the user lands
+    /// on the home page with no indication of what just happened), so fall
+    /// back to the default `/connections?connected=...` which surfaces the
+    /// success banner.
+    #[test]
+    fn sanitize_return_to_rejects_bare_root() {
+        assert!(sanitize_return_to(Some("/".into())).is_none());
+    }
+
+    /// Open-redirect hardening: anything that could be interpreted by the
+    /// browser as a cross-origin URL must be rejected. Covers the standard
+    /// evasion patterns (`//host`, `/\host`, scheme-relative, absolute URL).
+    #[test]
+    fn sanitize_return_to_rejects_open_redirect_attempts() {
+        let rejects = [
+            "//evil.com/path",          // scheme-relative
+            "https://evil.com/path",    // absolute URL
+            "http://evil.com",          // absolute URL, http
+            "javascript:alert(1)",      // harmless here (no leading /) but
+                                        // documented as rejected
+            "watch/v1",                 // relative, no leading slash
+        ];
+        for raw in rejects {
+            assert!(
+                sanitize_return_to(Some(raw.into())).is_none(),
+                "should reject open-redirect attempt: {raw:?}"
+            );
+        }
+    }
 }

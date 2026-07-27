@@ -321,6 +321,17 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
             }
         }
 
+        // Post-refresh leak simulation: file IDs starting with `refresh-fail-`
+        // return Unauthorized on EVERY call. The API layer refreshes once and
+        // retries; the retry still 401s. Without the `map_post_refresh_error`
+        // promotion, this leaks as `502 { message: "unauthorized: token may
+        // be expired or revoked" }`. With it, the response is the structured
+        // `401 { code: "reauth_required", ... }` the frontend's reconnect
+        // UX keys off.
+        if file_id.starts_with("refresh-fail-") {
+            return Err(ProviderError::Unauthorized);
+        }
+
         use bytes::Bytes;
         use futures::stream;
 
@@ -380,6 +391,11 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
     async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
         if file_id.starts_with("no-stream-") {
             return Err(ProviderError::NotFound(file_id.into()));
+        }
+        // See `open_stream` for the `refresh-fail-` semantics: always 401,
+        // exercises the post-refresh Unauthorized → reauth_required path.
+        if file_id.starts_with("refresh-fail-") {
+            return Err(ProviderError::Unauthorized);
         }
         match self.provider {
             Provider::GoogleDrive => Ok(StreamUrl::Proxied),

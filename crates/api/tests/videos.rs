@@ -2427,6 +2427,82 @@ async fn stream_url_direct_strategy_404_propagates() {
     assert_eq!(body["status"], "error");
 }
 
+// ── Post-refresh Unauthorized leak fix ───────────────────────────────
+//
+// When the provider returns 401 on BOTH the first call and the retry after
+// refresh, the API layer must surface a structured `401 code: "reauth_required"`
+// — NOT leak the raw provider message as a 502. The frontend's
+// `useStreamUrl` hook keys off the structured code to render the reconnect
+// card; a 502 with "unauthorized: token may be expired or revoked" gives the
+// user no actionable path. See `map_post_refresh_error` in routes/videos.rs.
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_url_returns_reauth_required_when_refresh_does_not_recover() {
+    // OneDrive's mock returns `Direct` from `open_stream_url`; the e2e mock
+    // returns Unauthorized for any `refresh-fail-*` file ID on every call,
+    // so refresh succeeds but the retried call still 401s.
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::OneDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::OneDrive,
+        "refresh-fail-onedrive",
+        "unauth.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+
+    // The fix: 401, not 502.
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["status"], "error");
+    assert_eq!(body["code"], "reauth_required");
+    assert_eq!(body["connection_id"], conn);
+    assert_eq!(body["provider"], "onedrive");
+    // The leaky raw provider message must NOT be the surfaced message.
+    let msg = body["message"].as_str().expect("message present");
+    assert!(
+        !msg.contains("token may be expired or revoked"),
+        "raw provider leak should not surface: got {msg:?}"
+    );
+}
+
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn stream_proxy_returns_reauth_required_when_refresh_does_not_recover() {
+    // Google Drive's mock returns `Proxied` from `open_stream_url`, so the
+    // browser's `<video src>` then hits `/stream` for bytes. That path goes
+    // through `open_stream_with_refresh` → `map_post_refresh_error`. Verify
+    // the same reauth signal for the proxy path.
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "refresh-fail-drive",
+        "unauth.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let (status, body) =
+        get_json(app, &format!("/api/videos/{vid}/stream"), Some(&cookie)).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "reauth_required");
+    assert_eq!(body["connection_id"], conn);
+    assert_eq!(body["provider"], "google_drive");
+}
+
 #[cfg(feature = "e2e")]
 #[tokio::test]
 async fn mock_cdn_serves_video_bytes_with_range_support() {

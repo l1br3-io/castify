@@ -217,6 +217,38 @@ impl CatalogRepository {
             .collect()
     }
 
+    /// Look up the active connection for a given `(provider, provider_account_id)`
+    /// pair. Used by the OAuth callback to detect a reconnect (same account,
+    /// new token) vs a fresh connect — letting us UPDATE the token on the
+    /// existing row (preserving the library + connection_id) instead of
+    /// INSERTing a duplicate and hitting `UNIQUE(provider, provider_account_id)`.
+    /// Returns `None` when no active connection matches, including when
+    /// `provider_account_id` is `None` (those rows aren't reconnectable by
+    /// account match — they round-trip through the normal connect flow).
+    pub async fn find_active_connection_by_account(
+        &self,
+        provider: Provider,
+        provider_account_id: &str,
+    ) -> CatalogResult<Option<ProviderConnection>> {
+        let row = sqlx::query(
+            "SELECT id, provider, provider_account_id, provider_account_email, \
+             connected_at, disconnected_at \
+             FROM provider_connections \
+             WHERE provider = ? AND provider_account_id = ? AND disconnected_at IS NULL",
+        )
+        .bind(provider.as_str())
+        .bind(provider_account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => Ok(Some(
+                ProviderConnection::from_row(&row).map_err(CatalogError::Other)?,
+            )),
+        }
+    }
+
     /// Soft-delete a connection (set `disconnected_at`). Videos and scan_state
     /// remain until a hard delete (cascade) is performed via [`delete_connection`].
     pub async fn disconnect(&self, id: &str) -> CatalogResult<bool> {

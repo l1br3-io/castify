@@ -433,3 +433,51 @@ async fn rescan_rejects_unauthenticated() {
     let (status, _) = post_json(app, "/api/connections/x/scan", None, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// --- Reconnect lookup (used by OAuth callback to detect token-rotation
+// reconnects vs fresh connects) ---
+//
+// `find_active_connection_by_account` is what lets the callback UPDATE the
+// token on an existing row (preserving the library + connection_id) instead
+// of INSERTing a duplicate and violating UNIQUE(provider, provider_account_id).
+// Without it, the watch page's inline Reconnect button would 500 on callback.
+
+#[tokio::test]
+async fn find_active_connection_by_account_returns_existing_row() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo).await;
+
+    let found = repo
+        .find_active_connection_by_account(Provider::GoogleDrive, "acct-1")
+        .await
+        .unwrap()
+        .expect("expected the seeded connection to be findable");
+    assert_eq!(found.id, conn.id);
+    assert_eq!(found.provider, Provider::GoogleDrive);
+}
+
+#[tokio::test]
+async fn find_active_connection_by_account_returns_none_for_unknown_account() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+    // No connection seeded — lookup must return None rather than erroring,
+    // so the callback can fall through to the create-new-connection path.
+    let found = repo
+        .find_active_connection_by_account(Provider::GoogleDrive, "acct-1")
+        .await
+        .unwrap();
+    assert!(found.is_none());
+}
+
+#[tokio::test]
+async fn find_active_connection_by_account_returns_none_for_mismatched_account() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+    seed_connection(&repo).await; // account_id = "acct-1"
+    // Different account_id — must NOT match. (Maps the "user reconnected
+    // with a different account at the same provider" case, which is a
+    // legitimate new-connection path, not a token rotation on the existing row.)
+    let found = repo
+        .find_active_connection_by_account(Provider::GoogleDrive, "different-acct")
+        .await
+        .unwrap();
+    assert!(found.is_none());
+}

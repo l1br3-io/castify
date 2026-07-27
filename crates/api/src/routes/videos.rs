@@ -347,7 +347,7 @@ pub async fn get_thumbnail(
             return Err(if is_not_found {
                 ApiError::NotFound
             } else {
-                map_refresh_error(e, &info.connection_id, info.provider)
+                map_post_refresh_error(e, &info.connection_id, info.provider)
             });
         }
     };
@@ -538,7 +538,7 @@ async fn open_stream_with_refresh(
             provider
                 .open_stream(&info.provider_file_id, range)
                 .await
-                .map_err(map_stream_error)
+                .map_err(|e| map_post_refresh_error(e, &info.connection_id, conn.provider))
         }
         Err(e) => Err(map_stream_error(e)),
     }
@@ -574,6 +574,34 @@ fn map_refresh_error(
             connection_id: connection_id.to_string(),
             provider,
         },
+        other => ApiError::Provider(other),
+    }
+}
+
+/// Map a provider error observed AFTER a refresh+retry. By this point the
+/// access token has been refreshed and the call retried; any residual
+/// [`ProviderError::Unauthorized`] means the grant itself can't recover the
+/// call — the refresh token is dead but the provider didn't signal it as a
+/// clean `invalid_grant`, or scope/permission drift, or clock skew the
+/// refresh couldn't paper over. Promote to [`ApiError::ReauthRequired`] so
+/// the client routes the user to reconnect — otherwise we leak the raw
+/// `{"message":"unauthorized: token may be expired or revoked"}` as a 502,
+/// giving the user no actionable path.
+///
+/// Semantically: [`ProviderError::Unauthorized`] doc says "the caller should
+/// refresh once and retry" — we did, and it didn't recover, so we treat the
+/// grant as dead and let the existing reconnect UX take over.
+fn map_post_refresh_error(
+    e: ProviderError,
+    connection_id: &str,
+    provider: castify_catalog::Provider,
+) -> ApiError {
+    match e {
+        ProviderError::Unauthorized | ProviderError::ReauthRequired => ApiError::ReauthRequired {
+            connection_id: connection_id.to_string(),
+            provider,
+        },
+        ProviderError::NotFound(_) => ApiError::NotFound,
         other => ApiError::Provider(other),
     }
 }
@@ -960,7 +988,7 @@ async fn resolve_stream_url_with_refresh(
             provider
                 .open_stream_url(&info.provider_file_id)
                 .await
-                .map_err(map_stream_error)
+                .map_err(|e| map_post_refresh_error(e, &info.connection_id, conn.provider))
         }
         Err(e) => Err(map_stream_error(e)),
     }
@@ -1532,7 +1560,7 @@ async fn fetch_subtitle_content_with_refresh(
             provider
                 .fetch_subtitle_content(provider_file_id)
                 .await
-                .map_err(map_stream_error)
+                .map_err(|e| map_post_refresh_error(e, connection_id, conn.provider))
         }
         Err(e) => Err(map_stream_error(e)),
     }
@@ -2368,4 +2396,99 @@ pub async fn reprobe_all(State(state): State<AppState>) -> ApiResult<Json<serde_
     Ok(Json(serde_json::json!({
         "reset_count": result.rows_affected(),
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    /// After a refresh+retry, a residual `ProviderError::Unauthorized` must
+    /// promote to `ApiError::ReauthRequired` — surfacing a 502 with the raw
+    /// `unauthorized: token may be expired or revoked` message gives the user
+    /// no actionable recovery path. The structured 401 lets the frontend's
+    /// reconnect UX take over.
+    #[test]
+    fn map_post_refresh_error_promotes_unauthorized_to_reauth_required() {
+        let err = map_post_refresh_error(
+            ProviderError::Unauthorized,
+            "conn-abc",
+            Provider::GoogleDrive,
+        );
+        match err {
+            ApiError::ReauthRequired {
+                connection_id,
+                provider,
+            } => {
+                assert_eq!(connection_id, "conn-abc");
+                assert_eq!(provider, Provider::GoogleDrive);
+            }
+            other => panic!("expected ReauthRequired, got {other:?}"),
+        }
+    }
+
+    /// `ProviderError::ReauthRequired` reaching this mapper (defensive — the
+    /// refresh-token call already promotes it via `map_refresh_error`) must
+    /// still surface as the structured `ApiError::ReauthRequired` rather than
+    /// the generic 502 fallback.
+    #[test]
+    fn map_post_refresh_error_promotes_explicit_reauth_required() {
+        let err = map_post_refresh_error(
+            ProviderError::ReauthRequired,
+            "conn-xyz",
+            Provider::OneDrive,
+        );
+        assert!(matches!(
+            err,
+            ApiError::ReauthRequired { connection_id, provider }
+            if connection_id == "conn-xyz" && provider == Provider::OneDrive
+        ));
+    }
+
+    /// `NotFound` after refresh still maps to 404 (the file was deleted
+    /// between calls — distinct from auth failure).
+    #[test]
+    fn map_post_refresh_error_preserves_not_found() {
+        let err = map_post_refresh_error(
+            ProviderError::NotFound("file-gone".into()),
+            "conn-1",
+            Provider::Dropbox,
+        );
+        assert!(matches!(err, ApiError::NotFound));
+    }
+
+    /// Other provider errors (network, rate limit, API errors) still surface
+    /// as `ApiError::Provider` → 502. Only `Unauthorized` and `ReauthRequired`
+    /// get the reauth promotion — everything else is genuinely a provider
+    /// problem the user can't fix by reconnecting.
+    #[test]
+    fn map_post_refresh_error_passes_through_other_provider_errors() {
+        let err = map_post_refresh_error(
+            ProviderError::Network("conn reset".into()),
+            "conn-1",
+            Provider::Dropbox,
+        );
+        match err {
+            ApiError::Provider(ProviderError::Network(msg)) => {
+                assert_eq!(msg, "conn reset");
+            }
+            other => panic!("expected Provider(Network), got {other:?}"),
+        }
+    }
+
+    /// Sanity-check the full status-code mapping the route layer ultimately
+    /// serializes — `ReauthRequired` must produce 401 (not 502), so the
+    /// frontend's `useStreamUrl` hook detects `code: "reauth_required"` and
+    /// renders the reconnect card instead of the generic stream-error card.
+    #[tokio::test]
+    async fn reauth_required_from_post_refresh_maps_to_401() {
+        let err = map_post_refresh_error(
+            ProviderError::Unauthorized,
+            "conn-abc",
+            Provider::GoogleDrive,
+        );
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 }

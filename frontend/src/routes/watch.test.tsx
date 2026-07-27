@@ -952,4 +952,98 @@ describe("WatchPage", () => {
       screen.queryByRole("heading", { name: /Reconnect/ }),
     ).not.toBeInTheDocument();
   });
+
+  it("Reconnect button triggers the OAuth flow inline with return_to=/watch/{id}", async () => {
+    mockCanPlayType("probably");
+    // Industry-pattern inline reauth: clicking the primary CTA kicks off the
+    // OAuth flow directly from the card — not a navigation to the Connections
+    // page. The backend uses `return_to` to land the user back here after
+    // the round-trip, so we assert the request includes it and the browser
+    // is redirected to the provider's auth URL.
+    const fetchImpl = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === `/api/videos/v1`) return jsonResponse(VIDEO_DETAIL);
+      if (url === `/api/videos/v1/thumbnail`)
+        return new Response("fake-image", { status: 200 });
+      if (url === `/api/videos/v1/stream-url`) {
+        return jsonResponse(
+          {
+            status: "error",
+            code: "reauth_required",
+            message: "google_drive connection needs reconnecting.",
+            connection_id: "c1",
+            provider: "google_drive",
+          },
+          401,
+        );
+      }
+      // The start endpoint must receive the return_to query param so the
+      // backend knows where to redirect after OAuth.
+      if (
+        url.startsWith("/api/connections/google_drive/start") &&
+        method === "POST"
+      ) {
+        expect(url).toContain(
+          `return_to=${encodeURIComponent("/watch/v1")}`,
+        );
+        return jsonResponse({ auth_url: "https://provider.example/auth" });
+      }
+      return jsonError(404, "unmocked");
+    };
+
+    // Stub window.location.href setter so we can capture the redirect
+    // without jsdom trying to actually navigate (and blowing up the test).
+    const originalLocation = window.location;
+    const hrefSetter = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: new Proxy(
+        { href: "" },
+        {
+          set(target, prop, value) {
+            if (prop === "href") {
+              hrefSetter(value);
+              return true;
+            }
+            return Reflect.set(target, prop, value);
+          },
+        },
+      ),
+    });
+
+    try {
+      const { fetchSpy } = renderWatchPage("v1", fetchImpl);
+
+      await screen.findByRole("heading", {
+        name: "Reconnect Google Drive to play this video",
+      });
+
+      // Primary CTA is now "Reconnect {provider}", not "Try again".
+      const reconnect = screen.getByRole("button", {
+        name: "Reconnect Google Drive",
+      });
+      await act(async () => {
+        fireEvent.click(reconnect);
+      });
+
+      // The OAuth start request fired with the return_to param.
+      await waitFor(() => {
+        const startCall = fetchSpy.mock.calls.find(
+          ([url, init]) =>
+            String(url).startsWith("/api/connections/google_drive/start") &&
+            (init as RequestInit | undefined)?.method === "POST",
+        );
+        expect(startCall).toBeDefined();
+      });
+
+      // The browser was redirected to the provider's auth URL.
+      expect(hrefSetter).toHaveBeenCalledWith("https://provider.example/auth");
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
 });

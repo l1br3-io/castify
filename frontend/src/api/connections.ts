@@ -35,12 +35,23 @@ export function fetchAvailableProviders(): Promise<AvailableProviders> {
 /**
  * `POST /api/connections/{provider}/start` — begin the OAuth flow. Returns the
  * provider's authorization URL; the caller navigates the browser there.
+ *
+ * `returnTo` is an optional server-relative path the browser should land on
+ * after the OAuth round-trip — used by the watch page's "Try again" button
+ * so users come back to the video they were trying to play rather than the
+ * Connections page. The backend validates it as a relative path and ignores
+ * anything that looks like an open-redirect attempt.
  */
-export function startConnect(provider: ProviderKey): Promise<StartResponse> {
-  return apiFetch<StartResponse>(
-    `/api/connections/${encodeURIComponent(provider)}/start`,
-    { method: "POST" },
-  );
+export function startConnect(
+  provider: ProviderKey,
+  returnTo?: string,
+): Promise<StartResponse> {
+  const path = `/api/connections/${encodeURIComponent(provider)}/start`;
+  const url =
+    returnTo !== undefined
+      ? `${path}?return_to=${encodeURIComponent(returnTo)}`
+      : path;
+  return apiFetch<StartResponse>(url, { method: "POST" });
 }
 
 /**

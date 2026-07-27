@@ -50,6 +50,8 @@ import {
 } from "../lib/format";
 import { otherProviders } from "../lib/video";
 import { downloadUrl, subtitleTrackUrl } from "../api/videos";
+import { startConnect } from "../api/connections";
+import { useToast } from "../hooks/use-toast";
 import { PROVIDER_LABELS, type ProviderKey, type VideoDetailDto } from "../api/types";
 
 /**
@@ -525,6 +527,27 @@ function ReconnectProvider({
   provider: ProviderKey;
 }) {
   const label = PROVIDER_LABELS[provider] ?? provider;
+  const toast = useToast();
+  const [isRedirecting, setRedirecting] = useState(false);
+
+  // Industry-pattern inline reauth: kick off the OAuth flow directly from
+  // the card, returning to this watch URL after the round-trip. The backend
+  // detects the existing `(provider, account_id)` row in the callback and
+  // rotates the token in place — preserving the library + connection_id, so
+  // when the browser lands back on `/watch/{id}?reconnected={provider}`,
+  // the cached reauth error has already been cleared (TanStack refetches
+  // /stream-url on mount) and playback starts on the new grant.
+  async function handleReconnect() {
+    setRedirecting(true);
+    try {
+      const { auth_url } = await startConnect(provider, `/watch/${video.id}`);
+      window.location.href = auth_url;
+    } catch (err) {
+      setRedirecting(false);
+      toast.error(`Couldn't start the ${label} reconnect flow. ${describeError(err)}`);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-6 text-center">
@@ -538,9 +561,17 @@ function ReconnectProvider({
           stays intact.
         </p>
         <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={handleReconnect}
+            disabled={isRedirecting}
+            className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+          >
+            {isRedirecting ? "Redirecting…" : `Reconnect ${label}`}
+          </button>
           <Link
             to="/connections"
-            className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+            className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
           >
             Go to Connections
           </Link>

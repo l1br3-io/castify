@@ -53,6 +53,13 @@ pub struct OAuthStateEntry {
     pub owner_id: String,
     pub pkce_verifier: String,
     pub created_at: Instant,
+    /// Path the callback should redirect to after a successful reconnect,
+    /// instead of the default `/connections?connected={provider}`. Used by
+    /// the watch page's "Try again" button so users land back on the video
+    /// they were trying to play. `None` for the standard Connections-page
+    /// flow. Validated to a relative path (starts with `/`) at `start`
+    /// time to prevent open-redirect abuse.
+    pub return_to: Option<String>,
 }
 
 /// In-memory store for OAuth state during the authorization-code flow.
@@ -132,6 +139,7 @@ mod tests {
                 owner_id: "owner-1".into(),
                 pkce_verifier: "verifier".into(),
                 created_at: Instant::now(),
+                return_to: None,
             },
         );
         let entry = store.take("state-1").unwrap();
