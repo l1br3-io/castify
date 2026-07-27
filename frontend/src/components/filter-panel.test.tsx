@@ -14,7 +14,7 @@ function FilterPanelHarness() {
   return <FilterPanel filters={filters} />;
 }
 
-// Fetch mock: connections + folders. The panel calls useConnections() and
+// Fetch mock: connections + folder. The panel calls useConnections() and
 // useFolders() internally for the provider list + folder dropdown.
 function panelFetch(connections: unknown[] = [], folders: unknown[] = []) {
   return (input: RequestInfo | URL) => {
@@ -51,39 +51,35 @@ const FOLDERS = [
   { folder: "Shows", video_count: 5 },
 ];
 
+// Design-pass §5: provider chips are always visible inline; long-tail
+// filters (duration / resolution / rating / folder / favorites) live behind
+// a "More filters" button that opens a slide-over drawer. The drawer's
+// open/close state persists in localStorage. Tests stub the storage to
+// start closed so the assertions stay deterministic.
+beforeEach(() => {
+  try {
+    localStorage.setItem("castify-filter-drawer-open", "false");
+  } catch {
+    /* jsdom sometimes blocks storage in iframes. */
+  }
+});
+
+import { beforeEach } from "vitest";
+
+// Helper: open the drawer so long-tail controls are queryable.
+function openDrawer() {
+  fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
+}
+
 describe("FilterPanel", () => {
-  // --- Toggle ---
+  // --- Inline provider chips (no drawer open required) ---
 
-  it("is collapsed by default and expands on click", () => {
-    renderWithProviders(<FilterPanelHarness />, {
-      fetchImplementation: panelFetch(),
-    });
-
-    const toggle = screen.getByRole("button", { name: /Filters/ });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-
-    // Body not present.
-    expect(
-      screen.queryByRole("group", { name: "Filter by provider" }),
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(
-      screen.getByRole("group", { name: "Filter by provider" }),
-    ).toBeInTheDocument();
-  });
-
-  // --- Provider ---
-
-  it("shows connected providers as options", async () => {
+  it("shows connected providers as inline preset chips", async () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(CONNECTIONS),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
-
-    // Wait for connections to load.
+    // Provider chips render without opening the drawer.
     expect(
       await screen.findByRole("button", { name: "Google Drive" }),
     ).toBeInTheDocument();
@@ -94,12 +90,11 @@ describe("FilterPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("sets the provider filter when a provider button is clicked", async () => {
+  it("selects a provider when its chip is clicked", async () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(CONNECTIONS),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
     fireEvent.click(
       await screen.findByRole("button", { name: "Google Drive" }),
     );
@@ -107,16 +102,35 @@ describe("FilterPanel", () => {
     expect(
       screen.getByRole("button", { name: "Google Drive" }),
     ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "All" }),
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
-  // --- Duration ---
-
-  it("selects a duration preset and shows it as active", () => {
+  it("opens the drawer on More filters click", () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    const toggle = screen.getByRole("button", { name: /More filters/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    // Drawer body not present yet.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    openDrawer();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("dialog", { name: "More filters" })).toBeInTheDocument();
+  });
+
+  // --- Duration ---
+
+  it("selects a duration preset inside the drawer", () => {
+    renderWithProviders(<FilterPanelHarness />, {
+      fetchImplementation: panelFetch(),
+    });
+
+    openDrawer();
 
     const durationGroup = screen.getByRole("group", {
       name: "Filter by duration",
@@ -135,12 +149,12 @@ describe("FilterPanel", () => {
 
   // --- Resolution ---
 
-  it("selects a resolution preset and shows it as active", () => {
+  it("selects a resolution preset inside the drawer", () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    openDrawer();
 
     const resGroup = screen.getByRole("group", {
       name: "Filter by resolution",
@@ -154,12 +168,12 @@ describe("FilterPanel", () => {
 
   // --- Favorites ---
 
-  it("toggles favorites only checkbox", () => {
+  it("toggles favorites only checkbox inside the drawer", () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    openDrawer();
     const checkbox = screen.getByRole("checkbox", { name: /Favorites only/ });
     expect(checkbox).not.toBeChecked();
 
@@ -169,12 +183,12 @@ describe("FilterPanel", () => {
 
   // --- Minimum rating ---
 
-  it("selects a minimum rating preset", () => {
+  it("selects a minimum rating preset inside the drawer", () => {
     renderWithProviders(<FilterPanelHarness />, {
       fetchImplementation: panelFetch(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    openDrawer();
 
     const ratingGroup = screen.getByRole("group", {
       name: "Filter by minimum rating",
@@ -195,9 +209,8 @@ describe("FilterPanel", () => {
       fetchImplementation: panelFetch([], FOLDERS),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    openDrawer();
 
-    // Wait for folders to load.
     expect(
       await screen.findByRole("option", { name: "Movies (10)" }),
     ).toBeInTheDocument();
@@ -211,10 +224,8 @@ describe("FilterPanel", () => {
       fetchImplementation: panelFetch([], FOLDERS),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    openDrawer();
     const select = await screen.findByLabelText("Filter by folder");
-
-    // Wait for options to populate.
     await screen.findByRole("option", { name: "Movies (10)" });
 
     fireEvent.change(select, { target: { value: "Movies" } });
@@ -224,20 +235,14 @@ describe("FilterPanel", () => {
   // --- Chips ---
 
   it("shows active-filter chips when filters are set via URL", () => {
-    // Start with filters already in the URL (deep-link scenario).
     renderWithProviders(<FilterPanelHarness />, {
       initialEntries: ["/?provider=google_drive&duration=short"],
       fetchImplementation: panelFetch(CONNECTIONS),
     });
 
-    // Chips are visible even when the panel is collapsed.
-    // The chip text appears inside <span> elements within chip buttons.
-    // Use getAllByText since the same text may appear in the expanded panel
-    // body AND the chip strip.
+    // Chips are visible whether or not the drawer is open.
     expect(screen.getAllByText("Google Drive").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("< 5 min").length).toBeGreaterThanOrEqual(1);
-    // Active count badge.
-    expect(screen.getByLabelText(/2 active filters/)).toBeInTheDocument();
   });
 
   it("removes only the clicked filter when a chip is clicked", () => {
@@ -246,18 +251,14 @@ describe("FilterPanel", () => {
       fetchImplementation: panelFetch(CONNECTIONS),
     });
 
-    // Both chips present (collapsible body is closed, so these only appear
-    // as chip text).
+    // Drawer is closed; the chip strip is the only place these strings appear.
     expect(screen.getByText("Google Drive")).toBeInTheDocument();
     expect(screen.getByText("< 5 min")).toBeInTheDocument();
 
-    // Click the Google Drive chip (the <span> inside the chip button).
     fireEvent.click(screen.getByText("Google Drive"));
 
-    // Google Drive chip gone, duration chip remains.
     expect(screen.queryByText("Google Drive")).not.toBeInTheDocument();
     expect(screen.getByText("< 5 min")).toBeInTheDocument();
-    expect(screen.getByLabelText(/1 active filter/)).toBeInTheDocument();
   });
 
   it("clears all resettable filters via Clear all", () => {
@@ -270,23 +271,25 @@ describe("FilterPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
-    // Filter chips gone.
     expect(screen.queryByText("Google Drive")).not.toBeInTheDocument();
     expect(screen.queryByText("< 5 min")).not.toBeInTheDocument();
-    // No active-count badge.
-    expect(screen.queryByLabelText(/active filter/)).not.toBeInTheDocument();
   });
 
   // --- Deep-link restore ---
 
-  it("reflects URL filter state on initial render (deep-link)", () => {
+  it("reflects URL filter state on initial render (deep-link)", async () => {
     renderWithProviders(<FilterPanelHarness />, {
       initialEntries: ["/?provider=google_drive&resolution=hd&min_rating=3"],
       fetchImplementation: panelFetch(CONNECTIONS),
     });
 
-    // Open panel to inspect active states.
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    // Provider chip is selectable inline without opening the drawer.
+    expect(
+      await screen.findByRole("button", { name: "Google Drive" }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    // Long-tail filters require the drawer.
+    openDrawer();
 
     const resGroup = screen.getByRole("group", {
       name: "Filter by resolution",

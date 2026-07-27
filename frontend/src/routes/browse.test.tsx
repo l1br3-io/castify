@@ -288,10 +288,9 @@ describe("BrowsePage", () => {
     });
 
     expect(await screen.findByText("No videos yet")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Connect a provider" })).toHaveAttribute(
-      "href",
-      "/connections",
-    );
+    expect(
+      screen.getByRole("button", { name: "Connect a provider" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the scanning message when a connection is mid-scan", async () => {
@@ -313,7 +312,9 @@ describe("BrowsePage", () => {
     });
 
     expect(await screen.findByText("Scanning your cloud\u2026")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Connect a provider" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Connect a provider" }),
+    ).not.toBeInTheDocument();
   });
 
   // --- Shelves ---
@@ -682,7 +683,7 @@ describe("BrowsePage", () => {
     });
   });
 
-  it("renders the FilterPanel toggle in the grid section header", async () => {
+  it("renders the FilterPanel More filters toggle in the grid section", async () => {
     const { container } = renderWithProviders(<BrowsePage />, {
       fetchImplementation: browseFetch(),
     });
@@ -691,13 +692,13 @@ describe("BrowsePage", () => {
 
     const gridSection = container.querySelector("#all-videos");
     const filterToggle = within(gridSection as HTMLElement).getByRole("button", {
-      name: /Filters/,
+      name: /More filters/i,
     });
     expect(filterToggle).toBeInTheDocument();
     expect(filterToggle).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("expands the filter panel and shows provider options on click", async () => {
+  it("shows inline provider chips without opening the drawer", async () => {
     renderWithProviders(<BrowsePage />, {
       fetchImplementation: browseFetch({
         connections: [
@@ -716,16 +717,16 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
 
-    const filterToggle = screen.getByRole("button", { name: /Filters/ });
-    fireEvent.click(filterToggle);
-
-    expect(filterToggle).toHaveAttribute("aria-expanded", "true");
+    // Provider chip is always visible inline — no toggle click required.
     expect(
       screen.getByRole("group", { name: "Filter by provider" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Google Drive" }),
+    ).toBeInTheDocument();
   });
 
-  it("applies a filter via the panel and sends the param in the grid query", async () => {
+  it("applies a filter via the drawer and sends the param in the grid query", async () => {
     const { fetchSpy } = renderWithProviders(<BrowsePage />, {
       fetchImplementation: browseFetch({
         connections: [
@@ -744,11 +745,10 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
 
-    // Open filter panel + click the duration preset.
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    // Open the More filters drawer, then click the duration preset.
+    fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
     fireEvent.click(screen.getByRole("button", { name: "< 5 min" }));
 
-    // The grid query should include duration_min or duration_max.
     await waitFor(() => {
       const durationCall = fetchSpy.mock.calls.find(
         ([url]) =>
@@ -760,23 +760,22 @@ describe("BrowsePage", () => {
     });
   });
 
-  it("shows active-filter chips when a filter is applied via the panel", async () => {
+  it("shows active-filter chips when a filter is applied via the drawer", async () => {
     renderWithProviders(<BrowsePage />, {
       fetchImplementation: browseFetch(),
     });
 
     await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
 
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
     fireEvent.click(screen.getByRole("button", { name: "HD+" }));
 
-    // Close the panel so HD+ only appears as a chip (not also as a preset button).
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    // Close the drawer via Done so HD+ only appears as a chip (not also as
+    // a selected preset inside the drawer).
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
 
-    // HD+ chip should appear (visible even when panel is collapsed).
+    // HD+ chip appears in the always-visible chip strip.
     expect(screen.getByText("HD+")).toBeInTheDocument();
-    // Active count badge.
-    expect(screen.getByLabelText(/1 active filter/)).toBeInTheDocument();
   });
 
   it("removes a filter when its chip is clicked", async () => {
@@ -786,21 +785,17 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
 
-    // Open panel, apply, then close panel so the text only appears as a chip.
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
     fireEvent.click(screen.getByRole("button", { name: "FHD+" }));
-    fireEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    // Close drawer so FHD+ only appears as a chip.
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
 
-    // Chip appears (only in chip strip now).
     expect(screen.getByText("FHD+")).toBeInTheDocument();
 
-    // Click the chip to remove it.
     fireEvent.click(screen.getByText("FHD+"));
 
-    // Chip gone.
     expect(screen.queryByText("FHD+")).not.toBeInTheDocument();
 
-    // A subsequent grid query should NOT include min_height.
     await waitFor(() => {
       const recentGridCalls = fetchSpy.mock.calls.filter(
         ([url]) =>
@@ -808,7 +803,6 @@ describe("BrowsePage", () => {
           !String(url).includes("limit=20") &&
           !String(url).includes("folders"),
       );
-      // The most recent grid call should not have min_height.
       const lastGridCall = recentGridCalls[recentGridCalls.length - 1];
       expect(lastGridCall).toBeDefined();
       expect(String(lastGridCall[0])).not.toContain("min_height=");
@@ -835,15 +829,18 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
 
-    // 3 active filters — verified via the badge (avoids text ambiguity with
-    // poster-card ProviderBadges that also show "Google Drive").
-    expect(screen.getByLabelText(/3 active filters/)).toBeInTheDocument();
+    // Long-tail filter chips (HD+, < 5 min) are visible. Provider chip text
+    // ("Google Drive") is intentionally not asserted here because it also
+    // appears on poster-card provider badges, creating text ambiguity.
+    expect(screen.getByText("< 5 min")).toBeInTheDocument();
+    expect(screen.getByText("HD+")).toBeInTheDocument();
 
     // Click Clear all.
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
-    // No active-count badge.
-    expect(screen.queryByLabelText(/active filter/)).not.toBeInTheDocument();
+    // Long-tail chips gone.
+    expect(screen.queryByText("< 5 min")).not.toBeInTheDocument();
+    expect(screen.queryByText("HD+")).not.toBeInTheDocument();
 
     // Grid query should have no filter params.
     await waitFor(() => {

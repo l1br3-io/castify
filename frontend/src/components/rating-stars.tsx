@@ -23,6 +23,7 @@ import { useState } from "react";
 import { StarIcon } from "./icons";
 import type { VideoSummaryDto } from "../api/types";
 import { useSetRating, useUnsetRating } from "../hooks/use-rating";
+import { useToast } from "../hooks/use-toast";
 
 const STAR_VALUES = [1, 2, 3, 4, 5] as const;
 
@@ -37,6 +38,7 @@ export function RatingStars({ video, variant = "card" }: RatingStarsProps) {
   const [hoverRating, setHoverRating] = useState<number | null>(null);
   const setRating = useSetRating();
   const unsetRating = useUnsetRating();
+  const toast = useToast();
 
   const currentRating = video.my_rating;
   const displayed = hoverRating ?? currentRating ?? 0;
@@ -44,10 +46,11 @@ export function RatingStars({ video, variant = "card" }: RatingStarsProps) {
 
   function handleClick(star: number) {
     if (pending) return;
+    const onError = () => toast.error("Couldn't save rating. Try again.");
     if (currentRating === star) {
-      unsetRating.mutate(video.id);
+      unsetRating.mutate(video.id, { onError });
     } else {
-      setRating.mutate({ videoId: video.id, rating: star });
+      setRating.mutate({ videoId: video.id, rating: star }, { onError });
     }
   }
 

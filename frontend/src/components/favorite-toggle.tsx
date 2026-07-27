@@ -16,6 +16,7 @@
 import { HeartIcon } from "./icons";
 import type { VideoSummaryDto } from "../api/types";
 import { useSetFavorite, useUnsetFavorite } from "../hooks/use-favorite";
+import { useToast } from "../hooks/use-toast";
 
 type Variant = "card" | "hero";
 
@@ -24,16 +25,21 @@ type FavoriteToggleProps = {
   variant?: Variant;
 };
 
-export function FavoriteToggle({ video, variant = "card" }: FavoriteToggleProps) {
+export function FavoriteToggle({
+  video,
+  variant = "card",
+}: FavoriteToggleProps) {
   const setFav = useSetFavorite();
   const unsetFav = useUnsetFavorite();
+  const toast = useToast();
   const isFavorite = video.is_favorite;
 
   function handleClick() {
+    const onError = () => toast.error("Couldn't save favorite. Try again.");
     if (isFavorite) {
-      unsetFav.mutate(video.id);
+      unsetFav.mutate(video.id, { onError });
     } else {
-      setFav.mutate(video.id);
+      setFav.mutate(video.id, { onError });
     }
   }
 
@@ -55,10 +61,12 @@ export function FavoriteToggle({ video, variant = "card" }: FavoriteToggleProps)
     );
   }
 
-  // Card variant: hover-revealed when not favorited; always visible when favorited.
+  // Card variant: visible by default at low prominence; full opacity when
+  // favorited or on hover/focus. Previously hover-gated which made the
+  // control undiscoverable for new users (design-pass §4 audit).
   const visibility = isFavorite
     ? "opacity-100"
-    : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100";
+    : "opacity-70 group-hover:opacity-100 focus-visible:opacity-100";
 
   return (
     <button
@@ -68,8 +76,8 @@ export function FavoriteToggle({ video, variant = "card" }: FavoriteToggleProps)
       aria-pressed={isFavorite}
       aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
       title={isFavorite ? "Remove from favorites" : "Add to favorites"}
-      className={`flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur transition ${visibility} hover:bg-black/70 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50 disabled:opacity-50 ${
-        isFavorite ? "text-red-400" : ""
+      className={`flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur transition ${visibility} hover:bg-black/70 hover:text-[var(--color-castify-accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50 disabled:opacity-50 ${
+        isFavorite ? "text-[var(--color-castify-accent)]" : ""
       }`}
     >
       <HeartIcon filled={isFavorite} className="h-4 w-4" />

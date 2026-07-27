@@ -58,11 +58,14 @@ describe("FavoriteToggle", () => {
     expect(svg?.getAttribute("fill")).toBe("currentColor");
   });
 
-  it("is hover-gated (opacity-0 group-hover:opacity-100) when not favorited", () => {
+  it("is visible at low prominence (opacity-70) when not favorited, full on hover", () => {
     renderWithProviders(<GroupedToggle video={NOT_FAV} />);
     const btn = screen.getByRole("button", { name: /add to favorites/i });
-    expect(btn.className).toContain("opacity-0");
+    // Design-pass: previously hover-gated (opacity-0 → group-hover:opacity-100),
+    // now always visible at opacity-70 so the affordance is discoverable.
+    expect(btn.className).toContain("opacity-70");
     expect(btn.className).toContain("group-hover:opacity-100");
+    expect(btn.className).not.toContain("opacity-0");
   });
 
   it("is always visible (opacity-100) when favorited", () => {

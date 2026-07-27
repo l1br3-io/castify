@@ -18,6 +18,7 @@ import { ApiError } from "../api/client";
 import { fetchCsrfToken } from "../api/client";
 import { setupPassword } from "../api/setup";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
+import { useToast } from "../hooks/use-toast";
 
 const DISPLAY_NAME_MAX = 80;
 const PASSWORD_MIN = 8;
@@ -29,6 +30,7 @@ const INPUT_CLASS =
 export function SetupPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -47,9 +49,9 @@ export function SetupPage() {
   }
 
   const passwordMutation = useMutation({
-    mutationFn: () =>
-      setupPassword({ display_name: trimmedName, password }),
+    mutationFn: () => setupPassword({ display_name: trimmedName, password }),
     onSuccess: () => {
+      toast.success(`Welcome to Castify, ${trimmedName}.`);
       void landAtHome();
     },
     onError: (error: unknown) => {
@@ -121,9 +123,7 @@ export function SetupPage() {
           disabled={!nameValid || !passwordValid || passwordMutation.isPending}
           className="w-full rounded-md bg-[var(--color-castify-accent)] px-4 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {passwordMutation.isPending
-            ? "Creating account…"
-            : "Create account"}
+          {passwordMutation.isPending ? "Creating account…" : "Create account"}
         </button>
         {passwordError && (
           <p className="text-sm text-red-400">{passwordError}</p>

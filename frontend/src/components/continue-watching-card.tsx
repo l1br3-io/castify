@@ -52,13 +52,12 @@ export function ContinueWatchingCard({
   const progressFraction = computeProgressFraction(entry);
 
   return (
-    <article className="relative group flex flex-col gap-2 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-2 transition hover:border-white/20">
+    <article className="relative group flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:-translate-y-0.5 hover:border-[var(--color-castify-accent)]/40 focus-within:-translate-y-0.5 focus-within:border-[var(--color-castify-accent)]/40">
       <Link
         to={`/watch/${encodeURIComponent(entry.videoId)}`}
         state={queue ? { queue } : undefined}
-        className="absolute inset-0 rounded-lg z-0"
+        className="absolute inset-0 rounded-[var(--radius-card)] z-0 outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
         aria-label={`Resume ${entry.videoName}`}
-        tabIndex={-1}
       />
       <Thumbnail
         video={thumbVideo}

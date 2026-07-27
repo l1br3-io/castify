@@ -24,18 +24,27 @@ type ShelfProps = {
   title: string;
   videos: VideoSummaryDto[];
   onViewAll?: () => void;
+  /** Optional total count to display beside the title (e.g., "Recently Added · 47").
+    Defaults to `videos.length` when omitted. */
+  totalCount?: number;
 };
 
-export function Shelf({ title, videos, onViewAll }: ShelfProps) {
+export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
   // Full sibling list for the ephemeral play queue — every card on this
   // shelf carries the same `queue` so T11's watch page can offer next/prev
   // skip within the shelf context.
   const queue = videos.map((v) => v.id);
+  const count = totalCount ?? videos.length;
 
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        <div className="flex items-baseline gap-2">
+          <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+          <span className="text-sm text-[var(--color-castify-muted)]">
+            · {count}
+          </span>
+        </div>
         {onViewAll && (
           <button
             type="button"

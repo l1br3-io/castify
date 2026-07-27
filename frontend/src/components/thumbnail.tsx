@@ -67,7 +67,7 @@ export function Thumbnail({
   const hue = hashHue(video.id);
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden rounded-md bg-black/40">
+    <div className="relative aspect-video w-full overflow-hidden rounded-[var(--radius-button)] bg-[var(--color-castify-rule)]">
       {/* Placeholder layer — visible while loading and on error. */}
       {state !== "loaded" && (
         <div
@@ -81,7 +81,7 @@ export function Thumbnail({
           aria-hidden
         >
           {state === "loading" && (
-            <div className="absolute inset-0 animate-pulse bg-white/5" />
+            <div className="absolute inset-0 animate-pulse bg-[var(--color-castify-accent-subtle)]" />
           )}
           {state === "error" && (
             <span className="text-4xl font-bold text-white/30">

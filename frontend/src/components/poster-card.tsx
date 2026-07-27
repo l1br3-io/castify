@@ -1,45 +1,40 @@
-// PosterCard — 16:9 thumbnail-dominant card for the browse grid and (T8)
-// shelf variants. Replaces M1's text-row VideoCard.
+// PosterCard — 16:9 thumbnail-dominant card for the browse grid and shelves.
 //
-// Layout (PRD FR-9.1):
+// Design-pass changes:
+//   * The stretched link is now keyboard-focusable (removed the old
+//     `tabIndex={-1}` that made the entire card unreachable via Tab —
+//     audit §4: "Cards have no in-card keyboard focus").
+//   * A decorative play-overlay appears on hover/focus-within to make the
+//     click target's purpose obvious (the overlay itself is `pointer-events-
+//     none` and `aria-hidden`; clicks still go to the link).
+//   * Body shows a year + provider line (year derived from `created_at`).
+//   * Hover now lifts the card 2px and shifts the border toward the accent.
+//
+// Layout:
 //   ┌──────────────────────────────────┐
 //   │                           [slot] │  top-right (T11 favorite)
 //   │   <img aspect-video object-cover │
 //   │        loading="lazy">           │
+//   │      [▶ overlay on hover]        │
 //   │ [1080p]               [2:00]     │  resolution bottom-left,
 //   │       [slot]                     │  duration bottom-right
 //   │                                  │  bottom-overlay (T11 rating)
 //   └──────────────────────────────────┘
 //   name (2-line clamp)
-//   [Provider] [Also in: …]
+//   2023 · [Provider] [Also in: …]
 //
-// T11 slot reservation contract (revised):
+// T11 slot reservation contract (unchanged):
 //   * `topRightSlot`        — absolute top-right corner; renders above the img.
 //   * `bottomOverlaySlot`   — absolute bottom strip; T11's rating stars.
-//
-// T11 deviation from T7 #38: badges (duration/resolution) now *always*
-// render, regardless of `bottomOverlaySlot`. The slot is rendered on top
-// of the badges and is responsible for its own hover visibility (the
-// RatingStars component uses `opacity-0 group-hover:opacity-100` with a
-// solid `bg-black/70` backdrop so it cleanly covers the badges while
-// interacting). PRD FR-9.1 requires always-on badges; FR-9.2 requires
-// hover-revealed rating — both are satisfied.
-//
-// Thumbnail state machine (PRD FR-1.4 / FR-9.3 / FR-9.4):
-//   * `loading` → pulsing skeleton behind a transparent `<img>` (img becomes
-//     opaque on `onLoad`).
-//   * `loaded`  → opaque img + badges visible.
-//   * `error`   → img unmounted, deterministic gradient + filename initial.
-//     404 (FR-1.4, "unsupported") and 502 (FR-1.5) both land here; the next
-//     page load remounts the img and retries.
 
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { VideoSummaryDto } from "../api/types";
 import { otherProviders } from "../lib/video";
 import { DedupBadge, ProviderBadge } from "./badges";
 import { Thumbnail } from "./thumbnail";
+import { PlayIcon } from "./icons";
 
 type PosterCardProps = {
   video: VideoSummaryDto;
@@ -72,17 +67,48 @@ export function PosterCard({
   // Providers from `sources` excluding the representative's own. Used to
   // decide whether to render a DedupBadge. Shared helper (lib/video.ts).
   const others = otherProviders(video);
+  const year = formatYear(video.created_at);
 
   return (
-    <article className="relative group flex flex-col gap-2 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-2 transition hover:border-white/20">
+    <article
+      className={`
+        relative group flex flex-col gap-2
+        rounded-[var(--radius-card)] border
+        border-[var(--color-castify-rule)]
+        bg-[var(--color-castify-surface)] p-2
+        transition duration-150 ease-out
+        hover:-translate-y-0.5 hover:border-[var(--color-castify-accent)]/40
+        focus-within:-translate-y-0.5
+        focus-within:border-[var(--color-castify-accent)]/40
+      `}
+    >
       {href && (
-        <Link
-          to={href}
-          state={queue ? { queue } : undefined}
-          className="absolute inset-0 rounded-lg z-0"
-          aria-label={`Play ${video.name}`}
-          tabIndex={-1}
-        />
+        <>
+          <Link
+            to={href}
+            state={queue ? { queue } : undefined}
+            // No longer `tabIndex={-1}` — the link is the keyboard entry to
+            // the card. The focus ring is rendered on the article via
+            // `focus-within:ring` below so it visually wraps the whole card.
+            className="absolute inset-0 rounded-[var(--radius-card)] z-0
+                       outline-none focus-visible:ring-2
+                       focus-visible:ring-[var(--color-castify-accent)]
+                       focus-visible:ring-offset-2
+                       focus-visible:ring-offset-[var(--color-castify-surface)]"
+            aria-label={`Play ${video.name}`}
+          />
+          {/* Decorative play overlay — pointer-events-none so clicks pass
+              through to the link. aria-hidden because the link already
+              conveys "play this video". */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center rounded-[var(--radius-card)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-castify-accent)] text-[var(--color-castify-canvas)] shadow-lg">
+              <PlayIcon className="h-5 w-5 translate-x-0.5" />
+            </div>
+          </div>
+        </>
       )}
       <Thumbnail
         video={video}
@@ -96,11 +122,22 @@ export function PosterCard({
         >
           {video.name}
         </h3>
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[var(--color-castify-muted)]">
+          {year && <span>{year}</span>}
           <ProviderBadge provider={video.provider} />
           {others.length > 0 && <DedupBadge providers={others} />}
         </div>
       </div>
     </article>
   );
+}
+
+/** ISO timestamp → "2024" (or null when parsing fails). */
+function formatYear(iso: string): string | null {
+  try {
+    const year = new Date(iso).getFullYear();
+    return Number.isFinite(year) ? String(year) : null;
+  } catch {
+    return null;
+  }
 }

@@ -15,6 +15,8 @@ import { MemoryRouter, type InitialEntry } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 
+import { ToastProvider } from "../components/ui/toast";
+
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -61,7 +63,9 @@ export function renderWithProviders(
 
   const renderResult = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>
+        <ToastProvider>{ui}</ToastProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 

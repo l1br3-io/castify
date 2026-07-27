@@ -14,6 +14,7 @@ import { ApiError } from "../api/client";
 import { fetchCsrfToken } from "../api/client";
 import { loginPassword } from "../api/session";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
+import { useToast } from "../hooks/use-toast";
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 256;
@@ -24,6 +25,7 @@ const INPUT_CLASS =
 export function LoginPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -40,6 +42,7 @@ export function LoginPage() {
   const passwordMutation = useMutation({
     mutationFn: () => loginPassword({ display_name: null, password }),
     onSuccess: () => {
+      toast.success("Welcome back.");
       void landAtHome();
     },
     onError: (error: unknown) => {

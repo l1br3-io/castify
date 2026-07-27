@@ -22,13 +22,23 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
-import { disconnectConnection, startConnect, triggerRescan } from "../api/connections";
+import {
+  disconnectConnection,
+  startConnect,
+  triggerRescan,
+} from "../api/connections";
 import {
   AVAILABLE_PROVIDERS_QUERY_KEY,
   useAvailableProviders,
 } from "../hooks/use-available-providers";
-import { CONNECTIONS_QUERY_KEY, useConnections } from "../hooks/use-connections";
+import {
+  CONNECTIONS_QUERY_KEY,
+  useConnections,
+} from "../hooks/use-connections";
+import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
+import { ErrorState } from "../components/ui/error-state";
+import { Skeleton } from "../components/ui/skeleton";
 import {
   PROVIDER_LABELS,
   PROVIDERS,
@@ -59,11 +69,14 @@ export function ConnectionsPage() {
 
       {oauthError ? (
         <Banner kind="error" onDismiss={dismissBanner}>
-          Connection failed. The provider did not grant access — please try again.
+          Connection failed. The provider did not grant access — please try
+          again.
         </Banner>
       ) : connectedProvider ? (
         <Banner kind="success" onDismiss={dismissBanner}>
-          {PROVIDER_LABELS[connectedProvider as ProviderKey] ?? connectedProvider} connected. Scanning for media…
+          {PROVIDER_LABELS[connectedProvider as ProviderKey] ??
+            connectedProvider}{" "}
+          connected. Scanning for media…
         </Banner>
       ) : null}
 
@@ -77,13 +90,21 @@ function ConnectionsGrid() {
   const available = useAvailableProviders();
 
   if (connections.isLoading || available.isLoading) {
-    return <p className="opacity-60">Loading connections…</p>;
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} className="h-40 w-full" />
+        ))}
+      </div>
+    );
   }
   if (connections.isError) {
     return (
-      <p className="text-red-400">
-        Couldn't load connections. {describeError(connections.error)}
-      </p>
+      <ErrorState
+        title="Couldn't load connections."
+        body={describeError(connections.error)}
+        onRetry={() => connections.refetch()}
+      />
     );
   }
 
@@ -136,7 +157,7 @@ function ConnectedCard({
   connection: ConnectionDto;
 }) {
   return (
-    <article className="flex flex-col gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-4">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
@@ -165,13 +186,13 @@ function ScanBadge({ status }: { status: ConnectionDto["scan_status"] }) {
   }
   if (status === "error") {
     return (
-      <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
+      <span className="rounded-full bg-[var(--color-castify-accent-dim)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-dim)]">
         Scan error
       </span>
     );
   }
   return (
-    <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium opacity-70">
+    <span className="rounded-full bg-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium opacity-70">
       Idle
     </span>
   );
@@ -188,7 +209,7 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
   }
   if (connection.scan_status === "error") {
     return (
-      <p className="text-sm text-red-400">
+      <p className="text-sm text-[var(--color-castify-accent-dim)]">
         Scan failed. Try reconnecting the provider.
       </p>
     );
@@ -205,12 +226,14 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
 
 function RescanButton({ connection }: { connection: ConnectionDto }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [error, setError] = useState<string | null>(null);
 
   const rescan = useMutation({
     mutationFn: () => triggerRescan(connection.id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CONNECTIONS_QUERY_KEY });
+      toast.info(`Rescanning ${PROVIDER_LABELS[connection.provider]}…`);
     },
     onError: (err: unknown) => setError(describeError(err)),
   });
@@ -226,7 +249,7 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
           rescan.mutate();
         }}
         disabled={disabled}
-        className="rounded-md border border-white/15 px-3 py-1.5 text-xs transition hover:bg-white/5 disabled:opacity-50"
+        className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
       >
         {connection.scan_status === "scanning"
           ? "Scanning…"
@@ -234,13 +257,18 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
             ? "Starting…"
             : "Rescan"}
       </button>
-      {error && <p className="text-xs text-red-400">{error}</p>}
+      {error && (
+        <p className="text-xs text-[var(--color-castify-accent-dim)]">
+          {error}
+        </p>
+      )}
     </>
   );
 }
 
 function DisconnectButton({ connection }: { connection: ConnectionDto }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [error, setError] = useState<string | null>(null);
 
   const disconnect = useMutation({
@@ -250,12 +278,19 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
       void queryClient.invalidateQueries({
         queryKey: AVAILABLE_PROVIDERS_QUERY_KEY,
       });
+      toast.success(
+        `Disconnected from ${PROVIDER_LABELS[connection.provider]}.`,
+      );
     },
     onError: (err: unknown) => setError(describeError(err)),
   });
 
   function handleDisconnect(): void {
-    if (window.confirm(`Disconnect ${PROVIDER_LABELS[connection.provider]}? Your media will be removed from the catalog.`)) {
+    if (
+      window.confirm(
+        `Disconnect ${PROVIDER_LABELS[connection.provider]}? Your media will be removed from the catalog.`,
+      )
+    ) {
       setError(null);
       disconnect.mutate();
     }
@@ -267,11 +302,15 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
         type="button"
         onClick={handleDisconnect}
         disabled={disconnect.isPending}
-        className="rounded-md border border-white/15 px-3 py-1.5 text-xs transition hover:bg-white/5 disabled:opacity-50"
+        className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
       >
         {disconnect.isPending ? "Disconnecting…" : "Disconnect"}
       </button>
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+      {error && (
+        <p className="mt-1 text-xs text-[var(--color-castify-accent-dim)]">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -290,7 +329,7 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
   });
 
   return (
-    <article className="flex flex-col gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-4">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
       <div>
         <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
         <p className="text-sm opacity-60">Not connected</p>
@@ -306,11 +345,15 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
             connect.mutate();
           }}
           disabled={connect.isPending}
-          className="w-full rounded-md bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+          className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
         >
           {connect.isPending ? "Connecting…" : "Connect"}
         </button>
-        {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+        {error && (
+          <p className="mt-1 text-xs text-[var(--color-castify-accent-dim)]">
+            {error}
+          </p>
+        )}
       </div>
     </article>
   );
@@ -318,13 +361,13 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
 
 function NoConfiguredProviders() {
   return (
-    <div className="rounded-lg border border-dashed border-white/10 bg-[var(--color-castify-surface)]/50 p-8 text-center">
+    <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
       <p className="text-lg font-medium">No cloud providers configured</p>
       <p className="mt-2 text-sm opacity-60">
         Add OAuth credentials for Google Drive, Dropbox, or OneDrive to start
         connecting accounts.
       </p>
-      <p className="mt-3 text-xs opacity-50">
+      <p className="mt-3 text-xs opacity-70">
         See <code>docs/config.md</code> for setup.
       </p>
     </div>
@@ -342,10 +385,12 @@ function Banner({
 }) {
   const tone =
     kind === "success"
-      ? "border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent)]/10"
-      : "border-red-500/40 bg-red-500/10";
+      ? "border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent-subtle)]"
+      : "border-[var(--color-castify-accent-dim)]/40 bg-[var(--color-castify-accent-dim)]/10";
   return (
-    <div className={`flex items-center justify-between gap-3 rounded-md border ${tone} px-4 py-2.5 text-sm`}>
+    <div
+      className={`flex items-center justify-between gap-3 rounded-[var(--radius-button)] border ${tone} px-4 py-2.5 text-sm`}
+    >
       <span>{children}</span>
       <button
         type="button"

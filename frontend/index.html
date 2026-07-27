@@ -3,8 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark light" />
+    <meta name="color-scheme" content="light dark" />
     <title>Castify</title>
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      // Reads localStorage["castify-theme"]; if absent, leaves the document
+      // without a data-theme attribute so the prefers-color-scheme media
+      // query in index.css decides.
+      (function () {
+        try {
+          var t = localStorage.getItem("castify-theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (e) {
+          /* localStorage unavailable — fall back to system preference. */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

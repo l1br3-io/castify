@@ -31,7 +31,7 @@
 //   * Grid empty due to search query: 'No videos match "q".'
 
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { FilterPanel } from "../components/filter-panel";
 import { FavoriteToggle } from "../components/favorite-toggle";
@@ -40,6 +40,8 @@ import { PosterCard } from "../components/poster-card";
 import { RatingStars } from "../components/rating-stars";
 import { SearchBar } from "../components/search-bar";
 import { Shelf } from "../components/shelf";
+import { EmptyState } from "../components/ui/empty-state";
+import { ErrorState } from "../components/ui/error-state";
 import { useConnections } from "../hooks/use-connections";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { useFolders } from "../hooks/use-folders";
@@ -158,15 +160,17 @@ export function BrowsePage() {
   // --- Recently Added query failed (DB error, network) ---
   if (recentlyAdded.isError) {
     return (
-      <p className="text-red-400">
-        Couldn't load videos. {describeError(recentlyAdded.error)}
-      </p>
+      <ErrorState
+        title="Couldn't load videos."
+        body={describeError(recentlyAdded.error)}
+        onRetry={() => recentlyAdded.refetch()}
+      />
     );
   }
 
   // --- Library is truly empty ---
   if (!recentlyAdded.data || recentlyAdded.data.videos.length === 0) {
-    return <EmptyState />;
+    return <LibraryEmptyState />;
   }
 
   const heroVideo = recentlyAdded.data.videos[0];
@@ -177,8 +181,10 @@ export function BrowsePage() {
 
   return (
     <div className="space-y-8">
-      {/* Search bar — always at top (T9) */}
-      <SearchBar ref={searchRef} value={query} onChange={setQuery} />
+      {/* Search + Sort row — sticky at the top of the browse area. */}
+      <div className="sticky top-0 z-20 -mx-4 bg-[var(--color-castify-canvas)]/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-castify-canvas)]/80">
+        <SearchBar ref={searchRef} value={query} onChange={setQuery} />
+      </div>
 
       {/* Hero + shelves — hidden during active search (focused results mode) */}
       {!isSearching && (
@@ -198,6 +204,7 @@ export function BrowsePage() {
             <Shelf
               title="Recently Added"
               videos={recentlyAdded.data.videos}
+              totalCount={recentlyAdded.data.total}
               onViewAll={() => handleViewAll({})}
             />
 
@@ -246,27 +253,26 @@ export function BrowsePage() {
               </h2>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <FilterPanel filters={filters} />
-            <label className="flex items-center gap-2 text-sm">
-              <span className="opacity-60">Sort</span>
-              <select
-                aria-label="Sort videos"
-                value={filters.values.sort}
-                onChange={(e) =>
-                  filters.setSort(e.target.value as VideoSortKey)
-                }
-                className="rounded-md border border-white/15 bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-white/5 focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]"
-              >
-                {VIDEO_SORT_OPTIONS.map((key) => (
-                  <option key={key} value={key}>
-                    {VIDEO_SORT_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <span className="opacity-60">Sort</span>
+            <select
+              aria-label="Sort videos"
+              value={filters.values.sort}
+              onChange={(e) => filters.setSort(e.target.value as VideoSortKey)}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+            >
+              {VIDEO_SORT_OPTIONS.map((key) => (
+                <option key={key} value={key}>
+                  {VIDEO_SORT_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
+
+        {/* Filter panel — top bar (provider chips + More filters drawer) +
+            active-filter chips. */}
+        <FilterPanel filters={filters} />
 
         <BrowseGrid
           videos={videos}
@@ -274,6 +280,11 @@ export function BrowsePage() {
           onPageChange={setPage}
           hasActiveFilter={hasActiveFilter}
           searchQuery={isSearching ? filters.values.q : undefined}
+          onClearFilters={() => filters.clearAll()}
+          onClearSearch={() => {
+            setQuery("");
+            filters.setQ("");
+          }}
         />
       </div>
     </div>
@@ -343,10 +354,16 @@ function FavoritesShelf({ onViewAll }: { onViewAll: () => void }) {
     limit: 20,
     favorites_only: true,
   });
-  if (query.isLoading || !query.data || query.data.videos.length === 0)
-    return null;
+  if (query.isLoading) return null;
+  if (query.isError) return <ShelfError title="Favorites" />;
+  if (!query.data || query.data.videos.length === 0) return null;
   return (
-    <Shelf title="Favorites" videos={query.data.videos} onViewAll={onViewAll} />
+    <Shelf
+      title="Favorites"
+      videos={query.data.videos}
+      totalCount={query.data.total}
+      onViewAll={onViewAll}
+    />
   );
 }
 
@@ -363,12 +380,14 @@ function ProviderShelf({
     limit: 20,
     provider,
   });
-  if (query.isLoading || !query.data || query.data.videos.length === 0)
-    return null;
+  if (query.isLoading) return null;
+  if (query.isError) return <ShelfError title={PROVIDER_LABELS[provider]} />;
+  if (!query.data || query.data.videos.length === 0) return null;
   return (
     <Shelf
       title={PROVIDER_LABELS[provider]}
       videos={query.data.videos}
+      totalCount={query.data.total}
       onViewAll={onViewAll}
     />
   );
@@ -387,10 +406,29 @@ function FolderShelf({
     limit: 20,
     folder,
   });
-  if (query.isLoading || !query.data || query.data.videos.length === 0)
-    return null;
+  if (query.isLoading) return null;
+  if (query.isError) return <ShelfError title={folder} />;
+  if (!query.data || query.data.videos.length === 0) return null;
   return (
-    <Shelf title={folder} videos={query.data.videos} onViewAll={onViewAll} />
+    <Shelf
+      title={folder}
+      videos={query.data.videos}
+      totalCount={query.data.total}
+      onViewAll={onViewAll}
+    />
+  );
+}
+
+// Compact inline error for shelf queries (audit §2a: shelves previously
+// returned null on error, silently hiding failures).
+function ShelfError({ title }: { title: string }) {
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+      <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-3 text-sm text-[var(--color-castify-muted)]">
+        Couldn't load this shelf.
+      </div>
+    </section>
   );
 }
 
@@ -404,6 +442,8 @@ interface BrowseGridProps {
   onPageChange: (page: number) => void;
   hasActiveFilter: boolean;
   searchQuery?: string;
+  onClearFilters: () => void;
+  onClearSearch: () => void;
 }
 
 function BrowseGrid({
@@ -412,15 +452,19 @@ function BrowseGrid({
   onPageChange,
   hasActiveFilter,
   searchQuery,
+  onClearFilters,
+  onClearSearch,
 }: BrowseGridProps) {
   if (videos.isLoading) {
     return <LoadingSkeletonGrid />;
   }
   if (videos.isError) {
     return (
-      <p className="text-red-400">
-        Couldn't load videos. {describeError(videos.error)}
-      </p>
+      <ErrorState
+        title="Couldn't load videos."
+        body={describeError(videos.error)}
+        onRetry={() => videos.refetch()}
+      />
     );
   }
 
@@ -428,28 +472,26 @@ function BrowseGrid({
   if (!data || data.videos.length === 0) {
     if (searchQuery) {
       return (
-        <div className="rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-8 text-center">
-          <p className="text-lg font-medium">
-            No videos match &ldquo;{searchQuery}&rdquo;
-          </p>
-          <p className="mt-2 text-sm opacity-60">
-            Try a different search term.
-          </p>
-        </div>
+        <EmptyState
+          title={`No videos match \u201c${searchQuery}\u201d`}
+          body="Try a different search term."
+          onAction={onClearSearch}
+          actionLabel="Clear search"
+        />
       );
     }
     if (hasActiveFilter) {
       return (
-        <div className="rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-8 text-center">
-          <p className="text-lg font-medium">No videos match this filter</p>
-          <p className="mt-2 text-sm opacity-60">
-            Try adjusting or clearing your filters.
-          </p>
-        </div>
+        <EmptyState
+          title="No videos match this filter"
+          body="Try adjusting or clearing your filters."
+          onAction={onClearFilters}
+          actionLabel="Clear filters"
+        />
       );
     }
     // Library-empty case is handled at the top level, but guard just in case.
-    return <EmptyState />;
+    return <LibraryEmptyState />;
   }
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
@@ -457,8 +499,15 @@ function BrowseGrid({
   // Passed through PosterCard → router state → watch page (T11).
   const gridQueue = data.videos.map((v) => v.id);
 
+  // Dim the grid slightly during a background refetch (filter/page change)
+  // instead of replacing it with a skeleton — preserves scroll position and
+  // avoids the flash. Skeleton is reserved for the initial load above.
+  const containerOpacity = videos.isFetching ? "opacity-60" : "opacity-100";
+
   return (
-    <div className="space-y-4">
+    <div
+      className={`space-y-4 transition-opacity duration-150 ${containerOpacity}`}
+    >
       <p className="text-sm opacity-60">
         {data.total} {data.total === 1 ? "video" : "videos"}
       </p>
@@ -529,30 +578,27 @@ function Pagination({
   );
 }
 
-function EmptyState() {
+function LibraryEmptyState() {
+  const navigate = useNavigate();
   const connections = useConnections();
   const isScanning =
     connections.data?.some((c) => c.scan_status === "scanning") ?? false;
 
+  if (isScanning) {
+    return (
+      <EmptyState
+        title={"Scanning your cloud\u2026"}
+        body="Videos will appear here as the scan progresses."
+      />
+    );
+  }
   return (
-    <div className="rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-8 text-center">
-      <p className="text-lg font-medium">
-        {isScanning ? "Scanning your cloud\u2026" : "No videos yet"}
-      </p>
-      <p className="mt-2 text-sm opacity-60">
-        {isScanning
-          ? "Videos will appear here as the scan progresses."
-          : "Connect a cloud provider to populate your library."}
-      </p>
-      {!isScanning && (
-        <Link
-          to="/connections"
-          className="mt-4 inline-block rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
-        >
-          Connect a provider
-        </Link>
-      )}
-    </div>
+    <EmptyState
+      title="No videos yet"
+      body="Connect a cloud provider to populate your library."
+      onAction={() => navigate("/connections")}
+      actionLabel="Connect a provider"
+    />
   );
 }
 

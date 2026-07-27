@@ -119,6 +119,9 @@ describe("HomePage", () => {
     renderWithProviders(<HomePage />, {
       fetchImplementation: () => new Promise<Response>(() => {}),
     });
-    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    // Skeleton placeholders render while the connections query is pending.
+    // No browse content (hero, shelves, "All Videos") should be visible yet.
+    expect(screen.queryByText("All Videos")).not.toBeInTheDocument();
+    expect(screen.queryByText("Connect your first cloud")).not.toBeInTheDocument();
   });
 });

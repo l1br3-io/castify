@@ -12,23 +12,47 @@
 //
 // Once at least one connection exists, the browse page (`BrowsePage`, M2 T7)
 // takes over — poster grid with thumbnails, replacing M1's flat `VideoList`.
-// The M0 health-probe placeholder was removed — `/api/health` remains
-// available as an API endpoint and via logs.
+//
+// Design-pass §6: connections query errors now surface via `<ErrorState>` with
+// a retry instead of routing to the wrong state (audit: home.tsx ignored
+// `isError`).
 
 import { Link } from "react-router-dom";
 
 import { useAvailableProviders } from "../hooks/use-available-providers";
 import { useConnections } from "../hooks/use-connections";
 import { BrowsePage } from "./browse";
+import { ErrorState } from "../components/ui/error-state";
+import { Skeleton } from "../components/ui/skeleton";
 
 export function HomePage() {
   const connections = useConnections();
   const available = useAvailableProviders();
 
   // While connections are still loading we can't yet decide first-run vs.
-  // library view — avoid a flash of the wrong state.
+  // library view — render a small skeleton rather than bare "Loading…" text
+  // so the layout doesn't shift on resolution (design-pass §6).
   if (connections.isLoading || available.isLoading) {
-    return <p className="opacity-60">Loading…</p>;
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-10 w-full" />
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <Skeleton key={i} className="aspect-video w-full" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (connections.isError) {
+    return (
+      <ErrorState
+        title="Couldn't load connections."
+        body="Your library can't be reached right now."
+        onRetry={() => connections.refetch()}
+      />
+    );
   }
 
   const isEmpty = (connections.data ?? []).length === 0;
@@ -48,12 +72,14 @@ function SetupRequired() {
   return (
     <section className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Setup required</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">
+          Setup required
+        </h1>
         <p className="mt-2 opacity-70">
           Castify needs OAuth credentials for at least one cloud provider before
           you can connect an account.
         </p>
-        <p className="mt-3 text-xs opacity-50">
+        <p className="mt-3 text-xs opacity-70">
           See <code>docs/config.md</code> for setup.
         </p>
       </div>
@@ -75,7 +101,7 @@ function FirstRunGuide() {
       </div>
       <Link
         to="/connections"
-        className="inline-block rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+        className="inline-block rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
       >
         Connect a provider
       </Link>

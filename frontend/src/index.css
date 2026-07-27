@@ -1,15 +1,70 @@
 @import "tailwindcss";
 
 @theme {
-  --color-castify-canvas: oklch(20% 0.02 280);
-  --color-castify-surface: oklch(24% 0.02 280);
-  --color-castify-text: oklch(96% 0.01 280);
+  /* Type — Fontsource variable packages imported in main.tsx. */
+  --font-sans: "Inter Variable", system-ui, sans-serif;
+  --font-display: "Inter Tight Variable", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+
+  /* Accent — shared across light and dark themes. Magenta on warm cream
+     reads as contemporary editorial rather than the cream+terracotta
+     default. */
   --color-castify-accent: oklch(70% 0.18 320);
-  --font-sans: "Inter", system-ui, sans-serif;
+  --color-castify-accent-dim: oklch(55% 0.16 320);
+  --color-castify-accent-subtle: oklch(70% 0.18 320 / 14%);
+
+  /* Radius tokens — bumped from the old rounded-md/lg toward friendlier
+     rounding. */
+  --radius-card: 0.875rem;
+  --radius-button: 0.5rem;
+  --radius-pill: 9999px;
+  --radius-drawer: 1rem;
+
+  /* Themeable surface tokens — defaults match the light theme. The dark
+     values live in the dark-theme blocks below and override these via
+     the cascade. */
+  --color-castify-canvas: oklch(96% 0.012 75);
+  --color-castify-surface: oklch(99% 0.005 75);
+  --color-castify-surface-raised: oklch(100% 0 0);
+  --color-castify-text: oklch(25% 0.02 50);
+  --color-castify-muted: oklch(50% 0.02 50);
+  --color-castify-rule: oklch(20% 0.02 50 / 8%);
 }
 
-:root {
-  color-scheme: dark light;
+/* Light theme — also the default when no data-theme is set. */
+:root,
+:root[data-theme="light"] {
+  --color-castify-canvas: oklch(96% 0.012 75);
+  --color-castify-surface: oklch(99% 0.005 75);
+  --color-castify-surface-raised: oklch(100% 0 0);
+  --color-castify-text: oklch(25% 0.02 50);
+  --color-castify-muted: oklch(50% 0.02 50);
+  --color-castify-rule: oklch(20% 0.02 50 / 8%);
+  color-scheme: light;
+}
+
+/* Dark theme — explicit opt-in. */
+:root[data-theme="dark"] {
+  --color-castify-canvas: oklch(20% 0.02 280);
+  --color-castify-surface: oklch(24% 0.02 280);
+  --color-castify-surface-raised: oklch(28% 0.02 280);
+  --color-castify-text: oklch(96% 0.01 280);
+  --color-castify-muted: oklch(70% 0.02 280);
+  --color-castify-rule: oklch(96% 0.01 280 / 14%);
+  color-scheme: dark;
+}
+
+/* System dark-mode preference wins when the user hasn't picked explicitly. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-castify-canvas: oklch(20% 0.02 280);
+    --color-castify-surface: oklch(24% 0.02 280);
+    --color-castify-surface-raised: oklch(28% 0.02 280);
+    --color-castify-text: oklch(96% 0.01 280);
+    --color-castify-muted: oklch(70% 0.02 280);
+    --color-castify-rule: oklch(96% 0.01 280 / 14%);
+    color-scheme: dark;
+  }
 }
 
 html,
@@ -23,6 +78,22 @@ body {
   font-family: var(--font-sans);
   background-color: var(--color-castify-canvas);
   color: var(--color-castify-text);
+  transition:
+    background-color 200ms ease-out,
+    color 200ms ease-out;
+}
+
+/* Honor reduced-motion globally. Components should still gate heavier
+   effects (shimmer, slide-overs, etc.) individually via the same query. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* M3 T12: subtitle cue styling. jsdom can't render these (UA-rendered
@@ -43,4 +114,79 @@ video::cue {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Toast entrance — slide-in (8px) + opacity over 200ms. Reduced-motion is
+   handled globally by the *
+   transition-duration override above. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Filter drawer entrance — slides up from the bottom on mobile, slides in
+   from the right on sm+. Reduced-motion is handled globally by the *
+   transition-duration override above. */
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 640px) {
+  @keyframes drawer-in {
+    from {
+      opacity: 0;
+      transform: translateX(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+}
+
+/* Filter preset buttons — shared between inline provider chips and the
+   drawer's preset groups. Defines the active/inactive states once so the
+   patterns don't drift. Padding tuned for ≥36px touch target (44px is the
+   floor for primary touch UIs, but compact preset rows at ~36px keep dense
+   filter groups scannable; primary actions use larger explicit padding). */
+.preset-active,
+.preset-inactive {
+  border-radius: var(--radius-button);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition:
+    background-color 150ms ease-out,
+    border-color 150ms ease-out,
+    color 150ms ease-out;
+  min-height: 2.25rem;
+}
+
+.preset-active {
+  border: 1px solid var(--color-castify-accent);
+  background-color: var(--color-castify-accent-subtle);
+  color: var(--color-castify-accent);
+}
+
+.preset-inactive {
+  border: 1px solid var(--color-castify-rule);
+  color: var(--color-castify-muted);
+}
+
+.preset-inactive:hover {
+  background-color: var(--color-castify-accent-subtle);
+  color: var(--color-castify-text);
 }
