@@ -17,6 +17,27 @@ vi.mock("../lib/player-db", () => ({
   saveSubtitlePref: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Mock jassub (M8 Task 004) — the dynamic import inside useLibassSubtitles
+// resolves to this spy-able constructor so tests can assert on the ASS
+// render lifecycle without loading the real ~500 KB WASM chunk. `vi.hoisted`
+// lifts the spies above the hoisted mock factory.
+const libassMock = vi.hoisted(() => ({
+  ctor: vi.fn(),
+  destroy: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("jassub", () => ({
+  default: class MockJassub {
+    ready: Promise<void>;
+    constructor(opts: unknown) {
+      libassMock.ctor(opts);
+      this.ready = Promise.resolve();
+    }
+    destroy() {
+      return libassMock.destroy();
+    }
+  },
+}));
+
 import { getProgress } from "../lib/player-db";
 
 const mockGetProgress = vi.mocked(getProgress);
@@ -1110,5 +1131,166 @@ describe("WatchPage", () => {
     expect(
       screen.queryByRole("button", { name: /Try again/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── M8 Task 004 — ASS/SSA rendering via libass (jassub) ──────────────────
+//
+// ASS tracks bypass the native <track> element (which strips ASS styling to
+// plain text) and route through a libass canvas overlay. The watch page
+// filters ASS tracks out of the <track> render, mirrors the active subtitle
+// selection up from PlayerControls, and initializes the libass hook with the
+// track URL when an ASS track is selected.
+
+function watchFetchWithSubtitles(tracks: VideoDetailDto["subtitle_tracks"]) {
+  return (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === `/api/videos/v1`)
+      return jsonResponse({ ...VIDEO_DETAIL, subtitle_tracks: tracks });
+    if (url === `/api/videos/v1/thumbnail`)
+      return new Response("fake-image", { status: 200 });
+    if (url === `/api/videos/v1/stream-url`) {
+      return jsonResponse({
+        url: "https://cdn.example.com/v1.mp4",
+        strategy: "direct",
+        expires_at: "2026-01-01T01:00:00Z",
+      });
+    }
+    return jsonError(404, "unmocked");
+  };
+}
+
+const ASS_TRACK = {
+  id: "a1",
+  language: "ja",
+  filename: "cat.ja.ass",
+  format: "ass",
+  format_family: "text" as const,
+  embedded_track_id: null,
+};
+const SRT_TRACK = {
+  id: "s1",
+  language: "en",
+  filename: "cat.en.srt",
+  format: "srt",
+  format_family: "text" as const,
+  embedded_track_id: null,
+};
+
+describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
+  beforeEach(() => {
+    libassMock.ctor.mockClear();
+    libassMock.destroy.mockClear();
+    // restoreMocks (vitest config) wipes mockGetProgress's implementation
+    // before each test; the parent describe re-applies it, this sibling
+    // describe must too — usePlaybackTracking calls .then on its return
+    // value directly (no Promise.all guard), so undefined crashes.
+    mockGetProgress.mockResolvedValue(null);
+  });
+
+  it("does not render a <track> for ASS tracks (they bypass native track)", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK, SRT_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Only the SRT track gets a <track>; the ASS track is routed to the
+    // libass canvas overlay instead.
+    const tracks = document.querySelectorAll("video > track");
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toHaveAttribute("src", "/api/videos/v1/subtitles/s1");
+  });
+
+  it("does not initialize libass until an ASS track is selected", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK, SRT_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Default selection is "Off" — no libass instance yet.
+    expect(libassMock.ctor).not.toHaveBeenCalled();
+  });
+
+  it("selecting an ASS track initializes libass with the track URL + canvas overlay", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK, SRT_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+
+    await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
+    expect(libassMock.ctor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subUrl: "/api/videos/v1/subtitles/a1",
+        video: expect.any(HTMLVideoElement),
+        canvas: expect.any(HTMLCanvasElement),
+      }),
+    );
+    // The canvas overlay is rendered over the <video>.
+    expect(document.querySelector("canvas")).not.toBeNull();
+  });
+
+  it("selecting 'Off' tears down the libass instance and removes the canvas", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK, SRT_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Select the ASS track first.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+    await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
+
+    // Then switch to Off.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
+
+    await waitFor(() => expect(libassMock.destroy).toHaveBeenCalledTimes(1));
+    // Canvas overlay is removed when no ASS track is active.
+    await waitFor(() => {
+      expect(document.querySelector("canvas")).toBeNull();
+    });
+  });
+
+  it("selecting a non-ASS (SRT) track does not initialize libass", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK, SRT_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "en" }));
+
+    // SRT renders via the native <track> mechanism — libass is never loaded.
+    expect(libassMock.ctor).not.toHaveBeenCalled();
+    expect(document.querySelector("canvas")).toBeNull();
+  });
+
+  it("toggling ASS on/off does not change the <video> src (no re-fetch)", async () => {
+    mockCanPlayType("probably");
+    renderWatchPage("v1", watchFetchWithSubtitles([ASS_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+    const video = document.querySelector("video")!;
+
+    // Wait for the stream URL to land.
+    await waitFor(() => expect(video).toHaveAttribute("src"));
+    const srcBefore = video.getAttribute("src");
+
+    // Toggle ASS on.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+    await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
+
+    // Toggle ASS off.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
+    await waitFor(() => expect(libassMock.destroy).toHaveBeenCalledTimes(1));
+
+    // The underlying stream src is unchanged — toggling subtitles is purely
+    // client-side and must not restart playback or re-fetch the stream.
+    expect(video.getAttribute("src")).toBe(srcBefore);
   });
 });

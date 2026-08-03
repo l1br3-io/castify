@@ -20,6 +20,14 @@ export default defineConfig({
     outDir: "dist",
     sourcemap: true,
   },
+  // jassub (M8 Task 004) spawns a Web Worker whose own code uses dynamic
+  // imports → code-splitting. Vite's default worker format (`iife`) cannot
+  // emit code-split bundles, so workers must be emitted as ES modules.
+  // ES-module workers are supported in Chrome 80+, Firefox 114+, Safari 15+,
+  // matching jassub's own browser baseline.
+  worker: {
+    format: "es",
+  },
   test: {
     globals: true,
     environment: "jsdom",

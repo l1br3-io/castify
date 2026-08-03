@@ -31,6 +31,7 @@ import { PlayerControls } from "../components/player-controls";
 import { UpNext } from "../components/up-next";
 import { useAutoAdvance } from "../hooks/use-auto-advance";
 import { useHlsStream } from "../hooks/use-hls-stream";
+import { useLibassSubtitles } from "../hooks/use-libass-subtitles";
 import { usePlaybackTracking } from "../hooks/use-playback-tracking";
 import { useQueue } from "../hooks/use-queue";
 import {
@@ -48,6 +49,7 @@ import {
   formatTime,
   resolutionBucket,
 } from "../lib/format";
+import { isAssFormat } from "../lib/subtitles";
 import { otherProviders } from "../lib/video";
 import { downloadUrl, subtitleTrackUrl } from "../api/videos";
 import { startConnect } from "../api/connections";
@@ -161,8 +163,15 @@ function VideoPlayer({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hasError, setHasError] = useState(false);
   const [showEndOfQueue, setShowEndOfQueue] = useState(false);
+
+  // M8 Task 004: active subtitle selection is owned by PlayerControls (menu,
+  // IndexedDB restore/persist), but VideoPlayer mirrors it here so it can
+  // route an ASS selection to the libass canvas overlay. The callback below
+  // is the only writer — this is a read-only mirror of PlayerControls' state.
+  const [activeSubtitle, setActiveSubtitle] = useState(-1);
 
   const invalidateStreamUrl = useInvalidateStreamUrl();
   const isTranscode = streamUrlQuery.data?.strategy === "transcode";
@@ -221,6 +230,18 @@ function VideoPlayer({
   const hlsStream = useHlsStream(videoRef, masterUrl, {
     onError: () => setHasError(true),
   });
+
+  // M8 Task 004: ASS/SSA rendering via libass (jassub). Resolved only when
+  // the active track is ASS — SRT/VTT stay on the native <track> path below.
+  // The hook dynamic-imports jassub, so the ~500 KB chunk never loads for
+  // users on text-only videos.
+  const activeSubtitleTrack =
+    activeSubtitle >= 0 ? video.subtitle_tracks[activeSubtitle] : null;
+  const assUrl =
+    activeSubtitleTrack && isAssFormat(activeSubtitleTrack.format)
+      ? subtitleTrackUrl(video.id, activeSubtitleTrack.id)
+      : undefined;
+  useLibassSubtitles(videoRef, canvasRef, assUrl);
 
   // `<video>` error handler. For direct-CDN strategy, a 410/403 mid-stream
   // means the short-lived URL expired — refresh once by invalidating the
@@ -298,16 +319,31 @@ function VideoPlayer({
           ref={videoRef}
           className="block w-full"
         >
-          {video.subtitle_tracks.map((track) => (
-            <track
-              key={track.id}
-              kind="subtitles"
-              src={subtitleTrackUrl(video.id, track.id)}
-              srcLang={track.language ?? undefined}
-              label={track.language ?? "Unknown"}
-            />
-          ))}
+          {/**
+           * GOTCHA: ASS tracks must bypass the <track> element — native
+           * <track> strips ASS styling to plain text. ASS tracks are routed
+           * to the libass canvas overlay below instead; only non-ASS text
+           * tracks (SRT/VTT) are wired as <track> elements here.
+           */}
+          {video.subtitle_tracks
+            .filter((track) => !isAssFormat(track.format))
+            .map((track) => (
+              <track
+                key={track.id}
+                kind="subtitles"
+                src={subtitleTrackUrl(video.id, track.id)}
+                srcLang={track.language ?? undefined}
+                label={track.language ?? "Unknown"}
+              />
+            ))}
         </video>
+        {assUrl && (
+          <canvas
+            ref={canvasRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-10"
+          />
+        )}
         {tracking.showResume && (
           <div
             role="status"
@@ -427,6 +463,7 @@ function VideoPlayer({
           containerRef={containerRef}
           subtitleTracks={video.subtitle_tracks}
           videoId={video.id}
+          onActiveSubtitleChange={setActiveSubtitle}
           onPrev={queue.hasQueue ? handlePrev : undefined}
           onNext={queue.hasQueue ? handleNext : undefined}
           hasPrev={queue.hasPrev}

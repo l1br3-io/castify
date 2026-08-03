@@ -24,6 +24,7 @@ import {
   VolumeMuteIcon,
 } from "./icons";
 import { formatTime } from "../lib/format";
+import { isAssFormat } from "../lib/subtitles";
 import {
   getGlobalPrefs,
   getSubtitlePref,
@@ -39,6 +40,13 @@ type PlayerControlsProps = {
   subtitleTracks: SubtitleTrackDto[];
   /** Video ID used to key per-video subtitle preferences in IndexedDB. */
   videoId: string;
+  /**
+   * Notified whenever the active subtitle selection changes (M8 Task 004) —
+   * including the IndexedDB restore on mount. The watch page mirrors this
+   * to route an ASS selection to the libass canvas overlay. Optional: when
+   * omitted, PlayerControls behaves exactly as before (no observer).
+   */
+  onActiveSubtitleChange?: (index: number) => void;
   /**
    * Optional queue skip controls (M3 T11). When `onPrev`/`onNext` are both
    * omitted, no skip buttons render. When provided, the buttons flank the
@@ -78,6 +86,7 @@ export function PlayerControls({
   containerRef,
   subtitleTracks,
   videoId,
+  onActiveSubtitleChange,
   onPrev,
   onNext,
   hasPrev = false,
@@ -116,6 +125,15 @@ export function PlayerControls({
   useEffect(() => {
     showShortcutsRef.current = showShortcuts;
   }, [showShortcuts]);
+
+  // M8 Task 004: keep the latest onActiveSubtitleChange in a ref so the
+  // restore-on-mount effect (which doesn't depend on the callback) always
+  // notifies the current observer without re-subscribing when the parent
+  // passes a new closure.
+  const onActiveSubtitleChangeRef = useRef(onActiveSubtitleChange);
+  useEffect(() => {
+    onActiveSubtitleChangeRef.current = onActiveSubtitleChange;
+  });
 
   // --- Sync media state from the <video> element via event listeners ---
   useEffect(() => {
@@ -198,7 +216,12 @@ export function PlayerControls({
       }
       if (subtitleId) {
         const idx = subtitleTracks.findIndex((t) => t.id === subtitleId);
-        if (idx >= 0) setActiveSubtitle(idx);
+        if (idx >= 0) {
+          setActiveSubtitle(idx);
+          // Propagate the restored selection so the watch page can re-route
+          // an ASS track to the libass canvas overlay on page reload.
+          onActiveSubtitleChangeRef.current?.(idx);
+        }
       }
     })();
     return () => {
@@ -275,16 +298,26 @@ export function PlayerControls({
   }, [controlsVisible, containerRef]);
 
   // --- Subtitle track mode application ---
-  // `<track>` elements live in `video.textTracks` (order matches subtitleTracks
-  // as rendered by the parent). Mode "hidden" loads a track without displaying;
-  // "showing" displays it. The native `default` attribute is NOT used — custom
-  // controls drive mode explicitly (T8 removed `default` from the <track>s).
+  // `<track>` elements live in `video.textTracks` (order matches the non-ASS
+  // tracks rendered by the parent — ASS tracks bypass `<track>` and route
+  // through the libass canvas overlay instead). Mode "hidden" loads a track
+  // without displaying; "showing" displays it. The native `default` attribute
+  // is NOT used — custom controls drive mode explicitly (T8 removed `default`
+  // from the <track>s).
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
+    // Map the active full-list index to its position among the non-ASS tracks
+    // (which are the only ones with a <track> element in video.textTracks).
+    const nonAssTracks = subtitleTracks.filter((t) => !isAssFormat(t.format));
+    const activeTrack =
+      activeSubtitle >= 0 ? subtitleTracks[activeSubtitle] : null;
+    const activeNonAssIndex = activeTrack
+      ? nonAssTracks.findIndex((t) => t.id === activeTrack.id)
+      : -1;
     const tracks = video.textTracks;
     for (let i = 0; i < tracks.length; i++) {
-      tracks[i].mode = i === activeSubtitle ? "showing" : "hidden";
+      tracks[i].mode = i === activeNonAssIndex ? "showing" : "hidden";
     }
   }, [activeSubtitle, videoRef, subtitleTracks]);
 
@@ -438,6 +471,9 @@ export function PlayerControls({
   function selectSubtitle(index: number) {
     setActiveSubtitle(index);
     setSubtitlesOpen(false);
+    // Notify the watch page so an ASS selection routes to the libass canvas
+    // overlay (and Off / a non-ASS track tears it down).
+    onActiveSubtitleChangeRef.current?.(index);
     // Persist per-video subtitle selection (null for "Off").
     const track = index >= 0 ? subtitleTracks[index] : null;
     void saveSubtitlePref(videoId, track?.id ?? null);
