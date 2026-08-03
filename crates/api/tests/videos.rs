@@ -1775,8 +1775,8 @@ async fn seed_subtitle(
 ) -> String {
     let id = format!("sub-{provider_file_id}");
     sqlx::query(
-        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format, format_family) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'text')",
     )
     .bind(&id)
     .bind(video_id)

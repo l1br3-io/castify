@@ -513,8 +513,8 @@ async fn migration_0006_creates_play_tables() {
 
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, \
-         filename, format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'en', 'movie.en.srt', 'srt')",
+         filename, format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'en', 'movie.en.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await
@@ -552,8 +552,8 @@ async fn migration_0006_cascade_deletes_progress_and_subtitles() {
     .unwrap();
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+         format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await
@@ -587,8 +587,8 @@ async fn migration_0006_cascade_deletes_subtitles_on_connection_delete() {
 
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+         format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await
@@ -617,23 +617,25 @@ async fn migration_0006_subtitle_format_check_rejects_invalid() {
     run_migrations(&pool).await.unwrap();
     seed_owner_connection_video(&pool).await;
 
+    // Migration 0010 relaxed the CHECK so ASS/SSA/PGS/VobSub are now legal;
+    // 'mov_text' is still outside the allowed list and must be rejected.
     let bad_format = sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.ass', 'ass')",
+         format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.txt', 'mov_text', 'text')",
     )
     .execute(&pool)
     .await;
     assert!(
         bad_format.is_err(),
-        "format = 'ass' must be rejected by CHECK"
+        "format = 'mov_text' must be rejected by CHECK"
     );
 
-    // 'srt' and 'vtt' are accepted.
+    // 'srt' and 'vtt' are accepted (format_family is NOT NULL since 0010).
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+         format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await
@@ -641,8 +643,8 @@ async fn migration_0006_subtitle_format_check_rejects_invalid() {
 
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub2', 'movie.vtt', 'vtt')",
+         format, format_family) \
+         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub2', 'movie.vtt', 'vtt', 'text')",
     )
     .execute(&pool)
     .await
@@ -658,8 +660,8 @@ async fn migration_0006_subtitle_unique_constraint() {
 
     sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+         format, format_family) \
+         VALUES ('sub-1', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await
@@ -667,8 +669,8 @@ async fn migration_0006_subtitle_unique_constraint() {
 
     let dup = sqlx::query(
         "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, \
-         format) \
-         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt')",
+         format, format_family) \
+         VALUES ('sub-2', 'vid-x', 'conn-x', 'file-sub', 'movie.srt', 'srt', 'text')",
     )
     .execute(&pool)
     .await;
@@ -749,4 +751,283 @@ async fn migrations_create_transcode_cache_entries_table() {
         .await
         .unwrap();
     assert_eq!(count, 0, "transcode_cache_entries starts empty");
+}
+
+// ---- Migration 0010: Advanced subtitle formats ----
+
+#[tokio::test]
+async fn migration_0010_relaxes_format_check_to_allow_advanced_formats() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    // The relaxed CHECK (migration 0010) accepts ASS/SSA/PGS/VobSub
+    // alongside the original SRT/VTT.
+    for fmt in ["ass", "ssa", "pgs", "vobsub", "srt", "vtt"] {
+        sqlx::query(
+            "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, \
+             filename, format, format_family) \
+             VALUES (?, 'vid-x', 'conn-x', ?, ?, ?, 'text')",
+        )
+        .bind(format!("sub-{fmt}"))
+        .bind(format!("file-{fmt}"))
+        .bind(format!("movie.{fmt}"))
+        .bind(fmt)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("format = '{fmt}' should be accepted: {e}"));
+    }
+
+    // Anything outside the CHECK list is still rejected.
+    let bad = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, \
+         filename, format, format_family) \
+         VALUES ('sub-bad', 'vid-x', 'conn-x', 'file-bad', 'movie.txt', 'mov_text', 'text')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        bad.is_err(),
+        "format = 'mov_text' must be rejected by CHECK"
+    );
+}
+
+#[tokio::test]
+async fn migration_0010_format_family_check_and_not_null() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    // 'text' and 'image' are the only legal families.
+    for family in ["text", "image"] {
+        sqlx::query(
+            "INSERT INTO video_subtitles (id, video_id, provider_file_id, filename, \
+             format, format_family) \
+             VALUES (?, 'vid-x', ?, ?, 'srt', ?)",
+        )
+        .bind(format!("sub-{family}"))
+        .bind(format!("file-{family}"))
+        .bind(format!("m.{family}"))
+        .bind(family)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("format_family = '{family}' should be accepted: {e}"));
+    }
+
+    // Garbage family rejected.
+    let bad = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, filename, format, \
+         format_family) \
+         VALUES ('sub-bad', 'vid-x', 'file-bad', 'm.srt', 'srt', 'unknown')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(bad.is_err(), "format_family = 'unknown' must be rejected");
+
+    // NOT NULL: omitting format_family fails.
+    let null_family = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, filename, format) \
+         VALUES ('sub-null', 'vid-x', 'file-null', 'm.srt', 'srt')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(null_family.is_err(), "format_family is NOT NULL");
+}
+
+#[tokio::test]
+async fn migration_0010_routing_columns_are_nullable_for_sidecars() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    // A sidecar row: provider_file_id present, embedded_track_id +
+    // extracted_path NULL (the post-migration default for sidecars).
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, \
+         language, filename, format, format_family, embedded_track_id, extracted_path) \
+         VALUES ('sub-side', 'vid-x', 'conn-x', 'file-side', 'en', 'movie.en.srt', 'srt', \
+         'text', NULL, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let row = sqlx::query(
+        "SELECT embedded_track_id, extracted_path, format_family \
+         FROM video_subtitles WHERE id = 'sub-side'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let embedded: Option<i64> = row.get("embedded_track_id");
+    let extracted: Option<String> = row.get("extracted_path");
+    let family: String = row.get("format_family");
+    assert!(embedded.is_none(), "sidecar has NULL embedded_track_id");
+    assert!(extracted.is_none(), "sidecar has NULL extracted_path");
+    assert_eq!(family, "text");
+}
+
+#[tokio::test]
+async fn migration_0010_embedded_track_unique_constraint() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    // First embedded track (provider_file_id NULL, embedded_track_id 3) lands.
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, embedded_track_id, \
+         filename, format, format_family) \
+         VALUES ('sub-emb-1', 'vid-x', NULL, 3, 'extracted.3.srt', 'srt', 'text')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Same (NULL, 3) again must collide — COALESCE maps both to '_embedded_3'.
+    let dup = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, embedded_track_id, \
+         filename, format, format_family) \
+         VALUES ('sub-emb-2', 'vid-x', NULL, 3, 'extracted.3.srt', 'srt', 'text')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup.is_err(),
+        "duplicate (NULL provider_file_id, embedded_track_id=3) must reject"
+    );
+
+    // A different embedded index coexists.
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, embedded_track_id, \
+         filename, format, format_family) \
+         VALUES ('sub-emb-4', 'vid-x', NULL, 4, 'extracted.4.srt', 'srt', 'text')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Sidecar dedup still works via the provider_file_id path.
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, filename, format, \
+         format_family) \
+         VALUES ('sub-side', 'vid-x', 'file-side', 'movie.srt', 'srt', 'text')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let dup_side = sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, provider_file_id, filename, format, \
+         format_family) \
+         VALUES ('sub-side2', 'vid-x', 'file-side', 'movie.srt', 'srt', 'text')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(dup_side.is_err(), "duplicate provider_file_id must reject");
+}
+
+// Runs the actual 0010 migration SQL against a pre-0010 `video_subtitles`
+// table seeded with rows. Every other test runs 0010 against an empty table
+// (0006 creates it empty), so the `INSERT INTO … SELECT FROM` data-copy
+// branch is only exercised here. Uses `include_str!` so the test runs the
+// real migration file — no duplicated SQL to drift.
+#[tokio::test]
+async fn migration_0010_preserves_existing_sidecar_rows() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+
+    // Minimal parent-table stubs: migration 0010's `CREATE TABLE _new` has
+    // `REFERENCES videos(id)` / `provider_connections(id)`, and sqlx enables
+    // `foreign_keys` by default so those tables must exist at CREATE time.
+    sqlx::query("CREATE TABLE provider_connections (id TEXT PRIMARY KEY NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE videos (id TEXT PRIMARY KEY NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Parent rows referenced by the seeded subtitles (FKs are enforced).
+    sqlx::query("INSERT INTO provider_connections (id) VALUES ('conn-a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO videos (id) VALUES ('vid-a')")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Reconstruct the pre-0010 `video_subtitles` shape (migration 0006).
+    sqlx::query(
+        "CREATE TABLE video_subtitles ( \
+         id TEXT PRIMARY KEY NOT NULL, \
+         video_id TEXT NOT NULL, \
+         connection_id TEXT NOT NULL, \
+         provider_file_id TEXT NOT NULL, \
+         language TEXT, \
+         filename TEXT NOT NULL, \
+         format TEXT NOT NULL CHECK (format IN ('srt', 'vtt')), \
+         created_at TEXT NOT NULL DEFAULT (datetime('now')), \
+         UNIQUE(video_id, provider_file_id))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Seed two sidecar rows — one per legacy format.
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, \
+         filename, format, created_at) \
+         VALUES ('sub-a', 'vid-a', 'conn-a', 'file-a', 'en', 'movie.en.srt', 'srt', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, \
+         filename, format, created_at) \
+         VALUES ('sub-b', 'vid-a', 'conn-a', 'file-b', 'fr', 'movie.fr.vtt', 'vtt', '2026-01-02T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Apply the real 0010 migration SQL (rebuild + copy + rename).
+    sqlx::raw_sql(include_str!("../migrations/0010_subtitle_formats.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Both rows survived; gained format_family='text', NULL routing columns.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_subtitles")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2, "both pre-existing sidecar rows must survive");
+
+    let rows = sqlx::query(
+        "SELECT id, language, filename, format, format_family, embedded_track_id, extracted_path, \
+         created_at FROM video_subtitles ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let a = &rows[0];
+    assert_eq!(a.get::<String, _>("id"), "sub-a");
+    assert_eq!(a.get::<String, _>("filename"), "movie.en.srt");
+    assert_eq!(a.get::<String, _>("format"), "srt");
+    assert_eq!(a.get::<String, _>("format_family"), "text");
+    assert!(a.get::<Option<i64>, _>("embedded_track_id").is_none());
+    assert!(a.get::<Option<String>, _>("extracted_path").is_none());
+    assert_eq!(a.get::<String, _>("created_at"), "2026-01-01T00:00:00Z");
+
+    let b = &rows[1];
+    assert_eq!(b.get::<String, _>("id"), "sub-b");
+    assert_eq!(b.get::<String, _>("format"), "vtt");
+    assert_eq!(b.get::<String, _>("format_family"), "text");
+    assert_eq!(b.get::<String, _>("language"), "fr");
 }

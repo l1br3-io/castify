@@ -956,8 +956,9 @@ impl CatalogRepository {
             .collect())
     }
 
-    /// Upsert a discovered subtitle track for a video. Idempotent by
-    /// `UNIQUE(video_id, provider_file_id)`.
+    /// Upsert a discovered sidecar subtitle track for a video. Idempotent by
+    /// `UNIQUE(video_id, provider_file_id)`. Sidecars are always text-family
+    /// (srt/vtt/ass/ssa), so `format_family` is fixed at `'text'` here.
     pub async fn upsert_subtitle(
         &self,
         video_id: &str,
@@ -968,10 +969,10 @@ impl CatalogRepository {
         format: &str,
     ) -> CatalogResult<()> {
         sqlx::query(
-            "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format, format_family) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'text') \
              ON CONFLICT(video_id, provider_file_id) DO UPDATE SET \
-                language = excluded.language, filename = excluded.filename, format = excluded.format",
+                language = excluded.language, filename = excluded.filename, format = excluded.format, format_family = 'text'",
         )
         .bind(format!("sub-{provider_file_id}"))
         .bind(video_id)
@@ -1557,6 +1558,7 @@ mod tests {
             include_str!("../../storage/migrations/0007_video_cache.sql"),
             include_str!("../../storage/migrations/0008_video_codec.sql"),
             include_str!("../../storage/migrations/0009_transcode_cache.sql"),
+            include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }

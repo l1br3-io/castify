@@ -386,6 +386,7 @@ mod tests {
             include_str!("../../storage/migrations/0004_browse.sql"),
             include_str!("../../storage/migrations/0005_browse_perf.sql"),
             include_str!("../../storage/migrations/0006_play.sql"),
+            include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
