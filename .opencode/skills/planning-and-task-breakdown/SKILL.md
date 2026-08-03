@@ -306,7 +306,7 @@ When multiple agents or sessions are available:
 - All tasks are XL-sized
 - No checkpoints between tasks
 - Dependency order isn't considered
-- `plan.md` growing thick with per-task detail (acceptance criteria, file lists) — that content belongs in `tasks/00N-*.md`, not the plan index
+- `plan.md` growing thick with per-task detail (acceptance criteria, file lists) — that content belongs in `tasks/00N-*.md`, not the plan index. Caught automatically by `lint-plan.py`.
 - An effort's `spec.md` left at `status: draft` or `status: active` after the PR merged — flip to `shipped` in the merge commit
 
 ## Verification
@@ -319,7 +319,7 @@ Before starting implementation, confirm:
 - [ ] No task touches more than ~5 files
 - [ ] Checkpoints exist between major phases
 - [ ] The human has reviewed and approved the plan
-- [ ] `plan.md` is a thin index (overview + decisions + task pointers + checkpoints + risks), not a thick document
+- [ ] `plan.md` is a thin index (overview + decisions + task pointers + checkpoints + risks), not a thick document — `python3 .opencode/harness/scripts/lint-plan.py` enforces this automatically
 - [ ] If the effort has shipped, `spec.md` frontmatter reads `status: shipped` with the merge date; new efforts start on fresh branches
 
 Acceptance criteria are per-task and answer "did we build the right thing?". They sit on top of the project-wide Definition of Done, the standing bar every task clears before it counts as done. See `@rules/definition-of-done.md`.

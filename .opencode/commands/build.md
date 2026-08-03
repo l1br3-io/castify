@@ -11,6 +11,14 @@ description: Implement tasks incrementally — build, test, verify, commit. Add 
 
 The arguments select the mode. Treat `auto` (canonical) or `all` as autonomous mode; anything else (or empty) is the default single-task mode. Note: autonomous mode is not faster per task — it runs the same test-driven loop — it only removes the human stepping between tasks.
 
+## Prerequisite: be on a feature branch
+
+Before either mode, resolve `<effort-slug>` from the current git branch (`git branch --show-current`). The `<effort-slug>` is both the branch name and the directory name under `docs/specs/` — they must match.
+
+If you're on the default integration branch (`main`, `master`, `develop`, or `trunk`), stop and tell the user to create a feature branch first: `git checkout -b <effort-slug>`. Do **not** suggest `/spec` here — that would create a meaningless `docs/specs/<default-branch-name>/` directory. The fix is a new branch, not a new spec.
+
+If you're already on a feature branch but `docs/specs/<effort-slug>/` doesn't exist yet, then point the user to `/spec`.
+
 ## Default: one task
 
 Pick the next pending task from `docs/specs/<effort-slug>/todo.md` (the lightweight checklist), then read the corresponding file from `docs/specs/<effort-slug>/tasks/00N-<task-slug>.md` — not the whole plan. Pull in `plan.md`'s Overview / Architecture Decisions only if the task needs that context; skip other tasks' detail files. Then:

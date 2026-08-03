@@ -47,6 +47,17 @@ impl DropboxClient {
     pub fn new(config: DropboxConfig) -> Self {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // Control-plane calls (token refresh, list_folder, get_temporary_link,
+            // fetch_user_info) should complete in seconds; 30s is the "something
+            // is wrong" ceiling. Without this, a stalled provider response hangs
+            // the entire /stream-url request — surfacing as "Preparing your
+            // video" forever on the watch page. `connect_timeout` covers the
+            // TCP/DNS phase; `timeout` covers the full request. Both apply
+            // equally to the content endpoints (download, thumbnail) since
+            // those transfers are small (≤ a few MB for thumbnails; videos
+            // stream via the direct CDN URL this client only resolves).
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
         Self { config, http }

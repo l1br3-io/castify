@@ -210,10 +210,31 @@ pub async fn callback(
         }
         Err(msg) => {
             tracing::warn!(error = %msg, "OAuth callback failed");
-            Redirect::to("/connections?error=oauth_failed").into_response()
+            Redirect::to(callback_error_redirect(&msg)).into_response()
         }
     }
 }
+
+/// Build the redirect target for a failed OAuth callback. Most failures
+/// collapse to the generic `oauth_failed` banner; the structured
+/// `account_id_missing` sentinel gets its own code so the Connections page
+/// can surface a more specific message ("provider did not return an
+/// account identifier — reconnect refused to avoid orphaning the library").
+///
+/// Extracted as a pure helper so the redirect-code contract is testable
+/// without driving the full async callback flow.
+fn callback_error_redirect(msg: &str) -> &'static str {
+    if msg == ACCOUNT_ID_MISSING {
+        "/connections?error=account_id_missing"
+    } else {
+        "/connections?error=oauth_failed"
+    }
+}
+
+/// Sentinel `callback_inner` returns when `fetch_user_info` yields no
+/// `account_id`. Kept as a constant so `callback_error_redirect` and the
+/// guard stay in sync without magic-string drift.
+const ACCOUNT_ID_MISSING: &str = "account_id_missing";
 
 async fn callback_inner(
     state: &AppState,
@@ -266,6 +287,18 @@ async fn callback_inner(
         .fetch_user_info(&token_bundle)
         .await
         .map_err(|e| format!("failed to fetch user info: {e}"))?;
+
+    // If the provider returned no account_id, the upsert lookup below is
+    // skipped (it requires a non-null account_id) and the fresh-insert
+    // path would create a duplicate active row — SQLite's UNIQUE allows
+    // multiple NULLs, so the insert succeeds but the user's library
+    // stays orphaned on the dead-token connection. Refuse rather than
+    // silently split the library. Cannot happen with the current Google
+    // Drive / Dropbox / OneDrive factories (all guarantee Some), but
+    // guards against future regressions and direct DB edits.
+    if account_id.is_none() {
+        return Err(ACCOUNT_ID_MISSING.into());
+    }
 
     let repo = state.catalog_repository();
 
@@ -462,12 +495,12 @@ mod tests {
     #[test]
     fn sanitize_return_to_rejects_open_redirect_attempts() {
         let rejects = [
-            "//evil.com/path",          // scheme-relative
-            "https://evil.com/path",    // absolute URL
-            "http://evil.com",          // absolute URL, http
-            "javascript:alert(1)",      // harmless here (no leading /) but
-                                        // documented as rejected
-            "watch/v1",                 // relative, no leading slash
+            "//evil.com/path",       // scheme-relative
+            "https://evil.com/path", // absolute URL
+            "http://evil.com",       // absolute URL, http
+            "javascript:alert(1)",   // harmless here (no leading /) but
+            // documented as rejected
+            "watch/v1", // relative, no leading slash
         ];
         for raw in rejects {
             assert!(
@@ -475,5 +508,36 @@ mod tests {
                 "should reject open-redirect attempt: {raw:?}"
             );
         }
+    }
+
+    /// The structured `account_id_missing` sentinel maps to a distinct
+    /// redirect target so the Connections page can surface a specific
+    /// "the provider returned no account_id" banner rather than the generic
+    /// "OAuth failed" message.
+    #[test]
+    fn callback_error_redirect_distinguishes_account_id_missing() {
+        assert_eq!(
+            callback_error_redirect("account_id_missing"),
+            "/connections?error=account_id_missing"
+        );
+    }
+
+    /// Any other error string collapses to the generic `oauth_failed`
+    /// redirect — preserving the existing behavior for malformed codes,
+    /// token-exchange failures, state mismatch, etc.
+    #[test]
+    fn callback_error_redirect_collapses_unknown_errors_to_oauth_failed() {
+        assert_eq!(
+            callback_error_redirect("token exchange failed: invalid_grant"),
+            "/connections?error=oauth_failed"
+        );
+        assert_eq!(
+            callback_error_redirect("invalid or expired OAuth state"),
+            "/connections?error=oauth_failed"
+        );
+        assert_eq!(
+            callback_error_redirect("provider returned error: access_denied"),
+            "/connections?error=oauth_failed"
+        );
     }
 }

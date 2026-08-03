@@ -472,12 +472,45 @@ async fn find_active_connection_by_account_returns_none_for_unknown_account() {
 async fn find_active_connection_by_account_returns_none_for_mismatched_account() {
     let (_app, _cookie, repo, _guard) = boot_and_setup().await;
     seed_connection(&repo).await; // account_id = "acct-1"
-    // Different account_id — must NOT match. (Maps the "user reconnected
-    // with a different account at the same provider" case, which is a
-    // legitimate new-connection path, not a token rotation on the existing row.)
+                                  // Different account_id — must NOT match. (Maps the "user reconnected
+                                  // with a different account at the same provider" case, which is a
+                                  // legitimate new-connection path, not a token rotation on the existing row.)
     let found = repo
         .find_active_connection_by_account(Provider::GoogleDrive, "different-acct")
         .await
         .unwrap();
     assert!(found.is_none());
+}
+
+/// A connection seeded with `provider_account_id = NULL` cannot be matched
+/// by the upsert lookup (which keys on a non-null account_id). This is the
+/// core reason `callback_inner` refuses to proceed when a reconnect's
+/// `fetch_user_info` returns `None` for the account_id: the lookup would
+/// miss, the fresh-insert path would create a duplicate row (SQLite UNIQUE
+/// allows multiple NULLs), and the user's library would stay orphaned on
+/// the dead-token row. Proving the lookup miss here documents why the
+/// guard in `callback_inner` is the only defense.
+#[tokio::test]
+async fn find_active_connection_by_account_returns_none_when_seeded_account_id_is_null() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+    repo.create_connection(&NewConnection {
+        provider: Provider::GoogleDrive,
+        token_bundle: sample_bundle(),
+        provider_account_id: None,
+        provider_account_email: Some("user@example.com".into()),
+    })
+    .await
+    .unwrap();
+
+    // Any non-null lookup misses the NULL-account row — including the
+    // realistic "the user just re-granted and the provider returned the
+    // same email but a different (or null) account_id" case.
+    let found = repo
+        .find_active_connection_by_account(Provider::GoogleDrive, "user@example.com")
+        .await
+        .unwrap();
+    assert!(
+        found.is_none(),
+        "NULL-account rows must not be reachable via account-based upsert lookup"
+    );
 }

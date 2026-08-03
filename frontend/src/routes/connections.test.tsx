@@ -248,6 +248,21 @@ describe("ConnectionsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("surfaces a specific message on the ?error=account_id_missing callback", async () => {
+    // Distinct from the generic `oauth_failed`: the OAuth round-trip
+    // succeeded but the provider returned no account_id, so reconnecting
+    // again would just hit the same wall. The banner must say so rather
+    // than invite another retry.
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections?error=account_id_missing"],
+      fetchImplementation: connectionsFetch([]),
+    });
+
+    expect(
+      await screen.findByText(/did not return an account identifier/),
+    ).toBeInTheDocument();
+  });
+
   it("shows a Rescan button on connected cards", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],

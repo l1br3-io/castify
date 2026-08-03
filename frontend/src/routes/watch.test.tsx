@@ -953,6 +953,29 @@ describe("WatchPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("surfaces the Reconnect card even when the video's MIME type is unplayable", async () => {
+    // Regression: when canPlayType returns "" (browser can't decode the
+    // codec natively), WatchPage skips VideoPlayer and falls through to
+    // UnsupportedFormat — which meant reauth_required errors never reached
+    // the Reconnect card. The user saw "This format can't be played"
+    // instead of "Reconnect {Provider}", blocking the only recovery path.
+    // The fix hoists the reauth check above the canPlay branch so it
+    // applies regardless of MIME type.
+    mockCanPlayType("");
+    const { container } = renderWatchPage("v1", watchFetchReauth());
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Reconnect Google Drive to play this video",
+      }),
+    ).toBeInTheDocument();
+    // Must NOT fall through to UnsupportedFormat.
+    expect(
+      screen.queryByText(/This format can't be played/),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector("video")).toBeNull();
+  });
+
   it("Reconnect button triggers the OAuth flow inline with return_to=/watch/{id}", async () => {
     mockCanPlayType("probably");
     // Industry-pattern inline reauth: clicking the primary CTA kicks off the
@@ -1045,5 +1068,47 @@ describe("WatchPage", () => {
         value: originalLocation,
       });
     }
+  });
+
+  it("routes to the Reconnect card on the leak-path 502 (no structured code)", async () => {
+    // Regression: when the backend returns the legacy/leak 502 with the
+    // raw `ProviderError::Unauthorized` Display text and NO `code` field
+    // (older binary, an uncovered leak path, or `factory.create` failing
+    // before the refresh handler), the watch page used to fall through to
+    // `StreamUrlError` — whose "Try again" button only refetched
+    // `/stream-url`, looping forever on the same 502. The fix detects
+    // reauth by error-signature (message substring) so the Reconnect card
+    // surfaces regardless of whether the structured `code` is present.
+    mockCanPlayType("probably");
+    const fetchImpl = (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === `/api/videos/v1`) return jsonResponse(VIDEO_DETAIL);
+      if (url === `/api/videos/v1/thumbnail`)
+        return new Response("fake-image", { status: 200 });
+      if (url === `/api/videos/v1/stream-url`) {
+        // Exact shape produced by `ApiError::Provider(ProviderError::Unauthorized)`
+        // → 502 with the provider error's Display text and NO `code` field.
+        return jsonResponse(
+          {
+            status: "error",
+            message: "unauthorized: token may be expired or revoked",
+          },
+          502,
+        );
+      }
+      return jsonError(404, "unmocked");
+    };
+
+    renderWatchPage("v1", fetchImpl);
+
+    // The Reconnect card must render — not the useless "Try again" card.
+    expect(
+      await screen.findByRole("heading", {
+        name: "Reconnect Google Drive to play this video",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Try again/i }),
+    ).not.toBeInTheDocument();
   });
 });

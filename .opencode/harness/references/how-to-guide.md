@@ -247,6 +247,9 @@ the harness.
   `./` / `../`). Links from ROADMAP to `docs/foo.md` are skipped; relative
   relative links (e.g. ROADMAP linking to its sibling VISION.md) are checked
   but resolve fine if the file exists.
+- `.opencode/harness/scripts/lint-plan.py` scans only `docs/specs/**/plan.md`
+  — root-level `.md` files and free-form docs are invisible to it, and it
+  exits 0 cleanly when no `docs/specs/` exists at all.
 - **Not auto-loaded.** Always-loaded context is `AGENTS.md` + `tech.md` only.
   ROADMAP/VISION sit alongside README/CHANGELOG/CONTRIBUTING as standalone
   docs and don't bloat agent context.

@@ -3,7 +3,11 @@
 // The backend's OAuth callback redirects here with query params:
 //   * `?connected={provider}` on success — show a success banner, then strip
 //     the param so it doesn't persist on refresh.
-//   * `?error=oauth_failed` on failure — show an error banner.
+//   * `?error=oauth_failed` on failure — show a generic error banner.
+//   * `?error=account_id_missing` — the OAuth round-trip succeeded but the
+//     provider returned no account_id. Reconnect was refused to avoid
+//     orphaning the user's library on a duplicate-row insert; the user
+//     should disconnect the stale connection and start fresh.
 //
 // Card states:
 //   * Connected — shows account email, video count, scan status, a Disconnect
@@ -70,8 +74,9 @@ export function ConnectionsPage() {
 
       {oauthError ? (
         <Banner kind="error" onDismiss={dismissBanner}>
-          Connection failed. The provider did not grant access — please try
-          again.
+          {oauthError === "account_id_missing"
+            ? "Reconnect refused: the provider did not return an account identifier, so Castify can't safely rotate the existing connection's token. Disconnect the connection below and try again."
+            : "Connection failed. The provider did not grant access — please try again."}
         </Banner>
       ) : connectedProvider ? (
         <Banner kind="success" onDismiss={dismissBanner}>

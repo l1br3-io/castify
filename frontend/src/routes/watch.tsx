@@ -34,7 +34,7 @@ import { useHlsStream } from "../hooks/use-hls-stream";
 import { usePlaybackTracking } from "../hooks/use-playback-tracking";
 import { useQueue } from "../hooks/use-queue";
 import {
-  isReauthRequiredError,
+  isReauthLikelyError,
   streamUrlQueryKey,
   useInvalidateStreamUrl,
   useStreamUrl,
@@ -107,9 +107,32 @@ export function WatchPage() {
   const video = query.data;
   const strategy = streamUrlQuery.data?.strategy;
 
-  // Transcode strategy → render VideoPlayer regardless of MIME canPlayType.
-  // The backend already determined this codec is unplayable; hls.js will
-  // feed H.264/AAC segments the browser can decode.
+  // Reauth + stream-url errors must surface regardless of whether the
+  // browser can decode the codec natively. Without this hoist, a video
+  // with an unplayable MIME type falls through to UnsupportedFormat
+  // (download link), hiding the only recovery path from the user.
+  // VideoPlayer repeats these checks defensively, but they're only
+  // reachable there when canPlay is true. Uses the heuristic detector so
+  // the legacy/leak 502 ("unauthorized: token may be expired or revoked")
+  // also routes here, not just the structured `code: "reauth_required"`.
+  const reauthError = isReauthLikelyError(streamUrlQuery.error)
+    ? streamUrlQuery.error
+    : null;
+  if (reauthError) {
+    return (
+      <ReconnectProvider
+        video={video}
+        provider={
+          (reauthError.body as { provider?: ProviderKey } | null)?.provider ??
+          video.provider
+        }
+      />
+    );
+  }
+  if (streamUrlQuery.error) {
+    return <StreamUrlError video={video} error={streamUrlQuery.error} />;
+  }
+
   if (strategy === "transcode" || canPlay(video.mime_type)) {
     return (
       <VideoPlayer video={video} streamUrlQuery={streamUrlQuery} />
@@ -156,7 +179,7 @@ function VideoPlayer({
   // Reauth-required short-circuit. Surfaced before rendering the `<video>`
   // so the user sees a single clear path forward (reconnect on the
   // Connections page) rather than a confusing `invalid_grant` 502.
-  const reauthError = isReauthRequiredError(streamUrlQuery.error)
+  const reauthError = isReauthLikelyError(streamUrlQuery.error)
     ? streamUrlQuery.error
     : null;
 

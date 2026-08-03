@@ -72,6 +72,46 @@ export function isReauthRequiredError(err: unknown): err is ApiError {
   return err instanceof ApiError && err.code === REAUTH_REQUIRED_CODE;
 }
 
+/**
+ * Error-message substrings that unmistakably indicate a dead/revoked
+ * provider grant, regardless of which HTTP status or structured code the
+ * backend attached. Covers:
+ *
+ *   - `"token may be expired or revoked"` — the Display of the backend's
+ *     `ProviderError::Unauthorized`, surfaced when the post-refresh-retry
+ *     promotion to `reauth_required` didn't fire (older binary, an
+ *     uncovered leak path, or `factory.create` returning Unauthorized
+ *     before the refresh handler runs).
+ *   - `"invalid_grant"` — the OAuth2 token-endpoint error code that
+ *     originally classified the failure as reauth-required server-side.
+ *   - `"unauthorized"` — belt-and-braces catch for any auth-layer 401
+ *     that escapes the structured promotion.
+ *
+ * Used by `isReauthLikelyError` below so the watch page can route to the
+ * Reconnect card on signature alone, without trusting the backend to emit
+ * the structured `code`.
+ */
+const REAUTH_LIKELY_PATTERNS = [
+  "token may be expired or revoked",
+  "invalid_grant",
+  "unauthorized",
+] as const;
+
+/**
+ * Heuristic detector combining the structured `reauth_required` code with
+ * the leak-path message signature. Use this in UI routing decisions where
+ * the goal is "does the user need to reconnect?" — it returns true for
+ * both the structured response AND the legacy/leak 502 with the raw
+ * `ProviderError::Unauthorized` text. Reserve `isReauthRequiredError` for
+ * code paths that must distinguish the structured case (e.g. analytics).
+ */
+export function isReauthLikelyError(err: unknown): err is ApiError {
+  if (!(err instanceof ApiError)) return false;
+  if (err.code === REAUTH_REQUIRED_CODE) return true;
+  const msg = err.message.toLowerCase();
+  return REAUTH_LIKELY_PATTERNS.some((p) => msg.includes(p));
+}
+
 export function useStreamUrl(id: string | undefined) {
   const query = useQuery<StreamUrlDto, ApiError>({
     queryKey: id ? streamUrlQueryKey(id) : ["videos", undefined, "stream-url"],
@@ -82,10 +122,15 @@ export function useStreamUrl(id: string | undefined) {
     staleTime: (query) => computeStaleTime(query.state.data),
     // A dead refresh token is terminal for this connection — don't let
     // TanStack silently retry the request 3 times (the user needs to act
-    // before any future call will succeed). The default retry policy still
-    // covers transient network blips for other failures.
+    // before any future call will succeed). Uses the heuristic detector
+    // so the leak-path 502 ("unauthorized: token may be expired or
+    // revoked") also short-circuits retries, not just the structured
+    // `code: "reauth_required"` response. Without this, the user waits
+    // through 3 retries × exponential backoff before seeing the recovery
+    // card. The default retry policy still covers transient network blips
+    // for failures that don't signature-match reauth.
     retry: (failureCount, err) => {
-      if (isReauthRequiredError(err)) return false;
+      if (isReauthLikelyError(err)) return false;
       return failureCount < 3;
     },
   });

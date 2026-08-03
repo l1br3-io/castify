@@ -48,9 +48,20 @@ impl OneDriveClient {
     pub fn new(config: OneDriveConfig) -> Self {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // Control-plane only (token refresh, /me, driveitem lookup,
+            // preauthenticated URL resolution). All calls return within
+            // seconds; 30s is the ceiling before we treat the provider as
+            // unresponsive and surface a structured error to the user.
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
         let http_download = reqwest::Client::builder()
+            // Streaming client: used by `open_stream` (proxy strategy) and
+            // `fetch_thumbnail`. A total `timeout` would abort long video
+            // streams; instead cap only the connection-establishment phase
+            // so dead-provider hangs don't pin the request indefinitely.
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build reqwest download client");
         Self {
