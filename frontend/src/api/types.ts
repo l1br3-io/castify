@@ -171,11 +171,17 @@ export interface RatingResponseDto {
 
 // --- M3 — Play DTOs ---
 
+// M3 introduced the sidecar subtitle shape; M8 widened it with `format_family`
+// (the routing key — `"text"` serves to browser, `"image"` triggers burn-in)
+// and `embedded_track_id` (muxed stream index for extracted-embedded text
+// tracks; null for sidecars). See `docs/specs/advanced-subtitles/spec.md`.
 export interface SubtitleTrackDto {
   id: string;
   language: string | null;
   filename: string;
   format: string;
+  format_family: "text" | "image";
+  embedded_track_id: number | null;
 }
 
 export interface VideoDetailDto {

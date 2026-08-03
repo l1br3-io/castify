@@ -248,8 +248,8 @@ describe("PlayerControls", () => {
 
   describe("subtitles", () => {
     const TRACKS: SubtitleTrackDto[] = [
-      { id: "s1", language: "en", filename: "a.en.vtt", format: "vtt" },
-      { id: "s2", language: "es", filename: "a.es.srt", format: "srt" },
+      { id: "s1", language: "en", filename: "a.en.vtt", format: "vtt", format_family: "text", embedded_track_id: null },
+      { id: "s2", language: "es", filename: "a.es.srt", format: "srt", format_family: "text", embedded_track_id: null },
     ];
 
     it("hides the subtitles button when there are no tracks", () => {

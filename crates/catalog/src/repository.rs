@@ -936,10 +936,15 @@ impl CatalogRepository {
         }))
     }
 
-    /// Fetch subtitle tracks for a video.
+    /// Fetch subtitle tracks for a video. M8: surfaces `format_family` and
+    /// `embedded_track_id` so the frontend can route by family without
+    /// inferring from the `format` string. Sidecar rows always come back with
+    /// `format_family = "text"` and `embedded_track_id = None`; extracted
+    /// text rows (inserted by Task 006) carry their stream index.
     pub async fn fetch_subtitles(&self, video_id: &str) -> CatalogResult<Vec<SubtitleTrack>> {
         let rows = sqlx::query(
-            "SELECT id, language, filename, format FROM video_subtitles WHERE video_id = ? ORDER BY filename",
+            "SELECT id, language, filename, format, format_family, embedded_track_id \
+             FROM video_subtitles WHERE video_id = ? ORDER BY filename",
         )
         .bind(video_id)
         .fetch_all(&self.pool)
@@ -952,6 +957,8 @@ impl CatalogRepository {
                 language: r.get("language"),
                 filename: r.get("filename"),
                 format: r.get("format"),
+                format_family: r.get("format_family"),
+                embedded_track_id: r.get("embedded_track_id"),
             })
             .collect())
     }
@@ -987,14 +994,17 @@ impl CatalogRepository {
     }
 
     /// Fetch a single subtitle track with connection metadata for serving.
-    /// Returns `(track, connection_id, provider_file_id)`.
+    /// Returns `(track, connection_id, provider_file_id)`. M8: the track now
+    /// carries `format_family` + `embedded_track_id`; Task 003 widens the
+    /// return signature further to expose `extracted_path` for extracted rows.
     pub async fn fetch_subtitle_track(
         &self,
         video_id: &str,
         track_id: &str,
     ) -> CatalogResult<Option<(SubtitleTrack, String, String)>> {
         let row = sqlx::query(
-            "SELECT id, language, filename, format, connection_id, provider_file_id \
+            "SELECT id, language, filename, format, format_family, embedded_track_id, \
+                    connection_id, provider_file_id \
              FROM video_subtitles WHERE id = ? AND video_id = ?",
         )
         .bind(track_id)
@@ -1009,6 +1019,8 @@ impl CatalogRepository {
                     language: r.get("language"),
                     filename: r.get("filename"),
                     format: r.get("format"),
+                    format_family: r.get("format_family"),
+                    embedded_track_id: r.get("embedded_track_id"),
                 },
                 r.get("connection_id"),
                 r.get("provider_file_id"),
@@ -2127,6 +2139,40 @@ mod tests {
             !candidates.iter().any(|(id, _)| *id == v2),
             "pinned entries must never be evicted"
         );
+    }
+
+    /// M8 Task 002: `fetch_subtitles` must surface the new routing columns
+    /// for sidecar rows so the frontend can branch on `format_family` rather
+    /// than inferring from the `format` string. Sidecars are always
+    /// `format_family = 'text'` and `embedded_track_id = NULL` (those columns
+    /// only carry meaning for extracted-embedded tracks, inserted by Task 006).
+    #[tokio::test]
+    async fn fetch_subtitles_surfaces_format_family_for_sidecars() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid) = seed_owner_conn_video(&repo).await;
+
+        // Seed one srt + one vtt sidecar, the two legacy formats. Goes through
+        // the public upsert path so the row shape matches what scan produces.
+        repo.upsert_subtitle(&vid, &conn, "side-srt", Some("en"), "movie.en.srt", "srt")
+            .await
+            .unwrap();
+        repo.upsert_subtitle(&vid, &conn, "side-vtt", None, "movie.vtt", "vtt")
+            .await
+            .unwrap();
+
+        let tracks = repo.fetch_subtitles(&vid).await.unwrap();
+        assert_eq!(tracks.len(), 2, "both sidecars should surface");
+        // Ordered by filename — "movie.en.srt" < "movie.vtt".
+        assert_eq!(tracks[0].filename, "movie.en.srt");
+        assert_eq!(tracks[0].format, "srt");
+        assert_eq!(tracks[0].format_family, "text");
+        assert!(tracks[0].embedded_track_id.is_none());
+
+        assert_eq!(tracks[1].filename, "movie.vtt");
+        assert_eq!(tracks[1].format, "vtt");
+        assert_eq!(tracks[1].format_family, "text");
+        assert!(tracks[1].embedded_track_id.is_none());
     }
 
     /// Helper: insert an additional video under an existing connection.

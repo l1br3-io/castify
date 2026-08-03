@@ -352,13 +352,26 @@ pub struct PlaybackProgress {
     pub updated_at: String,
 }
 
-/// A detected sidecar subtitle track for a video (`.srt` or `.vtt`).
+/// A detected subtitle track for a video — sidecar or extracted-embedded.
+/// Surfaced via `GET /api/videos/{id}/subtitles` and the player's track list.
+///
+/// M8 widened this from a sidecar-only shape: `format_family` is the routing
+/// key (`"text"` → serve to browser, `"image"` → burn-in), and
+/// `embedded_track_id` links an extracted-embedded text track back to its
+/// muxed stream index (`None` for sidecars). See
+/// `docs/specs/advanced-subtitles/spec.md`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleTrack {
     pub id: String,
     pub language: Option<String>,
     pub filename: String,
     pub format: String,
+    /// `"text"` (srt/vtt/ass/ssa) or `"image"` (pgs/vobsub). Drives the
+    /// burn-vs-serve decision without a format-string lookup.
+    pub format_family: String,
+    /// Muxed stream index for extracted-embedded text tracks; `None` for
+    /// sidecars and image tracks (image tracks stay in `video_subtitle_tracks`).
+    pub embedded_track_id: Option<i64>,
 }
 
 /// Full video metadata for the player page. Enriched with personalization
