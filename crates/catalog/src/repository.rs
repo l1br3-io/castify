@@ -993,18 +993,23 @@ impl CatalogRepository {
         Ok(())
     }
 
-    /// Fetch a single subtitle track with connection metadata for serving.
-    /// Returns `(track, connection_id, provider_file_id)`. M8: the track now
-    /// carries `format_family` + `embedded_track_id`; Task 003 widens the
-    /// return signature further to expose `extracted_path` for extracted rows.
+    /// Fetch a single subtitle track with serving metadata.
+    ///
+    /// Returns `(track, connection_id, provider_file_id, extracted_path)`.
+    /// For **sidecar** tracks, `connection_id` + `provider_file_id` are
+    /// `Some(...)` (bytes live at the provider) and `extracted_path` is
+    /// `None`. For **extracted-embedded** tracks, `extracted_path` is
+    /// `Some(...)` (bytes on local disk) and `connection_id` +
+    /// `provider_file_id` are `None` — the provider must never be called.
     pub async fn fetch_subtitle_track(
         &self,
         video_id: &str,
         track_id: &str,
-    ) -> CatalogResult<Option<(SubtitleTrack, String, String)>> {
+    ) -> CatalogResult<Option<(SubtitleTrack, Option<String>, Option<String>, Option<String>)>>
+    {
         let row = sqlx::query(
             "SELECT id, language, filename, format, format_family, embedded_track_id, \
-                    connection_id, provider_file_id \
+                    connection_id, provider_file_id, extracted_path \
              FROM video_subtitles WHERE id = ? AND video_id = ?",
         )
         .bind(track_id)
@@ -1024,6 +1029,7 @@ impl CatalogRepository {
                 },
                 r.get("connection_id"),
                 r.get("provider_file_id"),
+                r.get("extracted_path"),
             )
         }))
     }

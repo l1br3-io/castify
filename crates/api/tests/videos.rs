@@ -2286,6 +2286,234 @@ async fn e2e_subtitle_serving_404_missing_track() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+// ── M8 Task 003: format-aware subtitle serving ───────────────────────
+
+/// Seed an extracted-embedded subtitle track. Unlike sidecars (which have a
+/// provider_file_id and fetch bytes from the provider), extracted tracks have
+/// NULL provider_file_id, a non-NULL extracted_path pointing at local disk,
+/// and an embedded_track_id linking back to the muxed stream index.
+#[allow(clippy::too_many_arguments)]
+async fn seed_extracted_subtitle(
+    repo: &CatalogRepository,
+    video_id: &str,
+    track_id: &str,
+    embedded_track_id: i64,
+    language: Option<&str>,
+    filename: &str,
+    format: &str,
+    extracted_path: &str,
+) {
+    sqlx::query(
+        "INSERT INTO video_subtitles \
+         (id, video_id, connection_id, provider_file_id, embedded_track_id, \
+          language, filename, format, format_family, extracted_path) \
+         VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, 'text', ?)",
+    )
+    .bind(track_id)
+    .bind(video_id)
+    .bind(embedded_track_id)
+    .bind(language)
+    .bind(filename)
+    .bind(format)
+    .bind(extracted_path)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
+/// An extracted ASS track reads bytes from `extracted_path` on disk and
+/// serves them raw as `text/plain` — libass.js (Task 004) consumes the raw
+/// ASS source. The provider is never touched (`provider_file_id` is NULL).
+#[tokio::test]
+async fn subtitle_serving_extracted_ass_serves_raw_text_plain() {
+    let (app, cookie, repo, data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "extract-ass-1",
+        "mkv-with-ass.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let ass_body = b"[Script Info]\nTitle: Test\n";
+    let sub_dir = data_dir.join("extracted-subs").join(&vid);
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    let ass_path = sub_dir.join("track-ass.ass");
+    std::fs::write(&ass_path, ass_body).unwrap();
+
+    let track_id = "extract-ass-track";
+    seed_extracted_subtitle(
+        &repo,
+        &vid,
+        track_id,
+        3,
+        Some("en"),
+        "mkv-with-ass.ass",
+        "ass",
+        &ass_path.to_string_lossy(),
+    )
+    .await;
+
+    let (status, bytes, content_type) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/{track_id}"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("text/plain"));
+    assert_eq!(
+        bytes, ass_body,
+        "ASS body should be served raw (no conversion)"
+    );
+}
+
+/// An extracted SRT track reads from disk and applies the same SRT→WebVTT
+/// conversion as sidecar SRT — the extraction path is transparent to the
+/// format rule.
+#[tokio::test]
+async fn subtitle_serving_extracted_srt_converts_to_vtt() {
+    let (app, cookie, repo, data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "extract-srt-1",
+        "mkv-with-srt.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let srt_body = b"1\n00:00:01,000 --> 00:00:03,000\nHello\n";
+    let sub_dir = data_dir.join("extracted-subs").join(&vid);
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    let srt_path = sub_dir.join("track-srt.srt");
+    std::fs::write(&srt_path, srt_body).unwrap();
+
+    let track_id = "extract-srt-track";
+    seed_extracted_subtitle(
+        &repo,
+        &vid,
+        track_id,
+        2,
+        None,
+        "mkv-with-srt.srt",
+        "srt",
+        &srt_path.to_string_lossy(),
+    )
+    .await;
+
+    let (status, bytes, content_type) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/{track_id}"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type.as_deref(), Some("text/vtt"));
+    let vtt = String::from_utf8_lossy(&bytes);
+    assert!(vtt.starts_with("WEBVTT"), "extracted SRT → VTT conversion");
+    assert!(
+        !vtt.contains("--> 00:00:03,000"),
+        "comma timestamps replaced with dots"
+    );
+}
+
+/// A deleted extracted file (the path in the DB no longer exists on disk)
+/// returns 404 — not a 500 crash. Happens when the cache is cleared out of
+/// band while the DB row lingers.
+#[tokio::test]
+async fn subtitle_serving_extracted_missing_file_returns_404() {
+    let (app, cookie, repo, _data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "extract-missing-1",
+        "mkv-missing-sub.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let track_id = "extract-missing-track";
+    seed_extracted_subtitle(
+        &repo,
+        &vid,
+        track_id,
+        1,
+        None,
+        "phantom.ass",
+        "ass",
+        "/nonexistent/extracted-subs/phantom.ass",
+    )
+    .await;
+
+    let (status, _bytes, _content_type) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/{track_id}"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A sidecar ASS track fetches bytes from the provider (same pipeline as
+/// SRT/VTT sidecars) but serves them raw as `text/plain` — the format drives
+/// the Content-Type, not the fetch path.
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn subtitle_serving_sidecar_ass_returns_text_plain() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "gd-sidecar-ass",
+        "styled.mp4",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    let track_id = seed_subtitle(
+        &repo,
+        &vid,
+        &conn,
+        "gd-ass-sidecar",
+        Some("en"),
+        "styled.en.ass",
+        "ass",
+    )
+    .await;
+
+    let (status, bytes, content_type) = get_thumbnail_bytes(
+        app,
+        &format!("/api/videos/{vid}/subtitles/{track_id}"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        content_type.as_deref(),
+        Some("text/plain"),
+        "ASS sidecar should be served as text/plain, not text/vtt"
+    );
+    assert!(!bytes.is_empty(), "raw provider bytes served");
+}
+
 // ── /stream-url endpoint (T12) ─────────────────────────────────────────
 //
 // The endpoint tells the frontend where to fetch video bytes: a direct

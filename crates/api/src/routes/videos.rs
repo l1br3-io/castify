@@ -1483,35 +1483,82 @@ pub async fn list_subtitles(
     Ok(Json(tracks))
 }
 
-/// `GET /api/videos/{id}/subtitles/{track_id}` — serve a subtitle track as
-/// WebVTT. `.srt` files are converted on the fly (FR-6.2, FR-6.3). The
-/// subtitle content is fetched from the provider via the same
-/// connection/token/factory pipeline as the stream proxy, with 401-refresh
-/// retry (FR-6.4).
+/// `GET /api/videos/{id}/subtitles/{track_id}` — serve a subtitle track,
+/// routing by `format_family` + `format` instead of a single `if format ==
+/// "srt"` branch (M8 Task 003).
+///
+/// **Fetch path** branches on `extracted_path`:
+/// - `Some(path)` → extracted-embedded track. Read bytes from disk; no
+///   provider round-trip. A missing file (cache cleared out of band) → 404.
+/// - `None` → sidecar track. Fetch via the provider pipeline with 401-refresh
+///   retry (same as M3).
+///
+/// **Format rule** (applied identically to both paths — the extraction path
+/// is transparent to the conversion):
+/// - `srt` → convert to WebVTT, `Content-Type: text/vtt` (FR-6.3).
+/// - `vtt` → serve as-is, `Content-Type: text/vtt`.
+/// - `ass`/`ssa` → serve raw, `Content-Type: text/plain` (libass.js in Task
+///   004 consumes the raw ASS source — the browser must not re-interpret it
+///   as WebVTT).
 pub async fn get_subtitle_track(
     State(state): State<AppState>,
     Path((id, track_id)): Path<(String, String)>,
 ) -> ApiResult<Response> {
     let repo = state.catalog_repository();
-    let (track, connection_id, provider_file_id) = repo
+    let (track, connection_id, provider_file_id, extracted_path) = repo
         .fetch_subtitle_track(&id, &track_id)
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bytes =
-        fetch_subtitle_content_with_refresh(&state, &connection_id, &provider_file_id).await?;
-
-    let content = if track.format == "srt" {
-        srt_to_vtt(&String::from_utf8_lossy(&bytes))
+    // GOTCHA: extracted tracks have NULL provider_file_id — never call the
+    // provider fetch path for them. The branch below is the only thing
+    // preventing a NULL-deref into the provider pipeline; extracting it
+    // without preserving the `extracted_path` check would 500 every
+    // extracted-text request.
+    let bytes = if let Some(path) = extracted_path.as_deref() {
+        match tokio::fs::read(path).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!(track_id = %track.id, %path, "extracted subtitle file missing");
+                return Err(ApiError::NotFound);
+            }
+            Err(e) => return Err(ApiError::Internal(e.into())),
+        }
     } else {
-        String::from_utf8_lossy(&bytes).into_owned()
+        let connection_id = connection_id.as_deref().ok_or(ApiError::NotFound)?;
+        let provider_file_id = provider_file_id.as_deref().ok_or(ApiError::NotFound)?;
+        fetch_subtitle_content_with_refresh(&state, connection_id, provider_file_id).await?
     };
+
+    let content = render_subtitle(&track.format, &bytes);
+    let content_type = subtitle_content_type(&track.format);
 
     let mut resp = Response::new(Body::from(content));
     *resp.status_mut() = StatusCode::OK;
     resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/vtt"));
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     Ok(resp)
+}
+
+/// Render subtitle bytes for serving. SRT is converted to WebVTT (FR-6.3);
+/// every other format is passed through raw — ASS/SSA styling is consumed
+/// client-side by libass.js (Task 004), and VTT needs no conversion.
+fn render_subtitle(format: &str, bytes: &[u8]) -> String {
+    if format == "srt" {
+        srt_to_vtt(&String::from_utf8_lossy(bytes))
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Content-Type for a served subtitle, keyed by `format`. SRT is served as
+/// VTT (post-conversion); ASS/SSA is served as `text/plain` so the browser
+/// doesn't try to parse it as WebVTT — libass.js reads the raw source.
+fn subtitle_content_type(format: &str) -> &'static str {
+    match format {
+        "ass" | "ssa" => "text/plain",
+        _ => "text/vtt",
+    }
 }
 
 /// Resolve connection → token → factory, then call
