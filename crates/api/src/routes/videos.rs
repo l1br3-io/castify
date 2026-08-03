@@ -495,7 +495,7 @@ pub async fn get_download(
 /// Resolve video → connection → token → factory, then call
 /// `provider.open_stream(file_id, range)` with a single token-refresh retry
 /// on 401. Mirrors `fetch_thumbnail_with_refresh`.
-async fn open_stream_with_refresh(
+pub(crate) async fn open_stream_with_refresh(
     state: &AppState,
     info: &VideoStreamInfo,
     range: Option<&str>,
@@ -995,7 +995,7 @@ async fn resolve_stream_url_with_refresh(
 }
 
 /// Fetch `VideoStreamInfo` from the DB, 404 if not found.
-async fn resolve_stream_info(state: &AppState, id: &str) -> ApiResult<VideoStreamInfo> {
+pub(crate) async fn resolve_stream_info(state: &AppState, id: &str) -> ApiResult<VideoStreamInfo> {
     state
         .catalog_repository()
         .fetch_video_stream_info(id)

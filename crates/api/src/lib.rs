@@ -3,6 +3,7 @@ pub mod auth;
 pub mod cookies;
 pub mod dto;
 pub mod error;
+pub mod local_source;
 pub mod middleware;
 pub mod routes;
 pub mod shutdown;

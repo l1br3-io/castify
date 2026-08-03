@@ -26,6 +26,10 @@ struct AppStateInner {
     oauth_store: OAuthStateStore,
     session_secret: SessionSecret,
     provider_registry: ProviderRegistry,
+    /// Per-video coordination map for local source resolution (M8 Task 005).
+    /// Dedupes concurrent downloads to `transcode-work/` for embedded-text
+    /// extraction and burn-in transcoding. One entry per video ever resolved.
+    local_source_registry: crate::local_source::LocalSourceRegistry,
     /// Hot-video disk cache (M4). `None` when `CASTIFY_VIDEO_CACHE_ENABLED=false`.
     /// When `Some`, the `/stream` handler tee's response bytes to disk and
     /// `get_stream_url` returns `Cached` strategy for cache hits.
@@ -69,6 +73,7 @@ impl AppState {
                 oauth_store,
                 session_secret,
                 provider_registry,
+                local_source_registry: crate::local_source::LocalSourceRegistry::new(),
                 video_cache: if video_cache_enabled {
                     match futures::executor::block_on(DiskCache::new(&video_cache_dir)) {
                         Ok(cache) => {
@@ -134,6 +139,11 @@ impl AppState {
     /// (`CASTIFY_VIDEO_CACHE_ENABLED=false`).
     pub fn video_cache(&self) -> Option<&Arc<DiskCache>> {
         self.inner.video_cache.as_ref()
+    }
+
+    /// Per-video coordination map for local source resolution (M8 Task 005).
+    pub fn local_source_registry(&self) -> &crate::local_source::LocalSourceRegistry {
+        &self.inner.local_source_registry
     }
 
     /// Resolve a provider factory for the given provider. Under the `e2e`
