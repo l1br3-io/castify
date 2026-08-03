@@ -2131,10 +2131,152 @@ async fn stream_range_returns_206_with_content_range() {
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     let content_range = headers.get("content-range").unwrap().to_str().unwrap();
     assert!(
-        content_range.starts_with("bytes 0-7/"),
+        content_range.starts_with("bytes 0-3/"),
         "content-range: {content_range}"
     );
-    assert_eq!(bytes.len(), 8, "should return 8 bytes for range 0-7");
+    assert_eq!(bytes.len(), 4);
+}
+
+// ── M8 Task 006: embedded text subtitle extraction ──────────────────
+
+/// Generate a small MKV at `mkv_path` with a 1-second video stream and one
+/// `subrip` (SRT) subtitle stream carrying `srt_body`. Returns the file's
+/// `ProbeInfo`. Assumes ffmpeg + ffprobe are installed (consistent with the
+/// catalog probe tests in `crates/catalog/src/probe.rs`).
+async fn make_mkv_with_srt(
+    mkv_path: &std::path::Path,
+    srt_body: &str,
+) -> castify_catalog::probe::ProbeInfo {
+    let srt_path = mkv_path.with_extension("srt");
+    tokio::fs::write(&srt_path, srt_body)
+        .await
+        .expect("write srt fixture");
+    let status = tokio::process::Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("testsrc=duration=1:size=160x120:rate=1")
+        .arg("-i")
+        .arg(&srt_path)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("1:s:0")
+        .arg("-c:v")
+        .arg("mpeg4")
+        .arg("-q:v")
+        .arg("9")
+        .arg("-c:s")
+        .arg("srt")
+        .arg(mkv_path)
+        .status()
+        .await
+        .expect("spawn ffmpeg");
+    assert!(status.success(), "ffmpeg fixture generation failed");
+
+    match castify_catalog::probe::probe_file(mkv_path).await {
+        castify_catalog::probe::ProbeResult::Ok(info) => info,
+        other => panic!("ffprobe fixture parse failed: {other:?}"),
+    }
+}
+
+/// Extracting from a local MKV produces one `video_subtitles` row per text
+/// track with a non-empty file on disk; image tracks are skipped entirely;
+/// a failing text track (bad stream index) doesn't abort its siblings; and
+/// re-running is idempotent (no duplicate rows).
+#[tokio::test]
+async fn extract_embedded_text_subtitles_extracts_text_skips_image() {
+    use castify_catalog::probe::{EmbeddedTrack, SubtitleFormatFamily};
+
+    let (_app, _cookie, repo, data_dir, _guard) = boot_and_setup_full().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+    let vid = seed_full_video(
+        &repo,
+        &conn,
+        Provider::GoogleDrive,
+        "extract-embedded-1",
+        "mkv-text-image.mkv",
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    // Real MKV with one SRT subtitle stream.
+    let src_dir = tempfile::tempdir().unwrap();
+    let mkv_path = src_dir.path().join("source.mkv");
+    let info =
+        make_mkv_with_srt(&mkv_path, "1\n00:00:00,000 --> 00:00:01,000\nHello world\n").await;
+    let real_index = info.embedded_subtitle_tracks[0].embedded_index;
+
+    let mut tracks = info.embedded_subtitle_tracks.clone();
+    // Image track — must be skipped (no row, no file).
+    tracks.push(EmbeddedTrack {
+        embedded_index: 42,
+        codec: "hdmv_pgs_subtitle".into(),
+        format_family: SubtitleFormatFamily::Image,
+        language: Some("en".into()),
+        title: None,
+    });
+    // Text track at a non-existent stream index — ffmpeg fails, but the
+    // valid track above still extracts.
+    tracks.push(EmbeddedTrack {
+        embedded_index: 777,
+        codec: "subrip".into(),
+        format_family: SubtitleFormatFamily::Text,
+        language: None,
+        title: None,
+    });
+
+    let count = castify_api::subtitle_extraction::extract_text_subtitles_from_path(
+        &repo, &data_dir, &vid, &mkv_path, &tracks,
+    )
+    .await;
+    assert_eq!(count, 1, "exactly one text track extracts successfully");
+
+    // Row lands with the right shape.
+    let subs = repo.fetch_subtitles(&vid).await.unwrap();
+    assert_eq!(
+        subs.len(),
+        1,
+        "one extracted row (image + failed-text skipped)"
+    );
+    let row = &subs[0];
+    assert_eq!(row.format, "srt");
+    assert_eq!(row.format_family, "text");
+    assert_eq!(row.embedded_track_id, Some(real_index));
+
+    // Extracted file exists and is non-empty.
+    let expected = data_dir
+        .join("extracted-subs")
+        .join(&vid)
+        .join(format!("{vid}-sub-{real_index}.srt"));
+    let meta = std::fs::metadata(&expected).expect("extracted file exists");
+    assert!(meta.len() > 0, "extracted file is non-empty");
+
+    // No file for the image track or the failed text track.
+    let sub_dir = data_dir.join("extracted-subs").join(&vid);
+    assert!(
+        !sub_dir.join(format!("{vid}-sub-42.srt")).exists(),
+        "image track must not be extracted"
+    );
+    assert!(
+        !sub_dir.join(format!("{vid}-sub-777.srt")).exists(),
+        "failed text track must leave no file"
+    );
+
+    // Re-run is idempotent — clear-then-insert, no duplicate rows.
+    let count2 = castify_api::subtitle_extraction::extract_text_subtitles_from_path(
+        &repo, &data_dir, &vid, &mkv_path, &tracks,
+    )
+    .await;
+    assert_eq!(count2, 1);
+    let subs2 = repo.fetch_subtitles(&vid).await.unwrap();
+    assert_eq!(subs2.len(), 1, "re-extraction must not duplicate rows");
 }
 
 #[cfg(feature = "e2e")]

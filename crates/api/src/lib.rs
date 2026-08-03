@@ -9,6 +9,7 @@ pub mod routes;
 pub mod shutdown;
 pub mod spa;
 pub mod state;
+pub mod subtitle_extraction;
 pub mod tracing_init;
 pub mod transcode;
 

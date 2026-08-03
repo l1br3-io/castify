@@ -830,6 +830,14 @@ fn spawn_lazy_probe(state: &AppState, info: &VideoStreamInfo) {
                         )
                         .await;
                 }
+
+                // M8 Task 006: extract embedded text subtitle tracks to disk
+                // and upsert into `video_subtitles`. Best-effort — per-track
+                // failures are logged and never mark the probe failed.
+                crate::subtitle_extraction::extract_embedded_text_subtitles(
+                    &state, &video_id, &info,
+                )
+                .await;
             }
             probe::ProbeResult::NeedsMoreBytes => {
                 tracing::info!(%video_id, "probe needs more bytes; marking");

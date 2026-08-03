@@ -993,6 +993,58 @@ impl CatalogRepository {
         Ok(())
     }
 
+    /// Clear extracted-embedded subtitle rows for a video (those with
+    /// `provider_file_id IS NULL`). Used before re-extracting on re-probe so
+    /// the operation is idempotent. Sidecar rows (`provider_file_id` non-NULL)
+    /// are untouched.
+    pub async fn clear_extracted_subtitles(&self, video_id: &str) -> CatalogResult<()> {
+        sqlx::query(
+            "DELETE FROM video_subtitles WHERE video_id = ? AND provider_file_id IS NULL",
+        )
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Insert an extracted-embedded text subtitle track. `provider_file_id` is
+    /// NULL — the bytes live on local disk at `extracted_path`, not at the
+    /// provider, so the serving layer reads from disk and never calls the
+    /// provider. `format_family` is fixed at `'text'` (image tracks are never
+    /// extracted; they stay muxed for burn-in).
+    ///
+    /// Idempotency is clear-then-insert (see [`clear_extracted_subtitles`]):
+    /// SQLite can't target an expressional unique index with `ON CONFLICT`,
+    /// so the caller clears the video's extracted rows before inserting.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_extracted_subtitle(
+        &self,
+        id: &str,
+        video_id: &str,
+        embedded_track_id: i64,
+        language: Option<&str>,
+        filename: &str,
+        format: &str,
+        extracted_path: &str,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT INTO video_subtitles \
+             (id, video_id, connection_id, provider_file_id, embedded_track_id, \
+              language, filename, format, format_family, extracted_path) \
+             VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, 'text', ?)",
+        )
+        .bind(id)
+        .bind(video_id)
+        .bind(embedded_track_id)
+        .bind(language)
+        .bind(filename)
+        .bind(format)
+        .bind(extracted_path)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Fetch a single subtitle track with serving metadata.
     ///
     /// Returns `(track, connection_id, provider_file_id, extracted_path)`.
