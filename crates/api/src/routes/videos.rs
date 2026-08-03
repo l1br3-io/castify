@@ -1951,7 +1951,9 @@ pub async fn get_transcode_master(
     );
 
     // Ensure a transcode worker is running for the pre-compute variant.
-    ensure_transcode_started(&state, &id, &stream_info, precompute.name).await?;
+    // M8 Task 007: pass `None` for the burn dimension here — Task 009 wires
+    // the `?burn_subtitles=` query param at this call site.
+    ensure_transcode_started(&state, &id, &stream_info, precompute.name, None).await?;
 
     // Build master playlist from the current cache state.
     let entries = state
@@ -2014,6 +2016,30 @@ async fn fetch_video_height(state: &AppState, video_id: &str) -> Option<u32> {
         .map(|h| h as u32)
 }
 
+/// Optional `?burn_subtitles=<track_id>` query parameter accepted by the
+/// transcode playlist + segment endpoints. When present, the handler
+/// derives a burned profile (`DEFAULT_PROFILE+subs-{id}`) so the request
+/// resolves to the burned cache row + output directory. When absent or
+/// empty, behavior is unchanged from M7 (unburned).
+///
+/// Task 009 wires the same parameter at the master-playlist level with
+/// format-family validation; this struct carries the dimension through
+/// the variant/segment handlers without policy (the track's existence and
+/// `format_family` are validated upstream by Task 009's master handler).
+#[derive(Debug, Default, Deserialize)]
+pub struct BurnSubtitlesQuery {
+    pub burn_subtitles: Option<String>,
+}
+
+impl BurnSubtitlesQuery {
+    /// Return the burn dimension as a non-empty `&str`, or `None`. Treats
+    /// an empty string (`?burn_subtitles=`) as "no burn" so a malformed
+    /// URL doesn't synthesize a `+subs-` profile suffix.
+    fn track_id(&self) -> Option<&str> {
+        self.burn_subtitles.as_deref().filter(|s| !s.is_empty())
+    }
+}
+
 /// `GET /api/videos/{id}/transcode/{variant}/playlist.m3u8` — variant HLS
 /// playlist. Lists segments that are ready.
 ///
@@ -2027,17 +2053,25 @@ async fn fetch_video_height(state: &AppState, video_id: &str) -> Option<u32> {
 ///   `ensure_transcode_started`, then return 404 + `Retry-After: 3`. hls.js
 ///   retries per its ABR logic; the next request finds the playlist once the
 ///   first segment lands.
+///
+/// **M8 Task 007:** `?burn_subtitles=<track_id>` selects the burned variant
+/// — the derived profile (`DEFAULT_PROFILE+subs-{id}`) routes to a distinct
+/// cache row and output directory. Without the param, the unburned M7 path
+/// is unchanged.
 pub async fn get_transcode_playlist(
     State(state): State<AppState>,
     Path((id, variant)): Path<(String, String)>,
+    Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
     }
 
+    let subtitle_track_id = burn.track_id();
+    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+
     let repo = state.catalog_repository();
-    let profile = crate::transcode::DEFAULT_PROFILE;
-    let entry = repo.fetch_transcode_entry(&id, &variant, profile).await?;
+    let entry = repo.fetch_transcode_entry(&id, &variant, &profile).await?;
 
     // Failed variant → 503 with the last error.
     if let Some(e) = entry.as_ref() {
@@ -2057,10 +2091,10 @@ pub async fn get_transcode_playlist(
         // (no-op if already running) and fall through to the playlist read.
         // If the playlist file isn't there yet, we'll return 404 below.
         let stream_info = resolve_stream_info(&state, &id).await?;
-        ensure_transcode_started(&state, &id, &stream_info, &variant).await?;
+        ensure_transcode_started(&state, &id, &stream_info, &variant, subtitle_track_id).await?;
     }
 
-    let dir = transcode_output_dir(&state, &id, &variant);
+    let dir = transcode_output_dir(&state, &id, &variant, &profile);
     if let Some(playlist_content) = crate::transcode::read_playlist(&dir).await {
         let mut resp = Response::new(Body::from(playlist_content));
         *resp.status_mut() = StatusCode::OK;
@@ -2086,9 +2120,14 @@ pub async fn get_transcode_playlist(
 /// `GET /api/videos/{id}/transcode/{variant}/{segment}` — serve a .ts
 /// segment file from disk. Returns 404 if segment not ready yet (client
 /// retries per hls.js logic).
+///
+/// **M8 Task 007:** `?burn_subtitles=<track_id>` selects the burned
+/// variant's segments — the derived profile routes to the burned output
+/// directory and touches the burned manifest row.
 pub async fn get_transcode_segment(
     State(state): State<AppState>,
     Path((id, variant, segment)): Path<(String, String, String)>,
+    Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
@@ -2099,7 +2138,10 @@ pub async fn get_transcode_segment(
         return Err(ApiError::NotFound);
     }
 
-    let dir = transcode_output_dir(&state, &id, &variant);
+    let subtitle_track_id = burn.track_id();
+    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+
+    let dir = transcode_output_dir(&state, &id, &variant, &profile);
     let segment_path = dir.join(&segment);
 
     match tokio::fs::read(&segment_path).await {
@@ -2109,7 +2151,7 @@ pub async fn get_transcode_segment(
             // already in hand.
             let _ = state
                 .catalog_repository()
-                .touch_transcode(&id, &variant, crate::transcode::DEFAULT_PROFILE)
+                .touch_transcode(&id, &variant, &profile)
                 .await;
 
             let mut resp = Response::new(Body::from(bytes));
@@ -2128,15 +2170,24 @@ pub async fn get_transcode_segment(
     }
 }
 
-/// Build the output directory path for a (video_id, variant) transcode.
-fn transcode_output_dir(state: &AppState, video_id: &str, variant: &str) -> std::path::PathBuf {
+/// Build the output directory path for a (video_id, variant, profile)
+/// transcode. The profile is the third path component so burned and
+/// unburned transcodes of the same variant land in separate directories
+/// (the profile suffix `+subs-{track_id}` is what disambiguates them —
+/// see [`crate::transcode::burn_profile`]).
+fn transcode_output_dir(
+    state: &AppState,
+    video_id: &str,
+    variant: &str,
+    profile: &str,
+) -> std::path::PathBuf {
     state
         .config()
         .transcode
         .dir
         .join(video_id)
         .join(variant)
-        .join(crate::transcode::DEFAULT_PROFILE)
+        .join(profile)
 }
 
 /// Process-level registry of active transcodes. Keyed by
@@ -2161,16 +2212,28 @@ fn transcode_registry(
 /// `transcode_cache_entries`; a spawned watcher task updates the row to
 /// `in_progress` → `completed`/`failed` as ffmpeg runs. On resume (segments
 /// exist but no in-memory handle), seeds a `completed` row if missing.
+///
+/// **M8 Task 007 burn keying:** `subtitle_track_id` carries the burn
+/// dimension. When `Some`, the profile becomes `DEFAULT_PROFILE+subs-{id}`
+/// via [`crate::transcode::burn_profile`], the registry key gains the
+/// derived profile as a third component, and all repo calls
+/// (`fetch_transcode_entry`, `insert_pending_transcode`, `touch_transcode`,
+/// …) use the derived profile. The ffmpeg invocation itself is unchanged
+/// here — Task 008 flips the actual burn filter. This keeps the keying
+/// change testable in isolation: a burn request resolves to a distinct
+/// cache row and registry slot even though the segments produced are
+/// currently identical to the unburned path.
 async fn ensure_transcode_started(
     state: &AppState,
     video_id: &str,
     stream_info: &VideoStreamInfo,
     variant: &str,
+    subtitle_track_id: Option<&str>,
 ) -> ApiResult<()> {
     let registry = transcode_registry();
 
-    let key = format!("{video_id}:{variant}");
-    let profile = crate::transcode::DEFAULT_PROFILE;
+    let key = crate::transcode::transcode_registry_key(video_id, variant, subtitle_track_id);
+    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
     let repo = state.catalog_repository().clone();
 
     let mut guard = registry.lock().await;
@@ -2190,7 +2253,7 @@ async fn ensure_transcode_started(
     // Check if segments already exist on disk (completed transcode from
     // a previous server session, or M6→M7 migration where the manifest
     // wasn't wired yet).
-    let output_dir = transcode_output_dir(state, video_id, variant);
+    let output_dir = transcode_output_dir(state, video_id, variant, &profile);
     let existing_segments =
         crate::transcode::count_segments(&output_dir).await;
     if existing_segments > 0 {
@@ -2206,7 +2269,7 @@ async fn ensure_transcode_started(
         let entry = NewTranscodeEntry {
             video_id,
             variant,
-            profile,
+            profile: &profile,
             output_dir: &output_dir.to_string_lossy(),
             segment_duration_secs: state.config().transcode.segment_duration_secs,
             bitrate: None,
@@ -2230,7 +2293,7 @@ async fn ensure_transcode_started(
     let entry = NewTranscodeEntry {
         video_id,
         variant,
-        profile,
+        profile: &profile,
         output_dir: &output_dir.to_string_lossy(),
         segment_duration_secs: state.config().transcode.segment_duration_secs,
         bitrate: crate::transcode::variant_target_bitrate(variant),
@@ -2266,7 +2329,7 @@ async fn ensure_transcode_started(
         Arc::clone(&handle),
         video_id.to_string(),
         variant.to_string(),
-        profile.to_string(),
+        profile.clone(),
         output_dir.clone(),
     );
 
@@ -2347,6 +2410,12 @@ fn spawn_transcode_manifest_watcher(
 /// marks the manifest rows `failed` with `last_error = 'cancelled'`.
 /// Returns 204 even if nothing was running (idempotent), so the client can
 /// retry safely. Auth + CSRF required.
+///
+/// **M8 Task 007:** the registry key is now `{video_id}:{variant}:{profile}`
+/// (the profile component carries the burn dimension). Cancelling all
+/// transcodes for a video iterates every matching key and extracts both
+/// variant and profile so the correct manifest row is marked failed —
+/// burned and unburned variants are cancelled together.
 pub async fn cancel_transcode(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2356,10 +2425,10 @@ pub async fn cancel_transcode(
     }
 
     let registry = transcode_registry();
-    let profile = crate::transcode::DEFAULT_PROFILE;
     let repo = state.catalog_repository().clone();
 
-    // Snapshot of keys to cancel (all variants for this video).
+    // Snapshot of keys to cancel (all variants — burned and unburned — for
+    // this video).
     let prefix = format!("{id}:");
     let mut guard = registry.lock().await;
     let keys_to_cancel: Vec<String> = guard
@@ -2378,14 +2447,19 @@ pub async fn cancel_transcode(
             drop(child_guard);
         }
         // Mark the manifest row failed for every variant we cancelled.
-        // `key` is `{video_id}:{variant}` — split on the first `:`.
-        if let Some(variant) = key.split_once(':').map(|(_, v)| v) {
-            if let Err(e) = repo
-                .mark_transcode_failed(&id, variant, profile, "cancelled by user")
-                .await
-            {
-                tracing::warn!(error = %e, %key, "failed to mark cancelled manifest row");
-            }
+        // `key` is `{video_id}:{variant}:{profile}` — split into exactly 3
+        // parts so variant and profile are extracted correctly (the profile
+        // component is what disambiguates burned from unburned rows).
+        let mut parts = key.splitn(3, ':');
+        let (Some(variant), Some(profile)) = (parts.nth(1), parts.next()) else {
+            tracing::warn!(%key, "cancel_transcode: malformed registry key, skipping manifest mark");
+            continue;
+        };
+        if let Err(e) = repo
+            .mark_transcode_failed(&id, variant, profile, "cancelled by user")
+            .await
+        {
+            tracing::warn!(error = %e, %key, "failed to mark cancelled manifest row");
         }
     }
 

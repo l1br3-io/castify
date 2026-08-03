@@ -60,6 +60,43 @@ pub fn variant_target_height(variant: &str) -> Option<u32> {
     castify_core::lookup_rung(variant).map(|r| r.target_height)
 }
 
+/// Derive the transcode profile string for a (base profile, optional burn
+/// subtitle) pair. `None` returns `base` unchanged; `Some(id)` returns
+/// `{base}+subs-{id}`. The `+subs-{id}` suffix is what keeps burned and
+/// unburned transcodes in distinct `transcode_cache_entries` rows (the PK
+/// is `(video_id, variant, profile)`) and distinct on-disk output
+/// directories, so the two coexist independently (spec FR-7.3) and the
+/// LRU treats them as separate entries (FR-7.4).
+///
+/// **GOTCHA:** burned and unburned transcodes share a worker pool but must
+/// not share a cache row — the profile suffix is what keeps them distinct.
+/// Never collapse the profile back to `DEFAULT_PROFILE` for a burn request.
+pub fn burn_profile(base: &str, subtitle_track_id: Option<&str>) -> String {
+    match subtitle_track_id {
+        Some(id) => format!("{base}+subs-{id}"),
+        None => base.to_string(),
+    }
+}
+
+/// Build the in-memory `TRANSCODE_REGISTRY` key for a (video, variant,
+/// burn) triple. The registry deduplicates concurrent requests for the
+/// same transcode into one ffmpeg process. Adding the derived profile as
+/// a third component means a burn request and an unburned request for the
+/// same video+variant no longer collapse into a single worker — they run
+/// as independent ffmpeg processes writing to separate output directories.
+///
+/// The key is parseable by `cancel_transcode` via `splitn(3, ':')`: video
+/// ids never contain `:`, and profile strings contain only `-`, `+`, and
+/// word chars.
+pub fn transcode_registry_key(
+    video_id: &str,
+    variant: &str,
+    subtitle_track_id: Option<&str>,
+) -> String {
+    let profile = burn_profile(DEFAULT_PROFILE, subtitle_track_id);
+    format!("{video_id}:{variant}:{profile}")
+}
+
 /// Errors returned by the transcode pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodeError {
@@ -555,5 +592,65 @@ mod tests {
         let playlist = build_master_playlist(&entries);
         // Falls back to rung target 3,000,000.
         assert!(playlist.contains("BANDWIDTH=3000000"));
+    }
+
+    // ── burn_profile + transcode_registry_key (M8 Task 007) ──────────
+
+    #[test]
+    fn burn_profile_returns_base_for_none() {
+        assert_eq!(
+            burn_profile("h264-high-40-aac128-cpu", None),
+            "h264-high-40-aac128-cpu"
+        );
+    }
+
+    #[test]
+    fn burn_profile_appends_subs_suffix_for_some() {
+        assert_eq!(
+            burn_profile("h264-high-40-aac128-cpu", Some("vid-sub-3")),
+            "h264-high-40-aac128-cpu+subs-vid-sub-3"
+        );
+    }
+
+    #[test]
+    fn burn_profile_with_default_profile_none_is_default_unchanged() {
+        assert_eq!(burn_profile(DEFAULT_PROFILE, None), DEFAULT_PROFILE);
+    }
+
+    #[test]
+    fn transcode_registry_key_unburned_carries_default_profile_component() {
+        let key = transcode_registry_key("vid1", "720p", None);
+        assert_eq!(key, format!("vid1:720p:{DEFAULT_PROFILE}"));
+    }
+
+    #[test]
+    fn transcode_registry_key_burned_includes_subs_profile_suffix() {
+        let key = transcode_registry_key("vid1", "720p", Some("track-7"));
+        assert!(
+            key.contains("+subs-track-7"),
+            "key missing burn suffix: {key}"
+        );
+        assert_eq!(
+            key,
+            format!("vid1:720p:{DEFAULT_PROFILE}+subs-track-7")
+        );
+    }
+
+    #[test]
+    fn transcode_registry_key_burned_and_unburned_differ() {
+        // Core AC: same video+variant, one burned and one not, must
+        // resolve to distinct registry keys — and thus distinct cache rows
+        // and distinct ffmpeg processes.
+        let unburned = transcode_registry_key("vid1", "720p", None);
+        let burned = transcode_registry_key("vid1", "720p", Some("track-7"));
+        assert_ne!(unburned, burned);
+    }
+
+    #[test]
+    fn transcode_registry_key_distinct_burn_tracks_differ() {
+        // Two different burn targets must also dedupe separately.
+        let burn_a = transcode_registry_key("vid1", "720p", Some("track-a"));
+        let burn_b = transcode_registry_key("vid1", "720p", Some("track-b"));
+        assert_ne!(burn_a, burn_b);
     }
 }
