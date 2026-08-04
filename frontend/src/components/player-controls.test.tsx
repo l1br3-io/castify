@@ -22,12 +22,16 @@ function Harness({
   onNext,
   hasPrev = false,
   hasNext = false,
+  isTranscode = false,
+  onConfirmBurnSubtitle,
 }: {
   subtitleTracks?: SubtitleTrackDto[];
   onPrev?: () => void;
   onNext?: () => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  isTranscode?: boolean;
+  onConfirmBurnSubtitle?: (trackId: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -56,6 +60,8 @@ function Harness({
         onNext={onNext}
         hasPrev={hasPrev}
         hasNext={hasNext}
+        isTranscode={isTranscode}
+        onConfirmBurnSubtitle={onConfirmBurnSubtitle}
       />
     </div>
   );
@@ -267,29 +273,29 @@ describe("PlayerControls", () => {
       expect(
         screen.getByRole("menuitemradio", { name: "Off" }),
       ).toHaveAttribute("aria-checked", "true");
-      expect(screen.getByRole("menuitemradio", { name: "en" })).toHaveAttribute(
+      expect(screen.getByRole("menuitemradio", { name: "en (VTT)" })).toHaveAttribute(
         "aria-checked",
         "false",
       );
-      expect(screen.getByRole("menuitemradio", { name: "es" })).toHaveAttribute(
+      expect(screen.getByRole("menuitemradio", { name: "es (SRT)" })).toHaveAttribute(
         "aria-checked",
         "false",
       );
 
-      fireEvent.click(screen.getByRole("menuitemradio", { name: "en" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "en (VTT)" }));
       // Selecting closes the menu.
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
       // Re-open and verify selection persisted.
       fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-      expect(screen.getByRole("menuitemradio", { name: "en" })).toHaveAttribute(
+      expect(screen.getByRole("menuitemradio", { name: "en (VTT)" })).toHaveAttribute(
         "aria-checked",
         "true",
       );
       expect(
         screen.getByRole("menuitemradio", { name: "Off" }),
       ).toHaveAttribute("aria-checked", "false");
-      expect(screen.getByRole("menuitemradio", { name: "es" })).toHaveAttribute(
+      expect(screen.getByRole("menuitemradio", { name: "es (SRT)" })).toHaveAttribute(
         "aria-checked",
         "false",
       );
@@ -298,9 +304,9 @@ describe("PlayerControls", () => {
     it("'Off' clears the active selection", () => {
       render(<Harness subtitleTracks={TRACKS} />);
       fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-      fireEvent.click(screen.getByRole("menuitemradio", { name: "es" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "es (SRT)" }));
       fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-      expect(screen.getByRole("menuitemradio", { name: "es" })).toHaveAttribute(
+      expect(screen.getByRole("menuitemradio", { name: "es (SRT)" })).toHaveAttribute(
         "aria-checked",
         "true",
       );
@@ -342,7 +348,7 @@ describe("PlayerControls", () => {
       const tracks = stubTextTracks(video, TRACKS.length);
 
       fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-      fireEvent.click(screen.getByRole("menuitemradio", { name: "en" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "en (VTT)" }));
 
       expect(tracks[0].mode).toBe("showing");
       expect(tracks[1].mode).toBe("hidden");
@@ -355,7 +361,7 @@ describe("PlayerControls", () => {
 
       // Select a language first.
       fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-      fireEvent.click(screen.getByRole("menuitemradio", { name: "es" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "es (SRT)" }));
       expect(tracks[1].mode).toBe("showing");
 
       // Re-open and switch to Off.
@@ -831,6 +837,149 @@ describe("PlayerControls", () => {
         .slice(0, 3)
         .map((b) => b.getAttribute("aria-label"));
       expect(labels).toEqual(["Previous video", "Play", "Next video"]);
+    });
+  });
+
+  // ── M8 Task 010: subtitle format hints + burn-in flow ──────────────
+
+  describe("subtitle format hints + burn-in (M8 Task 010)", () => {
+    const TEXT_TRACKS: SubtitleTrackDto[] = [
+      { id: "s1", language: "en", filename: "a.en.vtt", format: "vtt", format_family: "text", embedded_track_id: null },
+      { id: "s2", language: "ja", filename: "a.ja.ass", format: "ass", format_family: "text", embedded_track_id: null },
+    ];
+    const IMAGE_TRACK: SubtitleTrackDto = {
+      id: "p1", language: "es", filename: "mkv.es.pgs", format: "pgs", format_family: "image", embedded_track_id: 2,
+    };
+
+    it("labels each menu item with a format hint", () => {
+      render(<Harness subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]} />);
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      expect(screen.getByRole("menuitemradio", { name: "en (VTT)" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitemradio", { name: "ja (ASS)" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitemradio", { name: "es (PGS — burned)" })).toBeInTheDocument();
+    });
+
+    it("clicking an image track during transcode shows the burn confirmation dialog", () => {
+      const onConfirm = vi.fn();
+      render(
+        <Harness
+          subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]}
+          isTranscode={true}
+          onConfirmBurnSubtitle={onConfirm}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+
+      expect(
+        screen.getByRole("dialog", { name: /burn/i }),
+      ).toBeInTheDocument();
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it("Cancel closes the dialog without changing the selection", () => {
+      const onConfirm = vi.fn();
+      render(
+        <Harness
+          subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]}
+          isTranscode={true}
+          onConfirmBurnSubtitle={onConfirm}
+        />,
+      );
+      // Open menu, click image track.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+      // Cancel.
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      // Dialog is gone.
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      // Selection stays Off — re-open menu to verify.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      expect(screen.getByRole("menuitemradio", { name: "Off" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it("confirming calls onConfirmBurnSubtitle with the track id and selects the track", () => {
+      const onConfirm = vi.fn();
+      const onActiveChange = vi.fn();
+      render(
+        <Harness
+          subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]}
+          isTranscode={true}
+          onConfirmBurnSubtitle={onConfirm}
+        />,
+      );
+      // We can't pass onActiveSubtitleChange through the Harness — verify
+      // via the selection state (aria-checked) instead.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+      expect(onConfirm).toHaveBeenCalledWith("p1");
+
+      // Selection is now on the PGS track.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      expect(
+        screen.getByRole("menuitemradio", { name: /PGS/ }),
+      ).toHaveAttribute("aria-checked", "true");
+      expect(onActiveChange).not.toHaveBeenCalled();
+    });
+
+    it("selecting a text track never shows the burn dialog", () => {
+      const onConfirm = vi.fn();
+      render(
+        <Harness
+          subtitleTracks={TEXT_TRACKS}
+          isTranscode={true}
+          onConfirmBurnSubtitle={onConfirm}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /VTT/ }));
+
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      // Text track is selected immediately.
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      expect(
+        screen.getByRole("menuitemradio", { name: /VTT/ }),
+      ).toHaveAttribute("aria-checked", "true");
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it("image track is disabled when not transcode (no burn possible)", () => {
+      render(<Harness subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]} />);
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      const pgsItem = screen.getByRole("menuitemradio", { name: /PGS/ });
+      expect(pgsItem).toBeDisabled();
+    });
+
+    it("does not persist image-track selection to IndexedDB (per-session only)", async () => {
+      const { saveSubtitlePref } = await import("../lib/player-db");
+      const mockSave = vi.mocked(saveSubtitlePref);
+      mockSave.mockClear();
+
+      render(
+        <Harness
+          subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]}
+          isTranscode={true}
+          onConfirmBurnSubtitle={vi.fn()}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+
+      // saveSubtitlePref should NOT have been called with the PGS track id.
+      const saveCalls = mockSave.mock.calls;
+      const pgsSaveCall = saveCalls.find(
+        ([, trackId]) => trackId === "p1",
+      );
+      expect(pgsSaveCall).toBeUndefined();
     });
   });
 });

@@ -24,7 +24,7 @@ import {
   VolumeMuteIcon,
 } from "./icons";
 import { formatTime } from "../lib/format";
-import { isAssFormat } from "../lib/subtitles";
+import { isAssFormat, isImageFamily, subtitleLabel } from "../lib/subtitles";
 import {
   getGlobalPrefs,
   getSubtitlePref,
@@ -68,6 +68,21 @@ type PlayerControlsProps = {
   /** Active level index, or -1 for Auto. `null` until hls.js reports one. */
   currentLevel?: number | null;
   onLevelChange?: (level: number) => void;
+  /**
+   * True when the stream strategy is `transcode` (M8 Task 010). When true,
+   * image-family subtitle tracks (PGS/VobSub) are selectable — clicking one
+   * shows the burn-in confirmation dialog before re-requesting the transcode
+   * with `?burn_subtitles=`. When false/omitted, image tracks render disabled
+   * (burn-in is impossible without a transcode pipeline).
+   */
+  isTranscode?: boolean;
+  /**
+   * Fired when the user confirms the burn-in dialog for an image-family
+   * track (M8 Task 010 FR-5.3). The watch page re-requests the master
+   * playlist with `?burn_subtitles={trackId}` appended. Optional: when
+   * omitted, image tracks are always disabled (no burn callback wired).
+   */
+  onConfirmBurnSubtitle?: (trackId: string) => void;
 };
 
 /** Inactivity delay before controls hide during playback. */
@@ -94,6 +109,8 @@ export function PlayerControls({
   levels,
   currentLevel,
   onLevelChange,
+  isTranscode = false,
+  onConfirmBurnSubtitle,
 }: PlayerControlsProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -106,6 +123,10 @@ export function PlayerControls({
   const [controlsVisible, setControlsVisible] = useState(true);
   const [activeSubtitle, setActiveSubtitle] = useState(-1);
   const [subtitlesOpen, setSubtitlesOpen] = useState(false);
+  // M8 Task 010: when non-null, the burn-in confirmation dialog is open
+  // for the image-family track at this index. The user must confirm before
+  // the selection applies and the parent re-requests the transcode.
+  const [pendingBurnIndex, setPendingBurnIndex] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [speedOpen, setSpeedOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
@@ -133,6 +154,13 @@ export function PlayerControls({
   const onActiveSubtitleChangeRef = useRef(onActiveSubtitleChange);
   useEffect(() => {
     onActiveSubtitleChangeRef.current = onActiveSubtitleChange;
+  });
+
+  // M8 Task 010: keep the latest onConfirmBurnSubtitle in a ref for the
+  // same reason — the confirm handler reads it without re-subscribing.
+  const onConfirmBurnSubtitleRef = useRef(onConfirmBurnSubtitle);
+  useEffect(() => {
+    onConfirmBurnSubtitleRef.current = onConfirmBurnSubtitle;
   });
 
   // --- Sync media state from the <video> element via event listeners ---
@@ -468,15 +496,53 @@ export function PlayerControls({
     }
   }
 
-  function selectSubtitle(index: number) {
+  // Image-family tracks can only render via server-side burn-in, which
+  // requires the transcode pipeline. When `isTranscode` is false (or no
+  // burn callback is wired), image tracks are disabled in the menu.
+  const burnEnabled = isTranscode && !!onConfirmBurnSubtitle;
+
+  function applySubtitleSelection(index: number) {
     setActiveSubtitle(index);
     setSubtitlesOpen(false);
     // Notify the watch page so an ASS selection routes to the libass canvas
     // overlay (and Off / a non-ASS track tears it down).
     onActiveSubtitleChangeRef.current?.(index);
-    // Persist per-video subtitle selection (null for "Off").
+    // Persist per-video subtitle selection (null for "Off"). Image-family
+    // tracks are NOT persisted — burn-in is per-session only (FR-5.4) and
+    // shouldn't restore on reload (there's no guarantee the transcode cache
+    // entry is still warm).
     const track = index >= 0 ? subtitleTracks[index] : null;
-    void saveSubtitlePref(videoId, track?.id ?? null);
+    if (!track || !isImageFamily(track)) {
+      void saveSubtitlePref(videoId, track?.id ?? null);
+    }
+  }
+
+  function selectSubtitle(index: number) {
+    const track = index >= 0 ? subtitleTracks[index] : null;
+    // Image-family tracks during transcode require burn confirmation (FR-5.2).
+    // Intercept the click and show the dialog instead of selecting immediately.
+    if (track && isImageFamily(track) && burnEnabled) {
+      setPendingBurnIndex(index);
+      setSubtitlesOpen(false);
+      return;
+    }
+    applySubtitleSelection(index);
+  }
+
+  function confirmBurn() {
+    if (pendingBurnIndex === null) return;
+    const track = subtitleTracks[pendingBurnIndex];
+    setPendingBurnIndex(null);
+    if (track) {
+      // Notify the watch page to re-request the master playlist with
+      // ?burn_subtitles={trackId} (Task 009).
+      onConfirmBurnSubtitleRef.current?.(track.id);
+    }
+    applySubtitleSelection(pendingBurnIndex);
+  }
+
+  function cancelBurn() {
+    setPendingBurnIndex(null);
   }
 
   function selectSpeed(rate: number) {
@@ -848,8 +914,9 @@ export function PlayerControls({
                     {subtitleTracks.map((track, i) => (
                       <SubtitleMenuItem
                         key={track.id}
-                        label={track.language ?? "Unknown"}
+                        label={subtitleLabel(track)}
                         selected={activeSubtitle === i}
+                        disabled={isImageFamily(track) && !burnEnabled}
                         onSelect={() => selectSubtitle(i)}
                       />
                     ))}
@@ -914,6 +981,43 @@ export function PlayerControls({
           </div>
         </div>
       )}
+
+      {/* M8 Task 010: Burn-in confirmation dialog (FR-5.2 / FR-5.3).
+          Shown when the user selects an image-family subtitle track during
+          transcode playback. Confirming re-requests the transcode with
+          `?burn_subtitles={trackId}`; cancelling leaves playback unchanged. */}
+      {pendingBurnIndex !== null && (
+        <div
+          role="dialog"
+          aria-label="Burn subtitles confirmation"
+          className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-sm rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-white shadow-xl">
+            <p className="text-sm text-white/80">
+              Subtitles will be burned into the video. Playback may restart.
+            </p>
+            <p className="mt-3 text-sm font-semibold">
+              Restart playback with burned subtitles?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelBurn}
+                className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmBurn}
+                className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -921,10 +1025,12 @@ export function PlayerControls({
 function SubtitleMenuItem({
   label,
   selected,
+  disabled = false,
   onSelect,
 }: {
   label: string;
   selected: boolean;
+  disabled?: boolean;
   onSelect: () => void;
 }) {
   return (
@@ -933,8 +1039,9 @@ function SubtitleMenuItem({
         type="button"
         role="menuitemradio"
         aria-checked={selected}
+        disabled={disabled}
         onClick={onSelect}
-        className={`block w-full px-3 py-1.5 text-left transition hover:bg-white/10 ${
+        className={`block w-full px-3 py-1.5 text-left transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
           selected ? "text-[var(--color-castify-accent)]" : "text-white"
         }`}
       >

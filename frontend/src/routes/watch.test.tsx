@@ -38,6 +38,55 @@ vi.mock("jassub", () => ({
   },
 }));
 
+// Mock hls.js (M8 Task 010) — the dynamic import inside useHlsStream
+// resolves to this spy-able class so transcode-strategy tests can assert on
+// the master URL (including the `?burn_subtitles=` param) without loading
+// the real hls.js bundle or needing MediaSource in jsdom.
+const hlsMock = vi.hoisted(() => ({
+  ctor: vi.fn(),
+  destroy: vi.fn(),
+  loadSource: vi.fn(),
+  attachMedia: vi.fn(),
+  on: vi.fn(),
+  isSupported: vi.fn(() => true),
+}));
+vi.mock("hls.js", () => ({
+  default: class MockHls {
+    static Events = {
+      MANIFEST_PARSED: "hlsManifestParsed",
+      LEVEL_SWITCHED: "hlsLevelSwitched",
+      ERROR: "hlsError",
+    };
+    static ErrorTypes = {
+      MEDIA_ERROR: "mediaError",
+      NETWORK_ERROR: "networkError",
+    };
+    static isSupported() {
+      return hlsMock.isSupported();
+    }
+    constructor(opts: unknown) {
+      hlsMock.ctor(opts);
+    }
+    loadSource(url: string) {
+      hlsMock.loadSource(url);
+    }
+    attachMedia(video: HTMLVideoElement) {
+      hlsMock.attachMedia(video);
+    }
+    on(event: string, cb: (...args: unknown[]) => void) {
+      hlsMock.on(event);
+      // Auto-fire MANIFEST_PARSED so useHlsStream flips isReady=true and
+      // the loading overlay doesn't block interaction with the player UI.
+      if (event === "hlsManifestParsed") {
+        cb({}, { levels: [] });
+      }
+    }
+    destroy() {
+      hlsMock.destroy();
+    }
+  },
+}));
+
 import { getProgress } from "../lib/player-db";
 
 const mockGetProgress = vi.mocked(getProgress);
@@ -1218,7 +1267,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
     await screen.findByRole("heading", { name: "cat.mp4" });
 
     fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
 
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
     expect(libassMock.ctor).toHaveBeenCalledWith(
@@ -1240,7 +1289,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
 
     // Select the ASS track first.
     fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
 
     // Then switch to Off.
@@ -1261,7 +1310,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
     await screen.findByRole("heading", { name: "cat.mp4" });
 
     fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "en" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "en (SRT)" }));
 
     // SRT renders via the native <track> mechanism — libass is never loaded.
     expect(libassMock.ctor).not.toHaveBeenCalled();
@@ -1281,7 +1330,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
 
     // Toggle ASS on.
     fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
 
     // Toggle ASS off.
@@ -1292,5 +1341,159 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
     // The underlying stream src is unchanged — toggling subtitles is purely
     // client-side and must not restart playback or re-fetch the stream.
     expect(video.getAttribute("src")).toBe(srcBefore);
+  });
+});
+
+// ── M8 Task 010 — Burn-in stream refetch ───────────────────────────────
+//
+// When the user selects an image-family subtitle track (PGS/VobSub) during
+// transcode playback, the watch page appends `?burn_subtitles={trackId}` to
+// the master playlist URL. useHlsStream re-attaches to the burned variant;
+// selecting "Off" removes the param and re-attaches to the unburned master.
+
+const PGS_TRACK = {
+  id: "p1",
+  language: "es",
+  filename: "mkv.es.pgs",
+  format: "pgs",
+  format_family: "image" as const,
+  embedded_track_id: 2,
+};
+
+function watchFetchTranscode(tracks: VideoDetailDto["subtitle_tracks"]) {
+  return (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === `/api/videos/v1`)
+      return jsonResponse({ ...VIDEO_DETAIL, subtitle_tracks: tracks });
+    if (url === `/api/videos/v1/thumbnail`)
+      return new Response("fake-image", { status: 200 });
+    if (url === `/api/videos/v1/stream-url`) {
+      return jsonResponse({
+        url: "/api/videos/v1/transcode/master.m3u8",
+        strategy: "transcode",
+        expires_at: null,
+      });
+    }
+    return jsonError(404, "unmocked");
+  };
+}
+
+describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
+  beforeEach(() => {
+    hlsMock.ctor.mockClear();
+    hlsMock.loadSource.mockClear();
+    hlsMock.destroy.mockClear();
+    hlsMock.attachMedia.mockClear();
+    hlsMock.on.mockClear();
+    hlsMock.isSupported.mockReturnValue(true);
+    mockGetProgress.mockResolvedValue(null);
+  });
+
+  it("confirming burn appends ?burn_subtitles= to the master URL", async () => {
+    renderWatchPage("v1", watchFetchTranscode([SRT_TRACK, PGS_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Wait for hls.js to attach with the base master URL (no burn yet).
+    await waitFor(() =>
+      expect(hlsMock.loadSource).toHaveBeenCalledWith(
+        "/api/videos/v1/transcode/master.m3u8",
+      ),
+    );
+
+    // Select the PGS track → burn confirmation dialog appears.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+    expect(
+      screen.getByRole("dialog", { name: /burn/i }),
+    ).toBeInTheDocument();
+
+    // Confirm → the master URL gains ?burn_subtitles=p1.
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(hlsMock.loadSource).toHaveBeenCalledWith(
+        "/api/videos/v1/transcode/master.m3u8?burn_subtitles=p1",
+      ),
+    );
+  });
+
+  it("selecting Off after burning removes the burn param", async () => {
+    renderWatchPage("v1", watchFetchTranscode([SRT_TRACK, PGS_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Burn the PGS track first.
+    await waitFor(() =>
+      expect(hlsMock.loadSource).toHaveBeenCalledWith(
+        "/api/videos/v1/transcode/master.m3u8",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    await waitFor(() =>
+      expect(hlsMock.loadSource).toHaveBeenCalledWith(
+        "/api/videos/v1/transcode/master.m3u8?burn_subtitles=p1",
+      ),
+    );
+
+    // Selecting Off clears the burn param — the master URL reverts.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
+
+    // The last loadSource call should be the base URL (re-attaching to the
+    // unburned variant). We check the most recent call since previous calls
+    // include the initial attach + the burn attach.
+    await waitFor(() => {
+      const calls = hlsMock.loadSource.mock.calls;
+      const lastUrl = calls[calls.length - 1]?.[0];
+      expect(lastUrl).toBe("/api/videos/v1/transcode/master.m3u8");
+    });
+  });
+
+  it("cancelling the burn dialog leaves the master URL unchanged", async () => {
+    renderWatchPage("v1", watchFetchTranscode([SRT_TRACK, PGS_TRACK]));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+    await waitFor(() =>
+      expect(hlsMock.loadSource).toHaveBeenCalledWith(
+        "/api/videos/v1/transcode/master.m3u8",
+      ),
+    );
+    const initialCallCount = hlsMock.loadSource.mock.calls.length;
+
+    // Open the burn dialog then cancel.
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // No new loadSource call — playback stays on the unburned master.
+    expect(hlsMock.loadSource.mock.calls.length).toBe(initialCallCount);
+  });
+
+  it("image track is disabled when strategy is not transcode", async () => {
+    // Direct strategy — burn-in is impossible without the transcode pipeline.
+    mockCanPlayType("probably");
+    renderWatchPage("v1", (input) => {
+      const url = String(input);
+      if (url === `/api/videos/v1`)
+        return jsonResponse({ ...VIDEO_DETAIL, subtitle_tracks: [SRT_TRACK, PGS_TRACK] });
+      if (url === `/api/videos/v1/thumbnail`)
+        return new Response("fake-image", { status: 200 });
+      if (url === `/api/videos/v1/stream-url`) {
+        return jsonResponse({
+          url: "https://cdn.example.com/v1.mp4",
+          strategy: "direct",
+          expires_at: "2026-01-01T01:00:00Z",
+        });
+      }
+      return jsonError(404, "unmocked");
+    });
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    expect(
+      screen.getByRole("menuitemradio", { name: /PGS/ }),
+    ).toBeDisabled();
   });
 });

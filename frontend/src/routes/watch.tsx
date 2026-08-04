@@ -49,7 +49,7 @@ import {
   formatTime,
   resolutionBucket,
 } from "../lib/format";
-import { isAssFormat } from "../lib/subtitles";
+import { isAssFormat, isImageFamily } from "../lib/subtitles";
 import { otherProviders } from "../lib/video";
 import { downloadUrl, subtitleTrackUrl } from "../api/videos";
 import { startConnect } from "../api/connections";
@@ -64,6 +64,18 @@ import { PROVIDER_LABELS, type ProviderKey, type VideoDetailDto } from "../api/t
 function canPlay(mime: string | null): boolean {
   if (mime === null) return true;
   return document.createElement("video").canPlayType(mime) !== "";
+}
+
+/**
+ * Append `?burn_subtitles={trackId}` to the transcode master playlist URL
+ * (M8 Task 010 → Task 009 routing). Uses simple string concatenation to
+ * preserve the original URL format (relative or absolute) — `new URL()`
+ * would stringify a relative URL to an absolute one, which complicates
+ * test assertions without any runtime benefit.
+ */
+function appendBurnParam(baseUrl: string, trackId: string): string {
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${sep}burn_subtitles=${encodeURIComponent(trackId)}`;
 }
 
 export function WatchPage() {
@@ -173,6 +185,14 @@ function VideoPlayer({
   // is the only writer — this is a read-only mirror of PlayerControls' state.
   const [activeSubtitle, setActiveSubtitle] = useState(-1);
 
+  // M8 Task 010: burn-in track ID for the transcode master playlist. Set
+  // when the user confirms the burn dialog for an image-family track;
+  // cleared when the selection moves to Off or a text track. Per-session
+  // only (FR-5.4) — NOT restored from IndexedDB on reload. Appending
+  // `?burn_subtitles={id}` to the master URL causes hls.js to re-attach
+  // to the burned variant (Task 009 routes it server-side).
+  const [burnSubtitleId, setBurnSubtitleId] = useState<string | null>(null);
+
   const invalidateStreamUrl = useInvalidateStreamUrl();
   const isTranscode = streamUrlQuery.data?.strategy === "transcode";
   // CDN URL expiry retry guard. Resets when the video id changes (queue skip)
@@ -193,6 +213,18 @@ function VideoPlayer({
     : null;
 
   const tracking = usePlaybackTracking(videoRef, video);
+
+  // M8 Task 010: wrap setActiveSubtitle so we can clear the burn-in track
+  // when the selection moves away from an image-family track. When the user
+  // confirms a burn, `onConfirmBurnSubtitle` sets `burnSubtitleId` first,
+  // then this fires with the image track's index — since the track IS
+  // image-family, burn is not cleared.
+  function handleActiveSubtitleChange(index: number) {
+    setActiveSubtitle(index);
+    if (index < 0 || !isImageFamily(video.subtitle_tracks[index])) {
+      setBurnSubtitleId(null);
+    }
+  }
 
   const queue = useQueue();
 
@@ -226,7 +258,14 @@ function VideoPlayer({
 
   // hls.js attachment for the transcode strategy. Lives at the top level so
   // rules-of-hooks are satisfied; only takes effect when `isTranscode`.
-  const masterUrl = isTranscode ? streamUrlQuery.data?.url : undefined;
+  // M8 Task 010: when `burnSubtitleId` is set, the master URL gains
+  // `?burn_subtitles={id}` — this causes useHlsStream to re-attach to the
+  // burned variant (the server routes it via a separate cache key, Task 009).
+  const baseUrl = isTranscode ? streamUrlQuery.data?.url : undefined;
+  const masterUrl =
+    baseUrl !== undefined && burnSubtitleId !== null
+      ? appendBurnParam(baseUrl, burnSubtitleId)
+      : baseUrl;
   const hlsStream = useHlsStream(videoRef, masterUrl, {
     onError: () => setHasError(true),
   });
@@ -463,7 +502,7 @@ function VideoPlayer({
           containerRef={containerRef}
           subtitleTracks={video.subtitle_tracks}
           videoId={video.id}
-          onActiveSubtitleChange={setActiveSubtitle}
+          onActiveSubtitleChange={handleActiveSubtitleChange}
           onPrev={queue.hasQueue ? handlePrev : undefined}
           onNext={queue.hasQueue ? handleNext : undefined}
           hasPrev={queue.hasPrev}
@@ -475,6 +514,8 @@ function VideoPlayer({
               ? (level: number) => hlsStream.setCurrentLevel(level)
               : undefined
           }
+          isTranscode={isTranscode}
+          onConfirmBurnSubtitle={(trackId) => setBurnSubtitleId(trackId)}
         />
       </div>
       <VideoInfo video={video} />
