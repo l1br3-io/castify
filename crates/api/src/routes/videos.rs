@@ -1931,16 +1931,50 @@ pub async fn transcode_sweep_loop(state: AppState, interval: std::time::Duration
 /// The pre-compute variant is selected from the video's source height per
 /// PRD FR-1.4 / `select_precompute_variant`.
 ///
+/// **M8 Task 009:** `?burn_subtitles=<track_id>` selects the burned
+/// variant. The track must exist (else 404) and be `format_family = "image"`
+/// (text-family → 400; text subtitles are served to the browser, not
+/// burned). The handler ensures a burned transcode variant is started
+/// (Task 007 keying + Task 008 ffmpeg) and the returned master lists the
+/// burned variant. Without the param, the master is unchanged from M7
+/// (unburned variants only). Burned and unburned variants coexist in the
+/// cache as independent rows; the master filters by profile so hls.js
+/// never crosses streams mid-playback (FR-3.1, FR-3.2, FR-3.6, FR-7.3).
+///
 /// Auth required, no CSRF (safe GET).
 pub async fn get_transcode_master(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
     }
 
     let stream_info = resolve_stream_info(&state, &id).await?;
+
+    // M8 Task 009: resolve the burn dimension. When `?burn_subtitles=<id>`
+    // is present, validate the track exists and is image-family — only
+    // image subtitles (PGS/VobSub) burn; text subtitles (SRT/VTT/ASS) are
+    // served to the browser (FR-3.1). A nonexistent track id → 404; a
+    // text-family track id → 400.
+    let subtitle_track_id = burn.track_id();
+    if let Some(track_id) = subtitle_track_id {
+        let track = state
+            .catalog_repository()
+            .fetch_embedded_subtitle_track(&id, track_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        if track.format_family != "image" {
+            return Err(ApiError::Validation {
+                detail: format!(
+                    "subtitle track {track_id} has format_family `{}`; \
+                     only image-family tracks can be burned",
+                    track.format_family
+                ),
+            });
+        }
+    }
 
     // Pick the pre-compute variant: best rung ≤ min(source_height, cap).
     let source_height = fetch_video_height(&state, &id).await;
@@ -1951,15 +1985,28 @@ pub async fn get_transcode_master(
     );
 
     // Ensure a transcode worker is running for the pre-compute variant.
-    // M8 Task 007: pass `None` for the burn dimension here — Task 009 wires
-    // the `?burn_subtitles=` query param at this call site.
-    ensure_transcode_started(&state, &id, &stream_info, precompute.name, None).await?;
+    // The burn dimension is threaded through so the burned profile
+    // (`DEFAULT_PROFILE+subs-{id}`) routes to its own worker + output dir.
+    ensure_transcode_started(&state, &id, &stream_info, precompute.name, subtitle_track_id).await?;
 
-    // Build master playlist from the current cache state.
+    // Derive the profile for the current path. Burned and unburned variants
+    // coexist in `transcode_cache_entries` (FR-7.3); filtering by profile
+    // ensures the master lists only the variants matching the current burn
+    // dimension — hls.js must not ABR-switch between burned and unburned
+    // segments (subtitles would flicker on/off at the switch boundary).
+    let profile =
+        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+
+    // Build master playlist from the current cache state, filtered to the
+    // current profile.
     let entries = state
         .catalog_repository()
         .fetch_transcodes_for_video(&id)
         .await?;
+    let entries: Vec<_> = entries
+        .into_iter()
+        .filter(|e| e.profile == profile)
+        .collect();
 
     let master = if entries.is_empty() {
         // Manifest insert failed inside ensure_transcode_started but the
@@ -1970,7 +2017,7 @@ pub async fn get_transcode_master(
         crate::transcode::build_master_playlist(&[castify_catalog::TranscodeCacheEntry {
             video_id: id.clone(),
             variant: precompute.name.into(),
-            profile: crate::transcode::DEFAULT_PROFILE.into(),
+            profile,
             output_dir: String::new(),
             total_segments: None,
             completed_segments: 0,

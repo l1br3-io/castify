@@ -75,6 +75,7 @@ async fn boot_with_transcode_enabled() -> (
         probe: castify_core::ProbeConfig::default(),
         transcode: castify_core::TranscodeConfig {
             enabled: true,
+            dir: data_dir.join("transcode-cache"),
             ..Default::default()
         },
         abr: castify_core::AbrConfig::default(),
@@ -427,4 +428,273 @@ async fn cancel_transcode_404_when_disabled() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ── M8 Task 009: burn_subtitles master-playlist routing ──────────────
+
+use castify_api::transcode::DEFAULT_PROFILE;
+
+/// Helper: seed an embedded subtitle track row for a video. Returns the
+/// track id. `family` is `"image"` (burnable) or `"text"` (→ 400 if burn
+/// is requested).
+async fn seed_subtitle_track(
+    repo: &CatalogRepository,
+    video_id: &str,
+    track_id: &str,
+    embedded_index: i64,
+    family: &str,
+) {
+    repo.upsert_subtitle_track(
+        track_id,
+        video_id,
+        embedded_index,
+        "pgssub",
+        family,
+        Some("eng"),
+        Some("English"),
+    )
+    .await
+    .unwrap();
+}
+
+/// Helper: create a fake `.ts` segment on disk at the handler's computed
+/// output dir for `(video, variant, profile)` and seed a `completed`
+/// manifest row. The on-disk segment makes `ensure_transcode_started`
+/// short-circuit (it sees existing segments and returns without calling
+/// the provider or spawning ffmpeg); the manifest row makes the variant
+/// appear in `fetch_transcodes_for_video`.
+async fn seed_completed_variant(
+    repo: &CatalogRepository,
+    transcode_dir: &std::path::Path,
+    video_id: &str,
+    variant: &str,
+    profile: &str,
+) {
+    let dir = transcode_dir
+        .join(video_id)
+        .join(variant)
+        .join(profile);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("segment_00000.ts"), b"fake-segment-bytes").unwrap();
+
+    repo.insert_pending_transcode(&NewTranscodeEntry {
+        video_id,
+        variant,
+        profile,
+        output_dir: &dir.to_string_lossy(),
+        segment_duration_secs: 10,
+        bitrate: Some(3_000_000),
+        width: Some(1280),
+        height: Some(720),
+    })
+    .await
+    .unwrap();
+    repo.mark_transcode_completed(video_id, variant, profile, 1)
+        .await
+        .unwrap();
+}
+
+/// `GET /transcode/master.m3u8` without `?burn_subtitles=` must list only
+/// unburned variants — even when a burned variant for the same video
+/// coexists in the manifest. This is the M7 regression guard (FR-3.2,
+/// FR-7.3): the burned entry must not leak into the default master.
+#[tokio::test]
+async fn master_without_burn_param_lists_unburned_variant_only() {
+    let (app, cookie, repo, data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_video(&repo).await;
+
+    // Seed both an unburned and a burned 720p variant for the same video.
+    let transcode_dir = data_dir.join("transcode-cache");
+    let burn_profile = format!("{DEFAULT_PROFILE}+subs-vid-sub-img");
+    seed_completed_variant(&repo, &transcode_dir, &vid, "720p", DEFAULT_PROFILE).await;
+    seed_completed_variant(&repo, &transcode_dir, &vid, "720p", &burn_profile).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/videos/{vid}/transcode/master.m3u8"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let playlist = String::from_utf8(bytes.to_vec()).unwrap();
+
+    // Exactly one STREAM-INF (the unburned 720p variant).
+    assert_eq!(
+        playlist.matches("EXT-X-STREAM-INF").count(),
+        1,
+        "unburned master must list exactly one variant: {playlist}"
+    );
+    assert!(
+        playlist.contains("720p/playlist.m3u8"),
+        "unburned variant must appear: {playlist}"
+    );
+    // The burned profile suffix must NOT appear anywhere in the unburned
+    // master — it's a separate stream.
+    assert!(
+        !playlist.contains("+subs-"),
+        "burned profile leaked into unburned master: {playlist}"
+    );
+}
+
+/// `GET /transcode/master.m3u8?burn_subtitles=<image-track>` must list the
+/// burned variant. The handler validates the track is image-family,
+/// ensures the burned transcode is started, and filters the manifest to
+/// the burned profile (FR-3.1, FR-3.6).
+#[tokio::test]
+async fn master_with_burn_param_lists_burned_variant() {
+    let (app, cookie, repo, data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_video(&repo).await;
+
+    let track_id = format!("{vid}-sub-img");
+    seed_subtitle_track(&repo, &vid, &track_id, 3, "image").await;
+
+    // Seed the burned variant so ensure_transcode_started short-circuits.
+    let transcode_dir = data_dir.join("transcode-cache");
+    let burn_profile = format!("{DEFAULT_PROFILE}+subs-{track_id}");
+    seed_completed_variant(&repo, &transcode_dir, &vid, "720p", &burn_profile).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/videos/{vid}/transcode/master.m3u8?burn_subtitles={track_id}"
+                ))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let playlist = String::from_utf8(bytes.to_vec()).unwrap();
+
+    assert_eq!(
+        playlist.matches("EXT-X-STREAM-INF").count(),
+        1,
+        "burned master must list exactly one variant: {playlist}"
+    );
+    assert!(
+        playlist.contains("720p/playlist.m3u8"),
+        "burned variant must appear: {playlist}"
+    );
+}
+
+/// `?burn_subtitles=<text-track-id>` → 400. Text subtitles are served to
+/// the browser; they cannot be burned (FR-3.1). The handler rejects before
+/// touching the transcode pipeline.
+#[tokio::test]
+async fn master_burn_param_with_text_track_returns_400() {
+    let (app, cookie, repo, _data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_video(&repo).await;
+
+    let track_id = format!("{vid}-sub-txt");
+    seed_subtitle_track(&repo, &vid, &track_id, 1, "text").await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/videos/{vid}/transcode/master.m3u8?burn_subtitles={track_id}"
+                ))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// `?burn_subtitles=<nonexistent-id>` → 404. The track id doesn't exist
+/// for this video (FR-3.1).
+#[tokio::test]
+async fn master_burn_param_with_missing_track_returns_404() {
+    let (app, cookie, repo, _data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_video(&repo).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/videos/{vid}/transcode/master.m3u8?burn_subtitles=does-not-exist"
+                ))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Burned and unburned variants for the same video coexist in
+/// `transcode_cache_entries` (different profile strings) and both appear
+/// in `fetch_transcodes_for_video` (FR-7.3). The master playlist routing
+/// is what separates them — the storage layer holds both.
+#[tokio::test]
+async fn burned_and_unburned_coexist_in_manifest() {
+    let (app, cookie, repo, data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_video(&repo).await;
+
+    let track_id = format!("{vid}-sub-img");
+    seed_subtitle_track(&repo, &vid, &track_id, 2, "image").await;
+
+    let transcode_dir = data_dir.join("transcode-cache");
+    let burn_profile = format!("{DEFAULT_PROFILE}+subs-{track_id}");
+    seed_completed_variant(&repo, &transcode_dir, &vid, "720p", DEFAULT_PROFILE).await;
+    seed_completed_variant(&repo, &transcode_dir, &vid, "720p", &burn_profile).await;
+
+    // Both rows are in the manifest.
+    let entries = repo.fetch_transcodes_for_video(&vid).await.unwrap();
+    assert_eq!(
+        entries.len(),
+        2,
+        "both burned and unburned must coexist in manifest"
+    );
+
+    // Toggling the param selects the right variant each time — no
+    // re-transcode happens (segments already on disk), and each master
+    // lists exactly one variant.
+    for (param, label) in [
+        (None, "unburned"),
+        (Some(&track_id), "burned"),
+    ] {
+        let uri = match param {
+            None => format!("/api/videos/{vid}/transcode/master.m3u8"),
+            Some(t) => format!("/api/videos/{vid}/transcode/master.m3u8?burn_subtitles={t}"),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&uri)
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{label} master should be 200"
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let playlist = String::from_utf8(bytes.to_vec()).unwrap();
+        assert_eq!(
+            playlist.matches("EXT-X-STREAM-INF").count(),
+            1,
+            "{label} master must list exactly one variant: {playlist}"
+        );
+    }
 }
