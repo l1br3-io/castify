@@ -225,8 +225,7 @@ impl Bench {
             request_count += 1;
         }
         let elapsed = Duration::from_secs(duration_secs);
-        let throughput_mbps =
-            (total_bytes as f64 * 8.0) / (elapsed.as_secs_f64() * 1_000_000.0);
+        let throughput_mbps = (total_bytes as f64 * 8.0) / (elapsed.as_secs_f64() * 1_000_000.0);
 
         Ok(ScenarioResult::throughput(
             "GET /stream sustained throughput",
@@ -359,13 +358,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    eprint!("  running: /stream throughput ({}s) ... ", args.throughput_secs);
-    match bench.run_stream_throughput(&video_id, args.throughput_secs).await {
+    eprint!(
+        "  running: /stream throughput ({}s) ... ",
+        args.throughput_secs
+    );
+    match bench
+        .run_stream_throughput(&video_id, args.throughput_secs)
+        .await
+    {
         Ok(r) => {
-            eprintln!(
-                "{:.2} Mbps",
-                r.throughput_mbps.unwrap_or(0.0)
-            );
+            eprintln!("{:.2} Mbps", r.throughput_mbps.unwrap_or(0.0));
             results.push(r);
         }
         Err(e) => {
@@ -416,7 +418,10 @@ fn print_latency_table(results: &[ScenarioResult]) {
 }
 
 fn print_throughput_table(results: &[ScenarioResult]) {
-    let throughput: Vec<&ScenarioResult> = results.iter().filter(|r| r.throughput_mbps.is_some()).collect();
+    let throughput: Vec<&ScenarioResult> = results
+        .iter()
+        .filter(|r| r.throughput_mbps.is_some())
+        .collect();
     if throughput.is_empty() {
         return;
     }

@@ -24,7 +24,10 @@ const PASSWORD: &str = "correct horse battery staple";
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
 
 fn next_id(prefix: &str) -> String {
-    format!("{prefix}-{}", COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    format!(
+        "{prefix}-{}",
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
 }
 
 /// Same shape as `common::fresh_state` but with `transcode.enabled = true`
@@ -52,10 +55,8 @@ async fn boot_with_transcode_enabled() -> (
     let token_key = castify_catalog::TokenKey::resolve(&pool, None)
         .await
         .unwrap();
-    let data_dir = std::env::temp_dir().join(format!(
-        "castify-api-transcode-test-{}",
-        next_id("dir")
-    ));
+    let data_dir =
+        std::env::temp_dir().join(format!("castify-api-transcode-test-{}", next_id("dir")));
     std::fs::create_dir_all(&data_dir).ok();
     let config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -184,10 +185,7 @@ async fn fetch_csrf(app: &axum::Router, session_cookie: &str) -> (String, String
 /// Build the cookie + header pair needed for a CSRF-protected mutation.
 /// Combines the session cookie with the CSRF cookie in a single Cookie
 /// header, and returns the matching X-CSRF-Token value.
-async fn csrf_request_parts(
-    app: &axum::Router,
-    session_cookie: &str,
-) -> (String, String) {
+async fn csrf_request_parts(app: &axum::Router, session_cookie: &str) -> (String, String) {
     let (token, csrf_cookie) = fetch_csrf(app, session_cookie).await;
     let cookies = format!("{session_cookie}; {csrf_cookie}");
     (token, cookies)
@@ -374,7 +372,12 @@ async fn cancel_transcode_404_when_disabled() {
     let app = castify_api::app::build_app(state);
     let csrf = app
         .clone()
-        .oneshot(Request::builder().uri("/api/csrf").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/csrf")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     // No session needed — the route short-circuits before auth for disabled
@@ -410,7 +413,13 @@ async fn cancel_transcode_404_when_disabled() {
             .and_then(|s| s.split(';').next())
             .map(|s| s.to_string())
             .unwrap();
-        (app, cookie, state.catalog_repository().clone(), state.config().data_dir.clone(), _g)
+        (
+            app,
+            cookie,
+            state.catalog_repository().clone(),
+            state.config().data_dir.clone(),
+            _g,
+        )
     };
     let vid = seed_video(&_repo).await;
     let (csrf, cookies) = csrf_request_parts(&app, &cookie).await;
@@ -470,10 +479,7 @@ async fn seed_completed_variant(
     variant: &str,
     profile: &str,
 ) {
-    let dir = transcode_dir
-        .join(video_id)
-        .join(variant)
-        .join(profile);
+    let dir = transcode_dir.join(video_id).join(variant).join(profile);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("segment_00000.ts"), b"fake-segment-bytes").unwrap();
 
@@ -665,10 +671,7 @@ async fn burned_and_unburned_coexist_in_manifest() {
     // Toggling the param selects the right variant each time — no
     // re-transcode happens (segments already on disk), and each master
     // lists exactly one variant.
-    for (param, label) in [
-        (None, "unburned"),
-        (Some(&track_id), "burned"),
-    ] {
+    for (param, label) in [(None, "unburned"), (Some(&track_id), "burned")] {
         let uri = match param {
             None => format!("/api/videos/{vid}/transcode/master.m3u8"),
             Some(t) => format!("/api/videos/{vid}/transcode/master.m3u8?burn_subtitles={t}"),

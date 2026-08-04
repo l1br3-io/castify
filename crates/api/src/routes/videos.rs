@@ -14,9 +14,9 @@ use std::time::Instant;
 use bytes::Bytes;
 use castify_cache::{DiskCache, StreamingCacheWriter};
 use futures::Stream;
-use tracing::Span;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::io::ReaderStream;
+use tracing::Span;
 
 use castify_catalog::{
     BodyStream, CatalogRepository, FolderCount, NewTranscodeEntry, PlaybackProgress, Provider,
@@ -714,12 +714,10 @@ async fn maybe_override_to_transcode(
 
     // Fetch codec info from the videos table.
     let pool = state.pool();
-    let row = sqlx::query(
-        r#"SELECT video_codec, audio_codec FROM videos WHERE id = ?"#,
-    )
-    .bind(video_id)
-    .fetch_optional(pool)
-    .await;
+    let row = sqlx::query(r#"SELECT video_codec, audio_codec FROM videos WHERE id = ?"#)
+        .bind(video_id)
+        .fetch_optional(pool)
+        .await;
 
     let Ok(Some(row)) = row else {
         return response; // Video not found or query error — keep existing strategy.
@@ -845,7 +843,9 @@ fn spawn_lazy_probe(state: &AppState, info: &VideoStreamInfo) {
             }
             probe::ProbeResult::UnsupportedContainer(c) => {
                 tracing::info!(%video_id, container = %c, "probe: unsupported container");
-                let _ = repo.mark_probe_failed(&video_id, "unsupported_container").await;
+                let _ = repo
+                    .mark_probe_failed(&video_id, "unsupported_container")
+                    .await;
             }
             probe::ProbeResult::Failed(e) => {
                 tracing::warn!(error = %e, %video_id, "probe failed");
@@ -1200,10 +1200,7 @@ pub async fn get_cached_stream(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let cache = state
-        .video_cache()
-        .ok_or(ApiError::NotFound)?
-        .clone();
+    let cache = state.video_cache().ok_or(ApiError::NotFound)?.clone();
 
     let stream_info = resolve_stream_info(&state, &id).await?;
 
@@ -1227,11 +1224,16 @@ pub async fn get_cached_stream(
         .ok_or(ApiError::NotFound)?;
 
     // Touch on read (cheap).
-    let _ = state.catalog_repository().touch_video_cache_entry(&id).await;
+    let _ = state
+        .catalog_repository()
+        .touch_video_cache_entry(&id)
+        .await;
 
     // Get file size from metadata.
     let metadata = file.metadata().await.map_err(|e| {
-        ApiError::Internal(anyhow::anyhow!(format!("failed to read file metadata: {e}")))
+        ApiError::Internal(anyhow::anyhow!(format!(
+            "failed to read file metadata: {e}"
+        )))
     })?;
     let total = metadata.len();
 
@@ -1257,7 +1259,9 @@ pub async fn get_cached_stream(
             resp.headers_mut().insert(
                 header::CONTENT_TYPE,
                 HeaderValue::from_str(
-                    &stream_info.mime_type.unwrap_or_else(|| "video/mp4".to_string()),
+                    &stream_info
+                        .mime_type
+                        .unwrap_or_else(|| "video/mp4".to_string()),
                 )
                 .unwrap_or_else(|_| HeaderValue::from_static("video/mp4")),
             );
@@ -1282,7 +1286,9 @@ pub async fn get_cached_stream(
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(
-            &stream_info.mime_type.unwrap_or_else(|| "video/mp4".to_string()),
+            &stream_info
+                .mime_type
+                .unwrap_or_else(|| "video/mp4".to_string()),
         )
         .unwrap_or_else(|_| HeaderValue::from_static("video/mp4")),
     );
@@ -1712,9 +1718,8 @@ pub struct CacheEntryDto {
     pub size_bytes: i64,
     pub last_accessed_at: String,
     pub pinned: bool,
-}pub async fn get_cache_admin(
-    State(state): State<AppState>,
-) -> ApiResult<Json<CacheAdminResponse>> {
+}
+pub async fn get_cache_admin(State(state): State<AppState>) -> ApiResult<Json<CacheAdminResponse>> {
     let repo = state.catalog_repository();
     let Some(_cache) = state.video_cache() else {
         return Ok(Json(CacheAdminResponse {
@@ -1790,7 +1795,10 @@ pub async fn get_transcode_admin(
                 .collect(),
         }));
     }
-    let variants = state.catalog_repository().transcode_stats_per_rung().await?;
+    let variants = state
+        .catalog_repository()
+        .transcode_stats_per_rung()
+        .await?;
     let active = transcode_registry().lock().await.len() as u64;
     Ok(Json(TranscodeAdminResponse {
         enabled: true,
@@ -1813,10 +1821,7 @@ pub async fn get_transcode_admin(
 /// cache write (via `cache_write_task`) and from a periodic background
 /// sweep. Returns the count of entries evicted.
 #[allow(dead_code)]
-pub async fn evict_to_target(
-    state: &AppState,
-    target_bytes: i64,
-) -> Result<u64, anyhow::Error> {
+pub async fn evict_to_target(state: &AppState, target_bytes: i64) -> Result<u64, anyhow::Error> {
     let repo = state.catalog_repository();
     let Some(cache) = state.video_cache() else {
         return Ok(0);
@@ -1896,7 +1901,12 @@ pub async fn evict_transcode_to_target(
         evicted += 1;
     }
     if evicted > 0 {
-        tracing::info!(evicted, target_bytes, remaining_bytes = current, "transcode LRU sweep complete");
+        tracing::info!(
+            evicted,
+            target_bytes,
+            remaining_bytes = current,
+            "transcode LRU sweep complete"
+        );
     }
     Ok(evicted)
 }
@@ -1910,7 +1920,11 @@ pub async fn transcode_sweep_loop(state: AppState, interval: std::time::Duration
         let target = state.config().transcode.cache_max_bytes;
         match evict_transcode_to_target(&state, target).await {
             Ok(n) if n > 0 => {
-                tracing::info!(evicted = n, target_bytes = target, "transcode sweep evicted variants");
+                tracing::info!(
+                    evicted = n,
+                    target_bytes = target,
+                    "transcode sweep evicted variants"
+                );
             }
             Ok(_) => {} // No work; avoid log spam.
             Err(e) => {
@@ -1987,7 +2001,14 @@ pub async fn get_transcode_master(
     // Ensure a transcode worker is running for the pre-compute variant.
     // The burn dimension is threaded through so the burned profile
     // (`DEFAULT_PROFILE+subs-{id}`) routes to its own worker + output dir.
-    ensure_transcode_started(&state, &id, &stream_info, precompute.name, subtitle_track_id).await?;
+    ensure_transcode_started(
+        &state,
+        &id,
+        &stream_info,
+        precompute.name,
+        subtitle_track_id,
+    )
+    .await?;
 
     // Derive the profile for the current path. Burned and unburned variants
     // coexist in `transcode_cache_entries` (FR-7.3); filtering by profile
@@ -2058,9 +2079,7 @@ async fn fetch_video_height(state: &AppState, video_id: &str) -> Option<u32> {
         .await
         .ok()??;
     let height: Option<i64> = row.get("height");
-    height
-        .filter(|h| *h > 0)
-        .map(|h| h as u32)
+    height.filter(|h| *h > 0).map(|h| h as u32)
 }
 
 /// Optional `?burn_subtitles=<track_id>` query parameter accepted by the
@@ -2115,7 +2134,8 @@ pub async fn get_transcode_playlist(
     }
 
     let subtitle_track_id = burn.track_id();
-    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile =
+        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
 
     let repo = state.catalog_repository();
     let entry = repo.fetch_transcode_entry(&id, &variant, &profile).await?;
@@ -2186,7 +2206,8 @@ pub async fn get_transcode_segment(
     }
 
     let subtitle_track_id = burn.track_id();
-    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile =
+        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
 
     let dir = transcode_output_dir(&state, &id, &variant, &profile);
     let segment_path = dir.join(&segment);
@@ -2203,10 +2224,8 @@ pub async fn get_transcode_segment(
 
             let mut resp = Response::new(Body::from(bytes));
             *resp.status_mut() = StatusCode::OK;
-            resp.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("video/mp2t"),
-            );
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp2t"));
             resp.headers_mut().insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("public, max-age=86400"),
@@ -2245,9 +2264,9 @@ static TRANSCODE_REGISTRY: std::sync::OnceLock<
     tokio::sync::Mutex<std::collections::HashMap<String, Arc<crate::transcode::TranscodeHandle>>>,
 > = std::sync::OnceLock::new();
 
-fn transcode_registry(
-) -> &'static tokio::sync::Mutex<std::collections::HashMap<String, Arc<crate::transcode::TranscodeHandle>>>
-{
+fn transcode_registry() -> &'static tokio::sync::Mutex<
+    std::collections::HashMap<String, Arc<crate::transcode::TranscodeHandle>>,
+> {
     TRANSCODE_REGISTRY.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -2286,7 +2305,8 @@ async fn ensure_transcode_started(
     let registry = transcode_registry();
 
     let key = crate::transcode::transcode_registry_key(video_id, variant, subtitle_track_id);
-    let profile = crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile =
+        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
     let repo = state.catalog_repository().clone();
 
     let mut guard = registry.lock().await;
@@ -2296,7 +2316,11 @@ async fn ensure_transcode_started(
         if !handle.state.is_done() {
             return Ok(()); // Worker still running — nothing to do.
         }
-        if handle.state.completed.load(std::sync::atomic::Ordering::Relaxed) {
+        if handle
+            .state
+            .completed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return Ok(()); // Completed successfully — segments on disk.
         }
         // Failed — fall through to retry.
@@ -2307,11 +2331,14 @@ async fn ensure_transcode_started(
     // a previous server session, or M6→M7 migration where the manifest
     // wasn't wired yet).
     let output_dir = transcode_output_dir(state, video_id, variant, &profile);
-    let existing_segments =
-        crate::transcode::count_segments(&output_dir).await;
+    let existing_segments = crate::transcode::count_segments(&output_dir).await;
     if existing_segments > 0 {
         if let Some(handle) = guard.get(&key) {
-            if handle.state.completed.load(std::sync::atomic::Ordering::Relaxed) {
+            if handle
+                .state
+                .completed
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 return Ok(());
             }
         }

@@ -998,12 +998,10 @@ impl CatalogRepository {
     /// the operation is idempotent. Sidecar rows (`provider_file_id` non-NULL)
     /// are untouched.
     pub async fn clear_extracted_subtitles(&self, video_id: &str) -> CatalogResult<()> {
-        sqlx::query(
-            "DELETE FROM video_subtitles WHERE video_id = ? AND provider_file_id IS NULL",
-        )
-        .bind(video_id)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("DELETE FROM video_subtitles WHERE video_id = ? AND provider_file_id IS NULL")
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -1057,8 +1055,14 @@ impl CatalogRepository {
         &self,
         video_id: &str,
         track_id: &str,
-    ) -> CatalogResult<Option<(SubtitleTrack, Option<String>, Option<String>, Option<String>)>>
-    {
+    ) -> CatalogResult<
+        Option<(
+            SubtitleTrack,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>,
+    > {
         let row = sqlx::query(
             "SELECT id, language, filename, format, format_family, embedded_track_id, \
                     connection_id, provider_file_id, extracted_path \
@@ -1288,13 +1292,11 @@ impl CatalogRepository {
         video_id: &str,
         pinned: bool,
     ) -> CatalogResult<bool> {
-        let result = sqlx::query(
-            "UPDATE video_cache_entries SET pinned = ? WHERE video_id = ?",
-        )
-        .bind(if pinned { 1i64 } else { 0i64 })
-        .bind(video_id)
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("UPDATE video_cache_entries SET pinned = ? WHERE video_id = ?")
+            .bind(if pinned { 1i64 } else { 0i64 })
+            .bind(video_id)
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1310,20 +1312,18 @@ impl CatalogRepository {
 
     /// Total size in bytes of all cache entries (pinned + unpinned).
     pub async fn video_cache_total_size(&self) -> CatalogResult<i64> {
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(size_bytes), 0) FROM video_cache_entries",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM video_cache_entries")
+                .fetch_one(&self.pool)
+                .await?;
         Ok(total)
     }
 
     /// Count of cache entries (pinned + unpinned).
     pub async fn video_cache_entry_count(&self) -> CatalogResult<i64> {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM video_cache_entries")
-                .fetch_one(&self.pool)
-                .await?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM video_cache_entries")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(count)
     }
 
@@ -1360,10 +1360,7 @@ impl CatalogRepository {
     }
 
     /// Return the top N cache entries by size (for the admin endpoint).
-    pub async fn video_cache_top_entries(
-        &self,
-        limit: i64,
-    ) -> CatalogResult<Vec<VideoCacheEntry>> {
+    pub async fn video_cache_top_entries(&self, limit: i64) -> CatalogResult<Vec<VideoCacheEntry>> {
         let rows = sqlx::query(
             r#"SELECT video_id, connection_id, provider_file_id, size_bytes,
                       last_accessed_at, pinned, created_at
@@ -1391,11 +1388,10 @@ impl CatalogRepository {
 
     /// Count of pinned entries.
     pub async fn video_cache_pinned_count(&self) -> CatalogResult<i64> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM video_cache_entries WHERE pinned = 1",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM video_cache_entries WHERE pinned = 1")
+                .fetch_one(&self.pool)
+                .await?;
         Ok(count)
     }
 
@@ -1436,11 +1432,7 @@ impl CatalogRepository {
     /// Mark a video's probe as failed with an optional error message.
     /// Sets `probe_status = 'failed'`; the `probed_at` timestamp is set so
     /// the admin endpoint can see when it was last attempted.
-    pub async fn mark_probe_failed(
-        &self,
-        video_id: &str,
-        status: &str,
-    ) -> CatalogResult<()> {
+    pub async fn mark_probe_failed(&self, video_id: &str, status: &str) -> CatalogResult<()> {
         let now = iso_now();
         sqlx::query(
             r#"UPDATE videos SET
@@ -1471,7 +1463,10 @@ impl CatalogRepository {
 
     /// Return up to `limit` video IDs that still need probing. Used by
     /// the eager post-scan worker.
-    pub async fn fetch_pending_probe_ids(&self, limit: i64) -> CatalogResult<Vec<(String, String, String)>> {
+    pub async fn fetch_pending_probe_ids(
+        &self,
+        limit: i64,
+    ) -> CatalogResult<Vec<(String, String, String)>> {
         let rows = sqlx::query(
             r#"SELECT v.id, v.connection_id, v.provider_file_id
                FROM videos v
@@ -1498,21 +1493,18 @@ impl CatalogRepository {
         let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM videos")
             .fetch_one(&self.pool)
             .await?;
-        let probed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM videos WHERE probe_status = 'probed'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM videos WHERE probe_status = 'pending'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let failed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM videos WHERE probe_status = 'failed'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let probed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM videos WHERE probe_status = 'probed'")
+                .fetch_one(&self.pool)
+                .await?;
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM videos WHERE probe_status = 'pending'")
+                .fetch_one(&self.pool)
+                .await?;
+        let failed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM videos WHERE probe_status = 'failed'")
+                .fetch_one(&self.pool)
+                .await?;
         let needs_more: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM videos WHERE probe_status = 'needs_more_bytes'",
         )
@@ -2100,7 +2092,11 @@ mod tests {
         let (_owner, conn, video) = seed_owner_conn_video(&repo).await;
 
         // Initially no cache entry.
-        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_none());
+        assert!(repo
+            .fetch_video_cache_entry(&video)
+            .await
+            .unwrap()
+            .is_none());
 
         // Upsert creates the entry.
         repo.upsert_video_cache_entry(&video, &conn, "file-123", 1_000_000)
@@ -2142,7 +2138,10 @@ mod tests {
         assert!(!entry.pinned);
 
         // Pin on non-existent entry returns false.
-        assert!(!repo.set_video_cache_pinned("no-such-video", true).await.unwrap());
+        assert!(!repo
+            .set_video_cache_pinned("no-such-video", true)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -2153,10 +2152,18 @@ mod tests {
         repo.upsert_video_cache_entry(&video, &conn, "f", 500)
             .await
             .unwrap();
-        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_some());
+        assert!(repo
+            .fetch_video_cache_entry(&video)
+            .await
+            .unwrap()
+            .is_some());
 
         repo.delete_video_cache_entry(&video).await.unwrap();
-        assert!(repo.fetch_video_cache_entry(&video).await.unwrap().is_none());
+        assert!(repo
+            .fetch_video_cache_entry(&video)
+            .await
+            .unwrap()
+            .is_none());
 
         // Delete again is a no-op.
         repo.delete_video_cache_entry(&video).await.unwrap();
@@ -2213,10 +2220,7 @@ mod tests {
 
         // Evict 150 bytes. v1 (100) alone isn't enough; v3 (300) is also
         // needed. v2 (pinned) must never appear.
-        let candidates = repo
-            .video_cache_eviction_candidates(150)
-            .await
-            .unwrap();
+        let candidates = repo.video_cache_eviction_candidates(150).await.unwrap();
         assert_eq!(candidates.len(), 2, "v1 + v3 needed to free 150 bytes");
         assert!(candidates.iter().any(|(id, _)| *id == v1));
         assert!(candidates.iter().any(|(id, _)| *id == v3));
@@ -2276,7 +2280,9 @@ mod tests {
             native_hash_algo: None,
             provider_modified_at: None,
         };
-        repo.upsert_video(conn, Provider::GoogleDrive, &video).await.unwrap();
+        repo.upsert_video(conn, Provider::GoogleDrive, &video)
+            .await
+            .unwrap();
         // Fetch the generated UUID.
         let row: (String,) = sqlx::query_as("SELECT id FROM videos WHERE provider_file_id = ?")
             .bind(format!("{id}-file"))

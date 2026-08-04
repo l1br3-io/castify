@@ -65,7 +65,8 @@ pub struct TranscodeRungStats {
     pub total_bytes: i64,
 }
 
-impl CatalogRepository {    /// Insert a pending row, or revive an existing one back to pending.
+impl CatalogRepository {
+    /// Insert a pending row, or revive an existing one back to pending.
     /// Called when a transcode starts (or restarts after server reboot).
     ///
     /// Uses `ON CONFLICT DO UPDATE` so a re-request for an already-tracked
@@ -542,10 +543,7 @@ mod tests {
 
     /// Test helper: build a `NewTranscodeEntry` with sensible defaults.
     /// Tests override only the fields they care about.
-    fn new_entry<'a>(
-        video_id: &'a str,
-        variant: &'a str,
-    ) -> NewTranscodeEntry<'a> {
+    fn new_entry<'a>(video_id: &'a str, variant: &'a str) -> NewTranscodeEntry<'a> {
         NewTranscodeEntry {
             video_id,
             variant,
@@ -597,7 +595,11 @@ mod tests {
             .unwrap();
         // Re-insert resets.
         repo.insert_pending_transcode(&e).await.unwrap();
-        let entry = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let entry = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.status, "pending");
         assert_eq!(entry.completed_segments, 0);
         assert!(entry.total_segments.is_none());
@@ -615,18 +617,28 @@ mod tests {
         e.width = Some(854);
         e.height = Some(480);
         repo.insert_pending_transcode(&e).await.unwrap();
-        repo.mark_transcode_in_progress(&vid, "480p", "prof").await.unwrap();
+        repo.mark_transcode_in_progress(&vid, "480p", "prof")
+            .await
+            .unwrap();
         repo.update_transcode_progress(&vid, "480p", "prof", 3)
             .await
             .unwrap();
-        let mid = repo.fetch_transcode_entry(&vid, "480p", "prof").await.unwrap().unwrap();
+        let mid = repo
+            .fetch_transcode_entry(&vid, "480p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(mid.status, "in_progress");
         assert_eq!(mid.completed_segments, 3);
 
         repo.mark_transcode_completed(&vid, "480p", "prof", 10)
             .await
             .unwrap();
-        let done = repo.fetch_transcode_entry(&vid, "480p", "prof").await.unwrap().unwrap();
+        let done = repo
+            .fetch_transcode_entry(&vid, "480p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(done.status, "completed");
         assert_eq!(done.completed_segments, 10);
         assert_eq!(done.total_segments, Some(10));
@@ -644,7 +656,11 @@ mod tests {
         repo.mark_transcode_failed(&vid, "720p", "prof", "ffmpeg died")
             .await
             .unwrap();
-        let entry = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let entry = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(entry.status, "failed");
         assert_eq!(entry.last_error.as_deref(), Some("ffmpeg died"));
     }
@@ -658,11 +674,19 @@ mod tests {
         repo.insert_pending_transcode(&new_entry(&vid, "720p"))
             .await
             .unwrap();
-        let before = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let before = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         // Sleep so the timestamp differs (SQLite datetime('now') is second-resolution).
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         repo.touch_transcode(&vid, "720p", "prof").await.unwrap();
-        let after = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let after = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_ne!(before.last_accessed_at, after.last_accessed_at);
     }
 
@@ -702,12 +726,21 @@ mod tests {
         repo.insert_pending_transcode(&new_entry(&vid, "720p"))
             .await
             .unwrap();
-        let removed = repo.delete_transcode_entry(&vid, "720p", "prof").await.unwrap();
+        let removed = repo
+            .delete_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap();
         assert!(removed);
-        let after = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap();
+        let after = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap();
         assert!(after.is_none());
 
-        let again = repo.delete_transcode_entry(&vid, "720p", "prof").await.unwrap();
+        let again = repo
+            .delete_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap();
         assert!(!again, "second delete returns false");
     }
 
@@ -840,7 +873,11 @@ mod tests {
         repo.seed_completed_transcode_if_missing(&new_entry(&vid, "720p"), 12)
             .await
             .unwrap();
-        let row = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let row = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.status, "completed");
         assert_eq!(row.total_segments, Some(12));
 
@@ -851,8 +888,16 @@ mod tests {
         repo.seed_completed_transcode_if_missing(&new_entry(&vid, "720p"), 99)
             .await
             .unwrap();
-        let row = repo.fetch_transcode_entry(&vid, "720p", "prof").await.unwrap().unwrap();
+        let row = repo
+            .fetch_transcode_entry(&vid, "720p", "prof")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.status, "failed", "seed must not overwrite existing row");
-        assert_eq!(row.total_segments, Some(12), "seed must not change total_segments");
+        assert_eq!(
+            row.total_segments,
+            Some(12),
+            "seed must not change total_segments"
+        );
     }
 }

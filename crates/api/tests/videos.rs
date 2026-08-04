@@ -2864,8 +2864,7 @@ async fn stream_proxy_returns_reauth_required_when_refresh_does_not_recover() {
     )
     .await;
 
-    let (status, body) =
-        get_json(app, &format!("/api/videos/{vid}/stream"), Some(&cookie)).await;
+    let (status, body) = get_json(app, &format!("/api/videos/{vid}/stream"), Some(&cookie)).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["code"], "reauth_required");
@@ -2945,8 +2944,12 @@ async fn stream_drive_inline_byte_fallback() {
     .await;
 
     // Step 1: stream-url returns proxy strategy.
-    let (status, body) =
-        get_json(app.clone(), &format!("/api/videos/{vid}/stream-url"), Some(&cookie)).await;
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/api/videos/{vid}/stream-url"),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["strategy"], "proxy");
     let url = body["url"].as_str().expect("url present");

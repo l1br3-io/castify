@@ -85,7 +85,11 @@ enum SubtitleExtractError {
 /// best-effort follow-up after a successful probe — failures are logged, not
 /// propagated. The resolved [`crate::local_source::LocalSource`] guard is
 /// held for the duration so a scratch tempfile isn't reaped mid-extraction.
-pub async fn extract_embedded_text_subtitles(state: &AppState, video_id: &str, probe_info: &ProbeInfo) {
+pub async fn extract_embedded_text_subtitles(
+    state: &AppState,
+    video_id: &str,
+    probe_info: &ProbeInfo,
+) {
     if !probe_info
         .embedded_subtitle_tracks
         .iter()

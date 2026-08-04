@@ -481,11 +481,7 @@ pub async fn start_transcode(
             if let Ok(mut entries) = tokio::fs::read_dir(&seg_dir).await {
                 let mut found = false;
                 while let Ok(Some(entry)) = entries.next_entry().await {
-                    if entry
-                        .file_name()
-                        .to_string_lossy()
-                        .ends_with(".ts")
-                    {
+                    if entry.file_name().to_string_lossy().ends_with(".ts") {
                         found = true;
                         break;
                     }
@@ -614,7 +610,12 @@ mod tests {
     use super::*;
     use castify_catalog::TranscodeCacheEntry;
 
-    fn entry(variant: &str, bitrate: Option<i64>, width: Option<i64>, height: Option<i64>) -> TranscodeCacheEntry {
+    fn entry(
+        variant: &str,
+        bitrate: Option<i64>,
+        width: Option<i64>,
+        height: Option<i64>,
+    ) -> TranscodeCacheEntry {
         TranscodeCacheEntry {
             video_id: "vid".into(),
             variant: variant.into(),
@@ -643,7 +644,8 @@ mod tests {
 
     #[test]
     fn single_completed_720p_emits_one_stream_inf() {
-        let playlist = build_master_playlist(&[entry("720p", Some(3_000_000), Some(1280), Some(720))]);
+        let playlist =
+            build_master_playlist(&[entry("720p", Some(3_000_000), Some(1280), Some(720))]);
         assert!(playlist.contains("#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720"));
         assert!(playlist.contains("\n720p/playlist.m3u8\n"));
     }
@@ -764,10 +766,7 @@ mod tests {
             key.contains("+subs-track-7"),
             "key missing burn suffix: {key}"
         );
-        assert_eq!(
-            key,
-            format!("vid1:720p:{DEFAULT_PROFILE}+subs-track-7")
-        );
+        assert_eq!(key, format!("vid1:720p:{DEFAULT_PROFILE}+subs-track-7"));
     }
 
     #[test]

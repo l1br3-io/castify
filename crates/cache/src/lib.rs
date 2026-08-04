@@ -430,7 +430,7 @@ mod tests {
         // Active in-progress write (not yet finalized).
         let mut writer = cache.start_streaming_write("ccc").await.unwrap();
         writer.write_chunk(b"tmp-bytes-here").await.unwrap(); // 14 bytes
-        // Don't finalize.
+                                                              // Don't finalize.
 
         let total = cache.total_size_bytes().await.unwrap();
         assert_eq!(total, 15, "total should exclude _tmp/ files");

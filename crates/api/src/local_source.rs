@@ -336,7 +336,11 @@ mod tests {
     async fn cache_hit_short_circuits_no_fetch() {
         let registry = LocalSourceRegistry::new();
         let data_dir = tempfile::tempdir().unwrap();
-        let cache_path = data_dir.path().join("video-cache").join("ab").join("video-1");
+        let cache_path = data_dir
+            .path()
+            .join("video-cache")
+            .join("ab")
+            .join("video-1");
         let fetch_called = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let src = resolve_local_source_with_fetch(
@@ -420,13 +424,7 @@ mod tests {
             "video-3",
             Some("mp4"),
             None,
-            || {
-                async {
-                    Err(ApiError::ServiceUnavailable(
-                        "provider is down".into(),
-                    ))
-                }
-            },
+            || async { Err(ApiError::ServiceUnavailable("provider is down".into())) },
         )
         .await;
 
@@ -457,11 +455,7 @@ mod tests {
             Arc::clone(&release),
         );
         let fetcher_a = move || {
-            let (fc, st, rel) = (
-                Arc::clone(&fc_a),
-                Arc::clone(&st_a),
-                Arc::clone(&rel_a),
-            );
+            let (fc, st, rel) = (Arc::clone(&fc_a), Arc::clone(&st_a), Arc::clone(&rel_a));
             async move {
                 fc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 st.notify_one();

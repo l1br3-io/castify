@@ -89,17 +89,12 @@ pub enum StreamUrl {
     /// The hot-video disk cache has this video (M4). The caller should use
     /// the cached-stream endpoint (`/api/videos/{id}/cached-stream`). The
     /// `path` field carries that URL for the frontend's `<video src>`.
-    Cached {
-        url: String,
-        size_bytes: u64,
-    },
+    Cached { url: String, size_bytes: u64 },
     /// The video's codec is browser-incompatible; the caller should use
     /// the transcode endpoint (M6). The `master_url` points at the HLS
     /// master playlist. Frontend uses hls.js (or native HLS on Safari)
     /// to consume.
-    Transcode {
-        master_url: String,
-    },
+    Transcode { master_url: String },
 }
 
 impl std::fmt::Debug for StreamResponse {

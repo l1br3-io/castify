@@ -56,11 +56,12 @@ impl SubtitleFormatFamily {
     pub fn from_codec(codec: &str) -> Self {
         match codec.to_ascii_lowercase().as_str() {
             // Text-based subtitle codecs
-            "subrip" | "srt" | "ass" | "ssa" | "webvtt" | "vtt" | "mov_text"
-            | "utf-8" | "ascii" => SubtitleFormatFamily::Text,
+            "subrip" | "srt" | "ass" | "ssa" | "webvtt" | "vtt" | "mov_text" | "utf-8"
+            | "ascii" => SubtitleFormatFamily::Text,
             // Image-based subtitle codecs
-            "hdmv_pgs_subtitle" | "pgssub" | "dvd_subtitle" | "vobsub"
-            | "dvb_subtitle" => SubtitleFormatFamily::Image,
+            "hdmv_pgs_subtitle" | "pgssub" | "dvd_subtitle" | "vobsub" | "dvb_subtitle" => {
+                SubtitleFormatFamily::Image
+            }
             _ => SubtitleFormatFamily::Text, // default: try text first
         }
     }
@@ -224,14 +225,8 @@ fn parse_ffprobe(output: &FfprobeOutput) -> ProbeInfo {
             "video" => {
                 if video_codec.is_none() {
                     video_codec = Some(stream.codec_name.clone());
-                    video_bitrate = stream
-                        .bit_rate
-                        .as_ref()
-                        .and_then(|s| s.parse::<u64>().ok());
-                    framerate = stream
-                        .avg_frame_rate
-                        .as_deref()
-                        .and_then(parse_frame_rate);
+                    video_bitrate = stream.bit_rate.as_ref().and_then(|s| s.parse::<u64>().ok());
+                    framerate = stream.avg_frame_rate.as_deref().and_then(parse_frame_rate);
                 }
             }
             "audio" => {
