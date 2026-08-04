@@ -374,6 +374,25 @@ pub struct SubtitleTrack {
     pub embedded_track_id: Option<i64>,
 }
 
+/// An embedded subtitle track row from `video_subtitle_tracks` (populated at
+/// probe time, M5). Image-family tracks (PGS/VobSub) stay here — they are
+/// never extracted to `video_subtitles` because burn-in reads them directly
+/// from the source file via ffmpeg.
+///
+/// Looked up by id when a burn-in request arrives (`?burn_subtitles=<id>`)
+/// to resolve the ffmpeg stream index (`embedded_index`) and verify the
+/// track is image-based (`format_family = "image"`).
+#[derive(Debug, Clone)]
+pub struct EmbeddedSubtitleTrack {
+    pub id: String,
+    pub embedded_index: i64,
+    pub codec: String,
+    /// `"text"` or `"image"` — burn-in rejects text tracks.
+    pub format_family: String,
+    pub language: Option<String>,
+    pub title: Option<String>,
+}
+
 /// Full video metadata for the player page. Enriched with personalization
 /// state, playback progress, and subtitle tracks (FR-4.1).
 #[derive(Debug, Serialize)]

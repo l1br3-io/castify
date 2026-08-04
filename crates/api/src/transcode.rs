@@ -97,6 +97,145 @@ pub fn transcode_registry_key(
     format!("{video_id}:{variant}:{profile}")
 }
 
+/// Burn-in specification: resolves a subtitle track to the ffmpeg arguments
+/// needed to render (burn) it into the video frames during transcoding.
+///
+/// When `Some` is passed to [`start_transcode`], ffmpeg reads from
+/// `source_path` (a seekable local file) instead of stdin, and the video
+/// filter chain gains a `subtitles=` filter that composites the subtitle
+/// stream into every frame. The result is a self-contained HLS variant whose
+/// frames already carry the subtitles — no player-side subtitle rendering
+/// is needed.
+///
+/// **GOTCHA:** burn-in ffmpeg must read the local source file, not stdin —
+/// the subtitles filter needs a seekable demuxer input. The stdin path is
+/// for unburned only.
+#[derive(Debug, Clone)]
+pub struct BurnSpec {
+    /// The subtitle track id (from `video_subtitle_tracks`). Carried for
+    /// logging/diagnostics; not used directly in ffmpeg args.
+    pub subtitle_track_id: String,
+    /// The ffmpeg stream index — passed as `si=<index>` to the `subtitles`
+    /// filter so ffmpeg selects the right subtitle stream from the source
+    /// container (an MKV may carry several).
+    pub embedded_index: i64,
+    /// Seekable local source file path. ffmpeg's `-i` argument and the
+    /// `subtitles=` filter both reference this path.
+    pub source_path: PathBuf,
+}
+
+/// Escape a string for use as a value inside an ffmpeg filtergraph. The
+/// filtergraph syntax treats `\`, `:`, `,`, `[`, `]`, and `'` as structural
+/// characters; prefixing each with `\` neutralizes them.
+///
+/// Applied to the local-source path before it's embedded in
+/// `subtitles=<path>:si=<n>`. Paths under `transcode-work/` rarely contain
+/// these characters, but escaping is cheap insurance against a `:` in a
+/// Windows drive letter or a comma in a user-named video id.
+fn escape_filtergraph_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | ':' | ',' | '[' | ']' | '\'' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Resolve the ffmpeg `-vf` scale expression for a variant name. Caps the
+/// output resolution without upscaling (the `min(target,iw)` idiom).
+fn scale_filter_for_variant(variant: &str) -> &'static str {
+    match variant {
+        "source" => "scale=iw:ih",
+        "720p" => "scale='min(1280,iw)':-2:force_original_aspect_ratio=decrease",
+        "480p" => "scale='min(854,iw)':-2:force_original_aspect_ratio=decrease",
+        "360p" => "scale='min(640,iw)':-2:force_original_aspect_ratio=decrease",
+        _ => "scale='min(1280,iw)':-2:force_original_aspect_ratio=decrease",
+    }
+}
+
+/// Compose the full `-vf` filtergraph string for a transcode.
+///
+/// - **Unburned** (`burn = None`): just the scale filter.
+/// - **Burned** (`burn = Some`): `subtitles=<path>:si=<index>,<scale>` — the
+///   `subtitles` filter renders subtitle bitmaps at full resolution, then
+///   scale shrinks the composited frame. Ordering matters: burning before
+///   scaling keeps subtitle text crisp at lower rungs.
+fn build_video_filter(variant: &str, burn: Option<&BurnSpec>) -> String {
+    let scale = scale_filter_for_variant(variant);
+    match burn {
+        Some(spec) => {
+            let path = escape_filtergraph_value(&spec.source_path.to_string_lossy());
+            let index = spec.embedded_index;
+            format!("subtitles={path}:si={index},{scale}")
+        }
+        None => scale.to_string(),
+    }
+}
+
+/// Build the flat ffmpeg argument list for a transcode job. Extracted from
+/// [`start_transcode`] so the burn-vs-unburned arg construction is
+/// unit-testable without spawning ffmpeg or touching the filesystem.
+///
+/// `input_source` is `"pipe:0"` for the stdin (unburned) path or the local
+/// source file path for the burn path. The caller is responsible for
+/// matching `input_source` and `burn` (both refer to the same path when
+/// burning).
+fn build_ffmpeg_args(
+    input_source: &str,
+    segment_filename: &Path,
+    playlist_path: &Path,
+    variant: &str,
+    segment_duration_secs: u32,
+    burn: Option<&BurnSpec>,
+) -> Vec<String> {
+    let vf = build_video_filter(variant, burn);
+    vec![
+        "-i".into(),
+        input_source.into(),
+        // Video encoder.
+        "-c:v".into(),
+        "libx264".into(),
+        "-preset".into(),
+        "veryfast".into(),
+        "-tune".into(),
+        "zerolatency".into(),
+        "-profile:v".into(),
+        "high".into(),
+        "-level".into(),
+        "4.0".into(),
+        "-pix_fmt".into(),
+        "yuv420p".into(),
+        "-crf".into(),
+        "23".into(),
+        // Scale / subtitles+scale filter.
+        "-vf".into(),
+        vf,
+        // Audio encoder.
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-ac".into(),
+        "2".into(),
+        // HLS output.
+        "-f".into(),
+        "hls".into(),
+        "-hls_time".into(),
+        segment_duration_secs.to_string(),
+        "-hls_list_size".into(),
+        "0".into(),
+        "-hls_segment_filename".into(),
+        segment_filename.to_string_lossy().into_owned(),
+        "-y".into(),
+        playlist_path.to_string_lossy().into_owned(),
+    ]
+}
+
 /// Errors returned by the transcode pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodeError {
@@ -161,19 +300,30 @@ impl TranscodeState {
 
 /// Start a transcode job.
 ///
-/// Spawns an `ffmpeg` process that reads from `input` (piped to stdin) and
-/// writes HLS segments to `output_dir`. Returns immediately with a handle;
-/// the transcode runs in the background.
+/// Spawns an `ffmpeg` process and writes HLS segments to `output_dir`.
+/// Returns immediately with a handle; the transcode runs in the background.
+///
+/// **Two input modes:**
+/// - **Unburned** (`burn = None`, `input = Some(stream)`): ffmpeg reads from
+///   stdin (provider stream piped in). This is the M6/M7 path, unchanged.
+/// - **Burned** (`burn = Some(spec)`, `input = None`): ffmpeg reads from
+///   `spec.source_path` (a seekable local file resolved by Task 005's
+///   `resolve_local_source`) and applies a `subtitles=` filter to render
+///   the subtitle track into the video frames.
 ///
 /// The caller is responsible for:
 /// - Polling the output directory for ready segments
 /// - Storing the manifest row when the transcode completes
 /// - Cleaning up on cancellation
+/// - Holding the [`crate::local_source::LocalSource`] guard for the
+///   transcode's lifetime when burning (so a tempfile isn't reaped
+///   mid-encode)
 pub async fn start_transcode(
-    input: BodyStream,
+    input: Option<BodyStream>,
     output_dir: PathBuf,
     variant: &str,
     segment_duration_secs: u32,
+    burn: Option<BurnSpec>,
 ) -> TranscodeResult<TranscodeHandle> {
     // Ensure output directory exists.
     tokio::fs::create_dir_all(&output_dir).await?;
@@ -181,69 +331,38 @@ pub async fn start_transcode(
     let segment_filename = output_dir.join("segment_%05d.ts");
     let playlist_path = output_dir.join("playlist.m3u8");
 
-    // Build ffmpeg args. CPU-only H.264/AAC with HLS output.
-    // -preset veryfast + -tune zerolatency for fast startup.
-    // Scale filter caps at 720p without upscaling.
-    let scale_filter = match variant {
-        "source" => "scale=iw:ih".to_string(),
-        "720p" => {
-            "scale='min(1280,iw)':-2:force_original_aspect_ratio=decrease".to_string()
-        }
-        "480p" => {
-            "scale='min(854,iw)':-2:force_original_aspect_ratio=decrease".to_string()
-        }
-        "360p" => {
-            "scale='min(640,iw)':-2:force_original_aspect_ratio=decrease".to_string()
-        }
-        _ => {
-            "scale='min(1280,iw)':-2:force_original_aspect_ratio=decrease".to_string()
-        }
+    // Determine ffmpeg's input source and stdin policy.
+    //
+    // GOTCHA: burn-in ffmpeg must read the local source file, not stdin —
+    // the subtitles filter needs a seekable demuxer input. The stdin path
+    // is for unburned only.
+    let input_source = match &burn {
+        Some(spec) => spec.source_path.to_string_lossy().into_owned(),
+        None => "pipe:0".to_string(),
     };
+    let args = build_ffmpeg_args(
+        &input_source,
+        &segment_filename,
+        &playlist_path,
+        variant,
+        segment_duration_secs,
+        burn.as_ref(),
+    );
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-i")
-        .arg("pipe:0")
-        // Video encoder.
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-preset")
-        .arg("veryfast")
-        .arg("-tune")
-        .arg("zerolatency")
-        .arg("-profile:v")
-        .arg("high")
-        .arg("-level")
-        .arg("4.0")
-        .arg("-pix_fmt")
-        .arg("yuv420p")
-        .arg("-crf")
-        .arg("23")
-        // Scale filter (caps resolution per variant).
-        .arg("-vf")
-        .arg(&scale_filter)
-        // Audio encoder.
-        .arg("-c:a")
-        .arg("aac")
-        .arg("-b:a")
-        .arg("128k")
-        .arg("-ac")
-        .arg("2")
-        // HLS output.
-        .arg("-f")
-        .arg("hls")
-        .arg("-hls_time")
-        .arg(segment_duration_secs.to_string())
-        .arg("-hls_list_size")
-        .arg("0")
-        .arg("-hls_segment_filename")
-        .arg(&segment_filename)
-        .arg("-y") // overwrite playlist if exists
-        .arg(&playlist_path)
-        .stdin(Stdio::piped())
+    cmd.args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         // Kill ffmpeg if the parent process dies.
         ;
+
+    // Stdin policy: piped for the unburned stdin pump; null for burn
+    // (ffmpeg reads from the file, not stdin).
+    if burn.is_some() {
+        cmd.stdin(Stdio::null());
+    } else {
+        cmd.stdin(Stdio::piped());
+    }
 
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -253,10 +372,18 @@ pub async fn start_transcode(
         }
     })?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| TranscodeError::PumpError("ffmpeg stdin not captured".into()))?;
+    // Take stdin for the pump before the child goes into the shared mutex.
+    // Burn mode has no stdin to pump (ffmpeg reads from the file).
+    let stdin = if burn.is_some() {
+        None
+    } else {
+        Some(
+            child
+                .stdin
+                .take()
+                .ok_or_else(|| TranscodeError::PumpError("ffmpeg stdin not captured".into()))?,
+        )
+    };
 
     let state = Arc::new(TranscodeState::new());
     let first_segment_ready = Arc::new(Notify::new());
@@ -264,17 +391,24 @@ pub async fn start_transcode(
     let child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
         Arc::new(tokio::sync::Mutex::new(Some(child)));
 
-    // Spawn the stdin pump task: reads from BodyStream, writes to ffmpeg stdin.
-    let pump_state = Arc::clone(&state);
-    tokio::spawn(async move {
-        if let Err(e) = pump_stream_to_stdin(input, stdin).await {
-            tracing::warn!(error = %e, "transcode stdin pump error");
-            pump_state
-                .failed
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        // Signal that input is done — ffmpeg will finish processing.
-    });
+    // Spawn the stdin pump task for the unburned path. Burn mode reads
+    // from a file and has no stdin to pump.
+    if let (Some(stream), Some(stdin)) = (input, stdin) {
+        debug_assert!(
+            burn.is_none(),
+            "start_transcode: input and burn are mutually exclusive"
+        );
+        let pump_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = pump_stream_to_stdin(stream, stdin).await {
+                tracing::warn!(error = %e, "transcode stdin pump error");
+                pump_state
+                    .failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Signal that input is done — ffmpeg will finish processing.
+        });
+    }
 
     // Spawn the completion watcher: waits for ffmpeg to exit, then notifies.
     let watch_state = Arc::clone(&state);
@@ -652,5 +786,179 @@ mod tests {
         let burn_a = transcode_registry_key("vid1", "720p", Some("track-a"));
         let burn_b = transcode_registry_key("vid1", "720p", Some("track-b"));
         assert_ne!(burn_a, burn_b);
+    }
+
+    // ── build_ffmpeg_args burn vs. unburned (M8 Task 008) ─────────────
+
+    /// Helper: join a Vec<String> into a single space-separated string so
+    /// substring assertions read clearly.
+    fn args_joined(args: &[String]) -> String {
+        args.join(" ")
+    }
+
+    #[test]
+    fn unburned_args_read_stdin_and_have_no_subtitles_filter() {
+        let seg = Path::new("/tmp/out/segment_%05d.ts");
+        let plist = Path::new("/tmp/out/playlist.m3u8");
+        let args = build_ffmpeg_args("pipe:0", seg, plist, "720p", 6, None);
+        let joined = args_joined(&args);
+
+        assert!(
+            joined.contains("-i pipe:0"),
+            "unburned must read stdin: {joined}"
+        );
+        assert!(
+            !joined.contains("subtitles="),
+            "unburned must not carry a subtitles filter: {joined}"
+        );
+        assert!(
+            joined.contains("-vf scale="),
+            "unburned must still have scale filter: {joined}"
+        );
+    }
+
+    #[test]
+    fn burned_args_read_local_source_and_attach_subtitles_filter() {
+        let seg = Path::new("/tmp/out/segment_%05d.ts");
+        let plist = Path::new("/tmp/out/playlist.m3u8");
+        let source = Path::new("/data/transcode-work/vid-1/source.mkv");
+        let spec = BurnSpec {
+            subtitle_track_id: "vid-1-sub-3".into(),
+            embedded_index: 2,
+            source_path: source.into(),
+        };
+        let source_str = source.to_string_lossy().into_owned();
+        let args = build_ffmpeg_args(&source_str, seg, plist, "720p", 6, Some(&spec));
+        let joined = args_joined(&args);
+
+        // Input switches from pipe:0 to the local file.
+        assert!(
+            joined.contains(&format!("-i {source_str}")),
+            "burned must read the local source file: {joined}"
+        );
+        assert!(
+            !joined.contains("-i pipe:0"),
+            "burned must not read stdin: {joined}"
+        );
+
+        // The subtitles filter references the source path and stream index.
+        assert!(
+            joined.contains("subtitles="),
+            "burned must carry a subtitles filter: {joined}"
+        );
+        assert!(
+            joined.contains("si=2"),
+            "burned must select stream index 2: {joined}"
+        );
+
+        // The scale filter is still present, after the subtitles filter
+        // (burn-then-scale ordering keeps subtitle bitmaps crisp).
+        let vf_pos = joined.find("-vf ").unwrap();
+        let vf_val_start = vf_pos + 4;
+        let vf_end = joined[vf_val_start..].find(' ').unwrap() + vf_val_start;
+        let vf_val = &joined[vf_val_start..vf_end];
+        let subs_pos = vf_val.find("subtitles=").unwrap();
+        let scale_pos = vf_val.find("scale=").unwrap();
+        assert!(
+            subs_pos < scale_pos,
+            "subtitles filter must precede scale (burn at full res, then shrink): {vf_val}"
+        );
+    }
+
+    #[test]
+    fn burned_args_escape_special_chars_in_source_path() {
+        // A path containing filtergraph-structural characters must be
+        // escaped so ffmpeg parses the -vf string correctly. A colon in a
+        // Windows-style path (C:\videos\source.mkv) is the realistic case.
+        let seg = Path::new("/tmp/out/segment_%05d.ts");
+        let plist = Path::new("/tmp/out/playlist.m3u8");
+        let source = Path::new("C:/videos/source.mkv");
+        let spec = BurnSpec {
+            subtitle_track_id: "track-1".into(),
+            embedded_index: 0,
+            source_path: source.into(),
+        };
+        let args = build_ffmpeg_args(
+            &source.to_string_lossy(),
+            seg,
+            plist,
+            "480p",
+            10,
+            Some(&spec),
+        );
+        let joined = args_joined(&args);
+
+        // The -vf value should contain the escaped path (C\:...).
+        assert!(
+            joined.contains("subtitles=C\\:/videos/source.mkv"),
+            "colon in path must be backslash-escaped: {joined}"
+        );
+    }
+
+    #[test]
+    fn burned_and_unburned_args_differ_in_input_and_filter() {
+        let seg = Path::new("/tmp/out/segment_%05d.ts");
+        let plist = Path::new("/tmp/out/playlist.m3u8");
+        let unburned = build_ffmpeg_args("pipe:0", seg, plist, "720p", 6, None);
+
+        let source = Path::new("/data/source.mkv");
+        let spec = BurnSpec {
+            subtitle_track_id: "t1".into(),
+            embedded_index: 1,
+            source_path: source.into(),
+        };
+        let burned = build_ffmpeg_args(
+            &source.to_string_lossy(),
+            seg,
+            plist,
+            "720p",
+            6,
+            Some(&spec),
+        );
+
+        // The arg lists must differ — at minimum the -i value and -vf value.
+        assert_ne!(unburned, burned, "burn and unburn args must differ");
+    }
+
+    #[test]
+    fn unburned_args_match_pre_m8_shape() {
+        // Regression guard: the unburned arg list must be identical to what
+        // M6/M7 produced. If this breaks, an unrelated transcode change
+        // leaked into the burn refactor.
+        let seg = Path::new("/out/segment_%05d.ts");
+        let plist = Path::new("/out/playlist.m3u8");
+        let args = build_ffmpeg_args("pipe:0", seg, plist, "720p", 10, None);
+
+        // Spot-check the encoder + HLS settings that must not change.
+        let joined = args_joined(&args);
+        for expected in [
+            "-c:v libx264",
+            "-preset veryfast",
+            "-tune zerolatency",
+            "-profile:v high",
+            "-level 4.0",
+            "-pix_fmt yuv420p",
+            "-crf 23",
+            "-c:a aac",
+            "-b:a 128k",
+            "-ac 2",
+            "-f hls",
+            "-hls_list_size 0",
+            "-y",
+        ] {
+            assert!(
+                joined.contains(expected),
+                "unburned args missing `{expected}`: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_filtergraph_value_neutralizes_structural_chars() {
+        assert_eq!(escape_filtergraph_value("plain"), "plain");
+        assert_eq!(escape_filtergraph_value("a:b"), "a\\:b");
+        assert_eq!(escape_filtergraph_value("a,b"), "a\\,b");
+        assert_eq!(escape_filtergraph_value(r"a\b"), "a\\\\b");
+        assert_eq!(escape_filtergraph_value("a'b"), "a\\'b");
     }
 }

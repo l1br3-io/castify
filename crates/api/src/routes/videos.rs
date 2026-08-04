@@ -2218,11 +2218,17 @@ fn transcode_registry(
 /// via [`crate::transcode::burn_profile`], the registry key gains the
 /// derived profile as a third component, and all repo calls
 /// (`fetch_transcode_entry`, `insert_pending_transcode`, `touch_transcode`,
-/// …) use the derived profile. The ffmpeg invocation itself is unchanged
-/// here — Task 008 flips the actual burn filter. This keeps the keying
-/// change testable in isolation: a burn request resolves to a distinct
-/// cache row and registry slot even though the segments produced are
-/// currently identical to the unburned path.
+/// …) use the derived profile.
+///
+/// **M8 Task 008 burn invocation:** when `subtitle_track_id` is `Some`,
+/// the track is looked up (`fetch_embedded_subtitle_track`) to resolve the
+/// ffmpeg stream index, a seekable local source is resolved
+/// (`resolve_local_source`), and [`crate::transcode::start_transcode`] is
+/// called with a [`crate::transcode::BurnSpec`] — ffmpeg reads from the
+/// local file (not stdin) and applies a `subtitles=` filter. The
+/// local-source guard is moved into the manifest-watcher task so the
+/// tempfile survives for ffmpeg's lifetime. When `subtitle_track_id` is
+/// `None`, the stdin pipeline runs unchanged.
 async fn ensure_transcode_started(
     state: &AppState,
     video_id: &str,
@@ -2285,7 +2291,7 @@ async fn ensure_transcode_started(
         return Ok(());
     }
 
-    // Start a new transcode. First, fetch the provider stream.
+    // Start a new transcode.
     tracing::info!(%key, "starting transcode");
 
     // Write the pending manifest row before ffmpeg starts so admin/eviction
@@ -2304,26 +2310,77 @@ async fn ensure_transcode_started(
         tracing::warn!(error = %e, %key, "failed to insert pending manifest row");
     }
 
-    let stream_response =
-        open_stream_with_refresh(state, stream_info, None).await?;
+    let segment_duration_secs = state.config().transcode.segment_duration_secs;
 
-    let handle = crate::transcode::start_transcode(
-        stream_response.body,
-        output_dir.clone(),
-        variant,
-        state.config().transcode.segment_duration_secs,
-    )
-    .await
-    .map_err(|e| {
-        ApiError::Internal(anyhow::anyhow!(
-            "failed to start transcode: {e}"
-        ))
-    })?;
-    let handle = Arc::new(handle);
+    // Branch: burn-in reads from a seekable local file (so ffmpeg's
+    // `subtitles=` filter can demux the subtitle stream); the unburned path
+    // pipes the provider stream to ffmpeg stdin as before.
+    //
+    // The local-source guard (for a Tempfile source) is held for the
+    // transcode's lifetime by moving it into the manifest-watcher task —
+    // when ffmpeg exits and the watcher ends, the guard drops and the
+    // tempfile is cleaned up. A Cached source is left untouched (M4 owns it).
+    let (handle, local_source_guard): (
+        Arc<crate::transcode::TranscodeHandle>,
+        Option<crate::local_source::LocalSource>,
+    ) = if let Some(track_id) = subtitle_track_id {
+        // ── Burn-in path (M8 Task 008) ──
+        let track = repo
+            .fetch_embedded_subtitle_track(video_id, track_id)
+            .await?
+            .ok_or_else(|| {
+                ApiError::Internal(anyhow::anyhow!(
+                    "burn-in: subtitle track {track_id} not found for video {video_id}"
+                ))
+            })?;
+
+        tracing::info!(
+            %key,
+            track_id,
+            embedded_index = track.embedded_index,
+            codec = %track.codec,
+            "burn-in: resolved subtitle track",
+        );
+
+        let local_source = crate::local_source::resolve_local_source(state, video_id).await?;
+        let spec = crate::transcode::BurnSpec {
+            subtitle_track_id: track_id.to_string(),
+            embedded_index: track.embedded_index,
+            source_path: local_source.path.clone(),
+        };
+
+        let h = crate::transcode::start_transcode(
+            None,
+            output_dir.clone(),
+            variant,
+            segment_duration_secs,
+            Some(spec),
+        )
+        .await
+        .map_err(|e| {
+            ApiError::Internal(anyhow::anyhow!("failed to start burn-in transcode: {e}"))
+        })?;
+        (Arc::new(h), Some(local_source))
+    } else {
+        // ── Unburned path (M6/M7 stdin pipeline, unchanged) ──
+        let stream_response = open_stream_with_refresh(state, stream_info, None).await?;
+        let h = crate::transcode::start_transcode(
+            Some(stream_response.body),
+            output_dir.clone(),
+            variant,
+            segment_duration_secs,
+            None,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to start transcode: {e}")))?;
+        (Arc::new(h), None)
+    };
 
     // Spawn a watcher that updates the manifest row as ffmpeg progresses.
     // Best-effort: log failures but don't propagate (the transcode itself
-    // is already running; the manifest is secondary).
+    // is already running; the manifest is secondary). The local-source
+    // guard (burn path only) moves into the watcher so it survives until
+    // ffmpeg exits — the guard's Drop cleans up a Tempfile source then.
     spawn_transcode_manifest_watcher(
         repo.clone(),
         Arc::clone(&handle),
@@ -2331,6 +2388,7 @@ async fn ensure_transcode_started(
         variant.to_string(),
         profile.clone(),
         output_dir.clone(),
+        local_source_guard,
     );
 
     guard.insert(key, handle);
@@ -2344,6 +2402,12 @@ async fn ensure_transcode_started(
 /// Best-effort: all repo writes are logged-and-discarded on failure. The
 /// transcode itself doesn't depend on the manifest — only admin/eviction
 /// and the master playlist do.
+///
+/// **M8 Task 008:** `_local_source_guard` holds the burn-in local-source
+/// RAII guard for the transcode's lifetime. When ffmpeg exits and this
+/// task ends, the guard drops — for a Tempfile source, the source file is
+/// deleted (and its `transcode-work/<video_id>/` dir if empty). For a
+/// Cached source or `None` (unburned), nothing happens on drop.
 fn spawn_transcode_manifest_watcher(
     repo: CatalogRepository,
     handle: Arc<crate::transcode::TranscodeHandle>,
@@ -2351,6 +2415,7 @@ fn spawn_transcode_manifest_watcher(
     variant: String,
     profile: String,
     output_dir: PathBuf,
+    _local_source_guard: Option<crate::local_source::LocalSource>,
 ) {
     tokio::spawn(async move {
         // Mark in_progress immediately so admin sees the running state.
@@ -2397,9 +2462,9 @@ fn spawn_transcode_manifest_watcher(
                 .inspect_err(|e| {
                     tracing::warn!(error = %e, %video_id, %variant, "manifest mark_failed failed");
                 });
-         }
-     });
- }
+        }
+    });
+}
 
 // (M7 T6 removed `wait_for_playlist` — the on-demand playlist endpoint now
 // returns 404 + Retry-After immediately when segments aren't ready, letting

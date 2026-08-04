@@ -1576,6 +1576,33 @@ impl CatalogRepository {
             .await?;
         Ok(())
     }
+
+    /// Fetch a single embedded subtitle track by its id. Used by the burn-in
+    /// path to resolve the ffmpeg stream index (`embedded_index`) and by
+    /// Task 009's master-playlist routing to validate `format_family`.
+    /// Returns `None` if the track id doesn't exist for this video.
+    pub async fn fetch_embedded_subtitle_track(
+        &self,
+        video_id: &str,
+        track_id: &str,
+    ) -> CatalogResult<Option<crate::model::EmbeddedSubtitleTrack>> {
+        let row = sqlx::query(
+            "SELECT id, embedded_index, codec, format_family, language, title \
+             FROM video_subtitle_tracks WHERE id = ? AND video_id = ?",
+        )
+        .bind(track_id)
+        .bind(video_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| crate::model::EmbeddedSubtitleTrack {
+            id: r.get("id"),
+            embedded_index: r.get("embedded_index"),
+            codec: r.get("codec"),
+            format_family: r.get("format_family"),
+            language: r.get("language"),
+            title: r.get("title"),
+        }))
+    }
 }
 
 /// Probe statistics returned by `probe_stats()`.
