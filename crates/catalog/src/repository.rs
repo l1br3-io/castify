@@ -56,6 +56,15 @@ pub struct VideoStreamInfo {
     pub name: String,
 }
 
+/// Shared SQL predicate that restricts catalog rows to those belonging to an
+/// **active** connection (one whose `disconnected_at` is NULL). Applied to
+/// every user-facing and per-id catalog query so a soft-deleted connection's
+/// videos stay hidden until revived. Defined once here and reused everywhere —
+/// no copy-pasted subselects — so a new query added without the filter is
+/// caught by the Phase-1 invisibility test (FR-3.4).
+pub const ACTIVE_CONNECTION_FILTER: &str = "connection_id IN (SELECT id FROM provider_connections \
+     WHERE disconnected_at IS NULL)";
+
 /// Push the shared WHERE predicates (provider, search, duration, resolution,
 /// folder, favorites, rating) onto the representative subquery builder. The
 /// predicates reference the un-aliased `videos` table (the subquery scope).
@@ -249,6 +258,52 @@ impl CatalogRepository {
         }
     }
 
+    /// Cheap active-state check for a connection. Returns `true` when the row
+    /// exists and `disconnected_at IS NULL`, `false` otherwise (disconnected or
+    /// no such row). Used by the scanner's per-page cancel check (Task 5) and
+    /// any code that needs a cheap gate without fetching the full row.
+    pub async fn is_connection_active(&self, connection_id: &str) -> CatalogResult<bool> {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM provider_connections \
+             WHERE id = ? AND disconnected_at IS NULL)",
+        )
+        .bind(connection_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(active)
+    }
+
+    /// Look up a connection by `(provider, provider_account_id)` **including**
+    /// soft-deleted rows. Distinct from [`find_active_connection_by_account`],
+    /// which filters out soft-deleted rows. The OAuth callback uses this to
+    /// revive a soft-deleted connection on reconnect (clearing
+    /// `disconnected_at`) instead of inserting a duplicate — the
+    /// `UNIQUE(provider, provider_account_id)` constraint makes the revive
+    /// mandatory while the soft-deleted row exists.
+    pub async fn find_connection_by_account(
+        &self,
+        provider: Provider,
+        provider_account_id: &str,
+    ) -> CatalogResult<Option<ProviderConnection>> {
+        let row = sqlx::query(
+            "SELECT id, provider, provider_account_id, provider_account_email, \
+             connected_at, disconnected_at \
+             FROM provider_connections \
+             WHERE provider = ? AND provider_account_id = ?",
+        )
+        .bind(provider.as_str())
+        .bind(provider_account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => Ok(Some(
+                ProviderConnection::from_row(&row).map_err(CatalogError::Other)?,
+            )),
+        }
+    }
+
     /// Soft-delete a connection (set `disconnected_at`). Videos and scan_state
     /// remain until a hard delete (cascade) is performed via [`delete_connection`].
     pub async fn disconnect(&self, id: &str) -> CatalogResult<bool> {
@@ -258,6 +313,23 @@ impl CatalogRepository {
              AND disconnected_at IS NULL",
         )
         .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Revive a soft-deleted connection: clear `disconnected_at` so the row is
+    /// active again. The OAuth callback calls this on reconnect when
+    /// [`find_connection_by_account`] returns a soft-deleted row. Returns
+    /// `true` when a soft-deleted row was revived, `false` when the row was
+    /// already active or does not exist. The connection `id` — and therefore
+    /// every video UUID — is unchanged, making disconnect→reconnect lossless.
+    pub async fn revive_connection(&self, id: &str) -> CatalogResult<bool> {
+        let result = sqlx::query(
+            "UPDATE provider_connections SET disconnected_at = NULL \
+             WHERE id = ? AND disconnected_at IS NOT NULL",
+        )
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -1738,6 +1810,124 @@ mod tests {
         let active = repo.list_active_connections().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].provider, Provider::GoogleDrive);
+    }
+
+    #[tokio::test]
+    async fn is_connection_active_reflects_disconnect() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-active".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            repo.is_connection_active(&conn.id).await.unwrap(),
+            "freshly created connection should be active"
+        );
+
+        repo.disconnect(&conn.id).await.unwrap();
+
+        assert!(
+            !repo.is_connection_active(&conn.id).await.unwrap(),
+            "disconnected connection should be inactive"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_connection_by_account_includes_soft_deleted() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-revive".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        // Active lookup finds it before disconnect.
+        assert!(repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .is_some());
+
+        repo.disconnect(&conn.id).await.unwrap();
+
+        // Active lookup no longer sees it.
+        assert!(repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .is_none());
+
+        // But the inclusive lookup still finds the soft-deleted row.
+        let found = repo
+            .find_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .expect("soft-deleted row should still be found");
+        assert_eq!(found.id, conn.id);
+        assert!(found.disconnected_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn revive_connection_clears_disconnected_at() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-revive-2".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        repo.disconnect(&conn.id).await.unwrap();
+        assert!(!repo.is_connection_active(&conn.id).await.unwrap());
+
+        assert!(
+            repo.revive_connection(&conn.id).await.unwrap(),
+            "revive should report it revived a soft-deleted row"
+        );
+
+        // fetch_connection filters disconnected_at IS NULL, so it sees the
+        // revived row again.
+        assert!(repo.fetch_connection(&conn.id).await.unwrap().is_some());
+        assert!(
+            repo.is_connection_active(&conn.id).await.unwrap(),
+            "revived connection should be active"
+        );
+
+        // Active account lookup sees it again, with the same id preserved.
+        let active = repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive-2")
+            .await
+            .unwrap()
+            .expect("revived connection should be findable by active account lookup");
+        assert_eq!(active.id, conn.id);
+    }
+
+    #[test]
+    fn active_connection_filter_predicate_is_stable() {
+        assert_eq!(
+            ACTIVE_CONNECTION_FILTER,
+            "connection_id IN (SELECT id FROM provider_connections \
+             WHERE disconnected_at IS NULL)"
+        );
     }
 
     #[tokio::test]
