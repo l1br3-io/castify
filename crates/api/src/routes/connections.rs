@@ -331,6 +331,39 @@ async fn callback_inner(
             spawn_scan(state, &existing.id, provider);
             return Ok((provider, entry.return_to));
         }
+
+        // Revive path (FR-2.1): no active connection, but a soft-deleted row
+        // for the same (provider, account_id) exists. Revive it in place —
+        // clear `disconnected_at`, rotate the token, rescan. The connection
+        // id and every video UUID are preserved because the row was never
+        // hard-deleted, so rescans hit `ON CONFLICT DO UPDATE` which omits
+        // `id`. The `UNIQUE(provider, provider_account_id)` constraint makes
+        // revive mandatory here: a fresh insert would violate it while the
+        // soft-deleted row exists. The `disconnected_at` guard documents the
+        // invariant — after the active-lookup miss above, any row found here
+        // must be soft-deleted (UNIQUE ensures at most one row per pair).
+        if let Some(existing) = repo
+            .find_connection_by_account(provider, account_id)
+            .await
+            .map_err(|e| format!("failed to look up connection for revive: {e}"))?
+        {
+            if existing.disconnected_at.is_some() {
+                tracing::info!(
+                    connection_id = %existing.id,
+                    %provider,
+                    %account_id,
+                    "reconnect: reviving soft-deleted connection"
+                );
+                repo.revive_connection(&existing.id)
+                    .await
+                    .map_err(|e| format!("failed to revive connection: {e}"))?;
+                repo.update_token_bundle(&existing.id, &token_bundle)
+                    .await
+                    .map_err(|e| format!("failed to update token: {e}"))?;
+                spawn_scan(state, &existing.id, provider);
+                return Ok((provider, entry.return_to));
+            }
+        }
     }
 
     // Fresh-connect path: insert a new row, spawn the initial scan.

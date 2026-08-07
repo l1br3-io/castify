@@ -648,3 +648,141 @@ async fn find_active_connection_by_account_returns_none_when_seeded_account_id_i
         "NULL-account rows must not be reachable via account-based upsert lookup"
     );
 }
+
+// --- FR-2.1 / FR-2.2: Reconnect revives a soft-deleted connection in place ---
+
+/// A helper that builds a minimal `NewVideo` so the identity-preservation
+/// test can pass the same descriptor to both upserts (the rescan must see
+/// the same `provider_file_id` to hit the ON CONFLICT path).
+fn sample_video(file_id: &str) -> castify_catalog::NewVideo {
+    castify_catalog::NewVideo {
+        provider_file_id: file_id.into(),
+        name: "movie.mp4".into(),
+        path: Some("/Videos".into()),
+        size_bytes: 1000,
+        mime_type: Some("video/mp4".into()),
+        duration_ms: Some(120_000),
+        width: None,
+        height: None,
+        native_hash: None,
+        native_hash_algo: None,
+        provider_modified_at: None,
+    }
+}
+
+/// FR-2.1 / FR-2.2 — disconnect→reconnect of the same provider account is
+/// lossless: the connection `id` and every video UUID survive. This drives
+/// the exact sequence of repository operations the OAuth callback performs
+/// on revive: `find_connection_by_account` (finds the soft-deleted row) →
+/// `revive_connection` (clears `disconnected_at`) → `update_token_bundle`
+/// (rotates the token) → `upsert_video` (the rescan re-lists the same
+/// file). Because `upsert_video` hits `ON CONFLICT(connection_id,
+/// provider_file_id) DO UPDATE` — which omits `id` — the video keeps its
+/// original UUID. The `UNIQUE(provider, provider_account_id)` constraint
+/// means revive is the *only* viable path while the soft-deleted row exists
+/// (a fresh insert would violate it), so the test also confirms no
+/// constraint error and no duplicate rows.
+#[tokio::test]
+async fn reconnect_revives_soft_deleted_connection_preserving_identity() {
+    let (_app, _cookie, repo, _guard) = boot_and_setup().await;
+
+    // ── Seed an active connection with two videos; record every UUID. ──
+    let conn = repo
+        .create_connection(&NewConnection {
+            provider: Provider::GoogleDrive,
+            token_bundle: sample_bundle(),
+            provider_account_id: Some("acct-revive".into()),
+            provider_account_email: Some("user@example.com".into()),
+        })
+        .await
+        .unwrap();
+
+    repo.upsert_video(&conn.id, Provider::GoogleDrive, &sample_video("file-1"))
+        .await
+        .unwrap();
+    repo.upsert_video(&conn.id, Provider::GoogleDrive, &sample_video("file-2"))
+        .await
+        .unwrap();
+
+    let original_conn_id = conn.id.clone();
+    let original_video_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM videos WHERE connection_id = ? ORDER BY provider_file_id",
+    )
+    .bind(&conn.id)
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(original_video_ids.len(), 2, "two videos seeded");
+
+    // ── Disconnect (Task 3 soft-delete). ──
+    assert!(repo.disconnect(&conn.id).await.unwrap());
+
+    // While disconnected: active lookup misses, but the inclusive lookup
+    // finds the soft-deleted row (this is the callback's new revive trigger).
+    assert!(
+        repo.find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .is_none(),
+        "active lookup misses soft-deleted connection"
+    );
+    let found = repo
+        .find_connection_by_account(Provider::GoogleDrive, "acct-revive")
+        .await
+        .unwrap()
+        .expect("inclusive lookup finds the soft-deleted row for revive");
+    assert!(
+        found.disconnected_at.is_some(),
+        "found row is the soft-deleted one"
+    );
+    assert_eq!(found.id, original_conn_id);
+
+    // ── Simulate the callback's revive path. ──
+    assert!(
+        repo.revive_connection(&found.id).await.unwrap(),
+        "revive_connection reports a soft-deleted row was revived"
+    );
+    repo.update_token_bundle(&found.id, &sample_bundle())
+        .await
+        .unwrap();
+    // Rescan: the provider lists the same files again. ON CONFLICT DO
+    // UPDATE keeps `id` stable.
+    repo.upsert_video(&found.id, Provider::GoogleDrive, &sample_video("file-1"))
+        .await
+        .unwrap();
+    repo.upsert_video(&found.id, Provider::GoogleDrive, &sample_video("file-2"))
+        .await
+        .unwrap();
+
+    // ── FR-2.2: identity is preserved. ──
+    assert!(
+        repo.is_connection_active(&original_conn_id).await.unwrap(),
+        "connection is active again after revive"
+    );
+    let revived = repo
+        .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+        .await
+        .unwrap()
+        .expect("revived connection is now visible to the active lookup");
+    assert_eq!(
+        revived.id, original_conn_id,
+        "connection id preserved across disconnect→revive"
+    );
+
+    let revived_video_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM videos WHERE connection_id = ? ORDER BY provider_file_id",
+    )
+    .bind(&original_conn_id)
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        revived_video_ids, original_video_ids,
+        "every video UUID preserved across disconnect→revive→rescan"
+    );
+    assert_eq!(
+        revived_video_ids.len(),
+        2,
+        "no duplicate video rows after revive rescan"
+    );
+}
