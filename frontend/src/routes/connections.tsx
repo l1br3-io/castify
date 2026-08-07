@@ -79,7 +79,7 @@ export function ConnectionsPage() {
             : "Connection failed. The provider did not grant access — please try again."}
         </Banner>
       ) : connectedProvider ? (
-        <Banner kind="success" onDismiss={dismissBanner}>
+        <Banner kind="info" onDismiss={dismissBanner}>
           {PROVIDER_LABELS[connectedProvider as ProviderKey] ??
             connectedProvider}{" "}
           connected. Scanning for media…
@@ -396,14 +396,16 @@ function Banner({
   onDismiss,
   children,
 }: {
-  kind: "success" | "error";
+  kind: "info" | "success" | "error";
   onDismiss: () => void;
   children: React.ReactNode;
 }) {
   const tone =
     kind === "success"
       ? "border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent-subtle)]"
-      : "border-[var(--color-castify-accent-dim)]/40 bg-[var(--color-castify-accent-dim)]/10";
+      : kind === "error"
+        ? "border-[var(--color-castify-accent-dim)]/40 bg-[var(--color-castify-accent-dim)]/10"
+        : "border-[var(--color-castify-muted)]/25 bg-[var(--color-castify-muted)]/10";
   return (
     <div
       className={`flex items-center justify-between gap-3 rounded-[var(--radius-button)] border ${tone} px-4 py-2.5 text-sm`}
