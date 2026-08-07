@@ -65,6 +65,15 @@ pub struct VideoStreamInfo {
 pub const ACTIVE_CONNECTION_FILTER: &str = "connection_id IN (SELECT id FROM provider_connections \
      WHERE disconnected_at IS NULL)";
 
+/// Build an active-connection filter scoped to a specific column reference.
+/// Use this for queries that alias the `videos` table (e.g. `"v.connection_id"`);
+/// the un-aliased default is [`ACTIVE_CONNECTION_FILTER`]. Reusing either form —
+/// rather than pasting the subselect into each query — is what the Phase-1
+/// invisibility test guards (FR-3.4).
+fn active_connection_filter_for(column: &str) -> String {
+    format!("{column} IN (SELECT id FROM provider_connections WHERE disconnected_at IS NULL)")
+}
+
 /// Push the shared WHERE predicates (provider, search, duration, resolution,
 /// folder, favorites, rating) onto the representative subquery builder. The
 /// predicates reference the un-aliased `videos` table (the subquery scope).
@@ -72,6 +81,11 @@ pub const ACTIVE_CONNECTION_FILTER: &str = "connection_id IN (SELECT id FROM pro
 /// Empty/None predicates are skipped. Duration predicates automatically
 /// exclude null-duration rows (NULL comparisons yield false in SQL).
 fn push_video_predicates(qb: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, filter: &VideoFilter) {
+    // Always restrict to active connections first — a soft-deleted connection's
+    // videos must never surface in browse (FR-3.1). Applied to both the dedup
+    // and non-dedup halves of the representative subquery via this single hook.
+    qb.push(" AND ");
+    qb.push(ACTIVE_CONNECTION_FILTER);
     if let Some(p) = &filter.provider {
         qb.push(" AND provider = ");
         qb.push_bind(p.as_str());
@@ -494,10 +508,10 @@ impl CatalogRepository {
         &self,
         video_id: &str,
     ) -> CatalogResult<Option<VideoThumbnailInfo>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT id, connection_id, provider, provider_file_id, thumbnail_status \
-             FROM videos WHERE id = ?",
-        )
+             FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER}"
+        ))
         .bind(video_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -525,10 +539,10 @@ impl CatalogRepository {
         &self,
         video_id: &str,
     ) -> CatalogResult<Option<VideoStreamInfo>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT id, connection_id, provider, provider_file_id, mime_type, size_bytes, name \
-             FROM videos WHERE id = ?",
-        )
+             FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER}"
+        ))
         .bind(video_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -687,7 +701,7 @@ impl CatalogRepository {
     /// root-level files (`/filename.ext`, no directory) under `"(Root)"`.
     /// Sorted by `video_count` descending.
     pub async fn fetch_folders(&self) -> CatalogResult<Vec<FolderCount>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT \
                 CASE \
                     WHEN path IS NULL THEN '(Unsorted)' \
@@ -698,14 +712,17 @@ impl CatalogRepository {
                 COUNT(*) AS video_count \
              FROM ( \
                 SELECT path FROM videos WHERE id IN ( \
-                    SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL GROUP BY dedup_group \
+                    SELECT MIN(id) FROM videos \
+                    WHERE dedup_group IS NOT NULL AND {ACTIVE_CONNECTION_FILTER} \
+                    GROUP BY dedup_group \
                     UNION ALL \
-                    SELECT id FROM videos WHERE dedup_group IS NULL \
+                    SELECT id FROM videos \
+                    WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER} \
                 ) \
              ) \
              GROUP BY folder \
              ORDER BY video_count DESC",
-        )
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -722,10 +739,12 @@ impl CatalogRepository {
     /// handlers to map a missing-video write attempt to 404 rather than letting
     /// the FK constraint surface as a generic 500.
     pub async fn video_exists(&self, video_id: &str) -> CatalogResult<bool> {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?)")
-            .bind(video_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER})"
+        ))
+        .bind(video_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(exists)
     }
 
@@ -861,7 +880,8 @@ impl CatalogRepository {
         owner_id: &str,
         limit: i64,
     ) -> CatalogResult<Vec<VideoSummary>> {
-        let rows = sqlx::query(
+        let active = active_connection_filter_for("v.connection_id");
+        let rows = sqlx::query(&format!(
             "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
                     v.duration_ms, v.width, v.height, v.dedup_group, \
                     v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
@@ -872,10 +892,10 @@ impl CatalogRepository {
              INNER JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
              LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
-             WHERE pp.position_seconds > 0 AND pp.completed = 0 \
+             WHERE pp.position_seconds > 0 AND pp.completed = 0 AND {active} \
              ORDER BY pp.updated_at DESC \
              LIMIT ?",
-        )
+        ))
         .bind(owner_id)
         .bind(owner_id)
         .bind(owner_id)
@@ -941,7 +961,8 @@ impl CatalogRepository {
         video_id: &str,
         owner_id: &str,
     ) -> CatalogResult<Option<VideoDetail>> {
-        let row = sqlx::query(
+        let active = active_connection_filter_for("v.connection_id");
+        let row = sqlx::query(&format!(
             "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
                     v.duration_ms, v.width, v.height, v.dedup_group, \
                     v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
@@ -953,8 +974,8 @@ impl CatalogRepository {
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
              LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
              LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
-             WHERE v.id = ?",
-        )
+             WHERE v.id = ? AND {active}",
+        ))
         .bind(owner_id)
         .bind(owner_id)
         .bind(owner_id)
@@ -1928,6 +1949,163 @@ mod tests {
             "connection_id IN (SELECT id FROM provider_connections \
              WHERE disconnected_at IS NULL)"
         );
+    }
+
+    /// FR-3.4 — the Phase-1 invisibility gate. A soft-deleted connection's
+    /// videos must not surface on ANY user-facing or per-id access path. Every
+    /// catalog read is enumerated here: a future query added without the shared
+    /// predicate will leak and must be added to this test, which is why the
+    /// predicate is defined once and reused (no copy-pasted subselects).
+    #[tokio::test]
+    async fn disconnected_connection_videos_are_invisible_everywhere() {
+        use crate::model::VideoFilter;
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let (owner, conn, video) = seed_owner_conn_video(&repo).await;
+
+        // Give the video in-progress playback so it would show on the
+        // continue-watching shelf while the connection is active.
+        repo.upsert_progress(&owner, &video, 30.0, Some(120.0), false)
+            .await
+            .unwrap();
+
+        let filter = VideoFilter {
+            owner_id: owner.clone(),
+            ..VideoFilter::default()
+        };
+
+        // ── While active: every path sees the video (filter is a no-op). ──
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 1, "active video appears in browse count");
+        assert_eq!(page.videos.len(), 1, "active video appears in browse rows");
+        assert!(
+            !repo.fetch_folders().await.unwrap().is_empty(),
+            "active video appears in folders"
+        );
+        assert_eq!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "active video appears in continue-watching"
+        );
+        assert!(
+            repo.fetch_video_detail(&video, &owner)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video detail resolves"
+        );
+        assert!(
+            repo.fetch_video_stream_info(&video)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video stream-info resolves"
+        );
+        assert!(
+            repo.fetch_video_thumbnail_info(&video)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video thumbnail-info resolves"
+        );
+        assert!(
+            repo.video_exists(&video).await.unwrap(),
+            "active video exists"
+        );
+
+        // ── Soft-delete (disconnect) the connection. ──
+        repo.disconnect(&conn).await.unwrap();
+        // The row + its video stay in place (Task-1 contract); only visibility
+        // changes — that is the whole point of soft-delete.
+        assert_eq!(
+            repo.video_count().await.unwrap(),
+            1,
+            "soft-delete keeps the video row"
+        );
+
+        // ── While disconnected: every access path hides the video. ──
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 0, "browse count excludes disconnected");
+        assert!(page.videos.is_empty(), "browse rows exclude disconnected");
+
+        assert!(
+            repo.fetch_folders().await.unwrap().is_empty(),
+            "folders exclude disconnected"
+        );
+
+        assert!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "continue-watching excludes disconnected"
+        );
+
+        assert!(
+            repo.fetch_video_detail(&video, &owner)
+                .await
+                .unwrap()
+                .is_none(),
+            "video detail 404s for disconnected"
+        );
+        assert!(
+            repo.fetch_video_stream_info(&video)
+                .await
+                .unwrap()
+                .is_none(),
+            "stream-info 404s for disconnected"
+        );
+        assert!(
+            repo.fetch_video_thumbnail_info(&video)
+                .await
+                .unwrap()
+                .is_none(),
+            "thumbnail-info 404s for disconnected"
+        );
+        assert!(
+            !repo.video_exists(&video).await.unwrap(),
+            "video_exists is false for disconnected (mutations 404 cleanly)"
+        );
+
+        // ── After revive: everything visible again, same ids (FR-3.3). ──
+        repo.revive_connection(&conn).await.unwrap();
+
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 1, "revived video reappears in browse");
+        assert_eq!(page.videos[0].id, video, "revive preserves the video UUID");
+        assert!(
+            !repo.fetch_folders().await.unwrap().is_empty(),
+            "revived video reappears in folders"
+        );
+        assert_eq!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "revived video reappears in continue-watching"
+        );
+        assert!(repo
+            .fetch_video_detail(&video, &owner)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .fetch_video_stream_info(&video)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .fetch_video_thumbnail_info(&video)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo.video_exists(&video).await.unwrap());
     }
 
     #[tokio::test]
