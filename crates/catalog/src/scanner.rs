@@ -104,6 +104,23 @@ async fn run_scan_inner(
     let mut all_subtitles: Vec<DiscoveredSubtitle> = Vec::new();
 
     loop {
+        // FR-1.5: co-operative cancel — if the connection was soft-deleted
+        // between pages, stop at the next page boundary. The check is cheap
+        // (one indexed `disconnected_at` lookup) and rides on I/O the loop
+        // already does per page. Revive triggers a fresh scan regardless, so
+        // a cancelled scan never leaves a revived library stale.
+        if !repo
+            .is_connection_active(connection_id)
+            .await
+            .map_err(|e| format!("active-state check failed: {e}"))?
+        {
+            tracing::info!(
+                connection_id = connection_id,
+                "scan cancelled: connection disconnected mid-scan"
+            );
+            break;
+        }
+
         let provider = factory
             .create(&token)
             .await
@@ -736,6 +753,156 @@ mod tests {
         // assigned it, tier 2 is skipped. This is correct behavior.
         // The important thing: the video has a dedup_group.
         let _ = unhashed; // may be empty if tier 1 already assigned dedup_group
+    }
+
+    /// FR-1.5 — a scan in flight when the connection is soft-deleted stops by
+    /// the next page boundary. The mock provider returns a first page with a
+    /// `next_cursor` and soft-deletes the connection as a side effect; on the
+    /// next loop iteration, the per-page `is_connection_active` check returns
+    /// false and the loop breaks. `scan_state` ends at `Idle` (not
+    /// `Scanning`), and the second page's video is never consumed. Without
+    /// the active check, the second page would be upserted (2 videos total).
+    #[tokio::test]
+    async fn scan_cancels_when_connection_soft_deleted_mid_scan() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        /// Provider that soft-deletes the connection after the first page,
+        /// simulating a disconnect mid-scan. `page_sent` is shared across
+        /// instances (the scanner creates a fresh provider per page).
+        struct DisconnectingProvider {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for DisconnectingProvider {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+                if !self.page_sent.swap(true, Ordering::SeqCst) {
+                    let _ = self.repo.disconnect(&self.conn_id).await;
+                    Ok(ListPage {
+                        videos: vec![discovered("f1", "v1.mp4", 5000)],
+                        subtitles: vec![],
+                        next_cursor: Some("page2".into()),
+                    })
+                } else {
+                    Ok(ListPage {
+                        videos: vec![discovered("f2", "v2.mp4", 6000)],
+                        subtitles: vec![],
+                        next_cursor: None,
+                    })
+                }
+            }
+
+            async fn fetch_prefix_hash(
+                &self,
+                _file_id: &str,
+                _size: i64,
+            ) -> ProviderResult<Option<String>> {
+                Ok(None)
+            }
+
+            async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn open_stream(
+                &self,
+                _file_id: &str,
+                _range: Option<&str>,
+            ) -> ProviderResult<StreamResponse> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
+                Ok(())
+            }
+        }
+
+        struct DisconnectingFactory {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for DisconnectingFactory {
+            async fn create(
+                &self,
+                _: &TokenBundle,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Ok(Box::new(DisconnectingProvider {
+                    repo: self.repo.clone(),
+                    conn_id: self.conn_id.clone(),
+                    page_sent: self.page_sent.clone(),
+                }))
+            }
+
+            async fn refresh_token(&self, t: &TokenBundle) -> ProviderResult<TokenBundle> {
+                Ok(t.clone())
+            }
+
+            async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
+                Ok(())
+            }
+
+            fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+                String::new()
+            }
+
+            async fn exchange_code(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> ProviderResult<TokenBundle> {
+                Err(ProviderError::Other("mock".into()))
+            }
+
+            async fn fetch_user_info(
+                &self,
+                _: &TokenBundle,
+            ) -> ProviderResult<(Option<String>, Option<String>)> {
+                Err(ProviderError::Other("mock".into()))
+            }
+        }
+
+        let page_sent = Arc::new(AtomicBool::new(false));
+        let factory = DisconnectingFactory {
+            repo: repo.clone(),
+            conn_id: conn_id.clone(),
+            page_sent,
+        };
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(factory),
+        )
+        .await;
+
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_ne!(
+            scan.status,
+            ScanStatus::Scanning,
+            "scan_state must not be left Scanning after mid-scan disconnect"
+        );
+        assert_eq!(scan.status, ScanStatus::Idle);
+
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            1,
+            "only the first page's video was consumed before the cancel"
+        );
     }
 
     #[tokio::test]
