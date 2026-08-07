@@ -293,6 +293,140 @@ async fn disconnect_rejects_unauthenticated() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+/// FR-1.1 / FR-1.3 / FR-1.4 — `DELETE /api/connections/{id}` is a soft-delete:
+/// it sets `disconnected_at` (204) but leaves the connection row, its videos,
+/// and all dependent `playback_progress` / `video_favorites` / `video_ratings`
+/// rows in place. The connection is hidden from `GET /api/connections` and
+/// `fetch_connection` (both filter `disconnected_at IS NULL`).
+#[tokio::test]
+async fn disconnect_soft_deletes_preserving_dependent_rows() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let conn = seed_connection(&repo).await;
+
+    // Seed a video + progress + favorite + rating for that connection.
+    repo.upsert_video(
+        &conn.id,
+        Provider::GoogleDrive,
+        &castify_catalog::NewVideo {
+            provider_file_id: "file-1".into(),
+            name: "movie.mp4".into(),
+            path: Some("/Videos".into()),
+            size_bytes: 1000,
+            mime_type: Some("video/mp4".into()),
+            duration_ms: Some(120_000),
+            width: None,
+            height: None,
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let video_id: String = sqlx::query_scalar(
+        "SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = ?",
+    )
+    .bind(&conn.id)
+    .bind("file-1")
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+
+    // Owner id is a random UUID minted by setup; resolve it from the DB.
+    let owner_id: String = sqlx::query_scalar("SELECT id FROM owners LIMIT 1")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    repo.upsert_progress(owner_id.as_str(), &video_id, 42.0, Some(120.0), false)
+        .await
+        .unwrap();
+    repo.set_favorite(owner_id.as_str(), &video_id)
+        .await
+        .unwrap();
+    repo.upsert_rating(owner_id.as_str(), &video_id, 4)
+        .await
+        .unwrap();
+
+    // Sanity: everything is present pre-disconnect.
+    assert_eq!(
+        repo.video_count_by_connection(&conn.id).await.unwrap(),
+        1,
+        "video seeded"
+    );
+    assert!(
+        repo.is_connection_active(&conn.id).await.unwrap(),
+        "connection is active before disconnect"
+    );
+
+    // ── Disconnect via the route. ──
+    let status = delete(
+        app.clone(),
+        &format!("/api/connections/{}", conn.id),
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "disconnect returns 204");
+
+    // FR-1.4: hidden from the active-connection views.
+    assert!(
+        repo.fetch_connection(&conn.id).await.unwrap().is_none(),
+        "fetch_connection hides soft-deleted connections"
+    );
+    let (list_status, list_body) = get_json(app, "/api/connections", Some(&cookie)).await;
+    assert_eq!(list_status, StatusCode::OK);
+    assert!(
+        list_body.as_array().unwrap().is_empty(),
+        "GET /api/connections omits soft-deleted connections"
+    );
+    assert!(
+        !repo.is_connection_active(&conn.id).await.unwrap(),
+        "connection is inactive after disconnect"
+    );
+
+    // FR-1.3: dependent rows survive the soft-delete (no CASCADE).
+    assert_eq!(
+        repo.video_count_by_connection(&conn.id).await.unwrap(),
+        1,
+        "video row survives soft-delete"
+    );
+    let progress_kept: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playback_progress WHERE video_id = ?")
+            .bind(&video_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(progress_kept, 1, "playback_progress row survives");
+    let favs_kept: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM video_favorites WHERE video_id = ?")
+            .bind(&video_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(favs_kept, 1, "video_favorites row survives");
+    let ratings_kept: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM video_ratings WHERE video_id = ?")
+            .bind(&video_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(ratings_kept, 1, "video_ratings row survives");
+
+    // The connection row itself is still in the table, now soft-deleted.
+    let disconnected_at: Option<String> =
+        sqlx::query_scalar("SELECT disconnected_at FROM provider_connections WHERE id = ?")
+            .bind(&conn.id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        disconnected_at.is_some(),
+        "disconnected_at is set after disconnect"
+    );
+}
+
 #[tokio::test]
 async fn list_rejects_unauthenticated() {
     let (state, _guard, _path) = common::fresh_state().await;

@@ -4,7 +4,7 @@
 //!   * `GET  /api/connections/available`     — which providers are configured
 //!   * `POST /api/connections/{provider}/start`    — initiate OAuth flow
 //!   * `GET  /api/connections/{provider}/callback` — OAuth callback
-//!   * `DELETE /api/connections/{id}`        — disconnect a provider
+//!   * `DELETE /api/connections/{id}`        — disconnect a provider (soft-delete)
 //!   * `POST /api/connections/{id}/scan`     — trigger a rescan (202/409)
 //!   * `GET  /api/connections/{id}/scan`     — scan status JSON
 
@@ -367,7 +367,11 @@ pub async fn disconnect(
         }
     }
 
-    repo.delete_connection(&conn.id).await?;
+    // Soft-delete (FR-1.1): set `disconnected_at`, revoke the token best-effort
+    // (above), but keep the row, its videos, and all dependent data so a
+    // same-account reconnect revives the connection in place (lossless). The
+    // catalog visibility layer (Task 2) hides the videos while disconnected.
+    repo.disconnect(&conn.id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
