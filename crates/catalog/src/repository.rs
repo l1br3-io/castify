@@ -360,9 +360,8 @@ impl CatalogRepository {
     }
 
     /// Hard-delete all connections with the given `(provider, provider_account_id)`.
-    /// Used by the e2e seed endpoint to make seeding idempotent — re-running a
-    /// spec (CI retry, `CASTIFY_E2E_REUSE=1`) replaces the prior connection
-    /// rather than hitting the `UNIQUE(provider, provider_account_id)` constraint.
+    /// Kept as a repository primitive — no production route calls it after the
+    /// soft-delete change, but it remains available for admin/maintenance paths.
     /// Returns the number of rows deleted.
     pub async fn delete_connections_by_account(
         &self,
@@ -1059,6 +1058,13 @@ impl CatalogRepository {
     /// Upsert a discovered sidecar subtitle track for a video. Idempotent by
     /// `UNIQUE(video_id, provider_file_id)`. Sidecars are always text-family
     /// (srt/vtt/ass/ssa), so `format_family` is fixed at `'text'` here.
+    ///
+    /// The `id` includes the `video_id` so two connections that share the same
+    /// `provider_file_id` (e.g. the same file in two Google Drive accounts) don't
+    /// collide on the PRIMARY KEY after one is soft-deleted — the old subtitle
+    /// row lingers (no cascade on soft-delete), so a `sub-{provider_file_id}`
+    /// id would conflict. Including `video_id` makes the id globally unique
+    /// without weakening the `(video_id, provider_file_id)` dedup target.
     pub async fn upsert_subtitle(
         &self,
         video_id: &str,
@@ -1074,7 +1080,7 @@ impl CatalogRepository {
              ON CONFLICT(video_id, provider_file_id) DO UPDATE SET \
                 language = excluded.language, filename = excluded.filename, format = excluded.format, format_family = 'text'",
         )
-        .bind(format!("sub-{provider_file_id}"))
+        .bind(format!("sub-{video_id}-{provider_file_id}"))
         .bind(video_id)
         .bind(connection_id)
         .bind(provider_file_id)
@@ -1196,7 +1202,9 @@ impl CatalogRepository {
         Ok(rows.iter().map(|r| (r.get("id"), r.get("name"))).collect())
     }
 
-    /// Fetch all source copies for a set of dedup groups.
+    /// Fetch all source copies for a set of dedup groups. Filters to active
+    /// connections so a soft-deleted connection's copy doesn't leak into the
+    /// `sources` array of a deduplicated video (FR-3.1/FR-3.4).
     async fn fetch_sources_by_groups(
         &self,
         groups: &[String],
@@ -1204,7 +1212,7 @@ impl CatalogRepository {
         let placeholders = vec!["?"; groups.len()].join(", ");
         let sql = format!(
             "SELECT connection_id, provider, provider_file_id, dedup_group \
-             FROM videos WHERE dedup_group IN ({placeholders})"
+             FROM videos WHERE dedup_group IN ({placeholders}) AND {ACTIVE_CONNECTION_FILTER}"
         );
         let mut query = sqlx::query(&sql);
         for g in groups {

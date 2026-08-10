@@ -55,7 +55,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 
 ## Milestones
 
-> **Last shipped: M8 — Advanced subtitles** (see [`docs/specs/advanced-subtitles/spec.md`](./specs/advanced-subtitles/spec.md)). All planned milestones (M0–M8) are shipped. The next effort has not been chosen yet — see Future directions below.
+> **Last shipped: Lossless Reconnect** — disconnect is now a soft-delete; reconnecting the same account revives in place, preserving every video UUID + resume position. See [`docs/specs/lossless-reconnect/spec.md`](./specs/lossless-reconnect/spec.md). All planned milestones (M0–M8) are shipped.
 
 | Milestone | State |
 |-----------|-------|
@@ -69,6 +69,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 | M6 — Server-side transcoding | Shipped (reduced scope) |
 | M7 — Adaptive bitrate | Shipped |
 | M8 — Advanced subtitles | Shipped |
+| Lossless Reconnect | Shipped (corrective) |
 
 Dependency sequencing for the self-hosted arc: M3.5 → M4 → M5 → M6 (needs M4+M5) →
 {M7, M8} (each needs M6; M7 and M8 are independent of each other).

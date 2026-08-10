@@ -130,8 +130,8 @@ test.describe("Browse page (e2e mock)", () => {
     await expect(page.getByText("4 videos")).toBeVisible();
 
     // ── Filter by provider ─────────────────────────────────────────
-    await page.getByRole("button", { name: /^Filters/ }).click();
-    // Provider row: single-select preset buttons
+    // Provider preset chips are always visible inline (All / Google Drive /
+    // Dropbox). No need to open the "More filters" drawer.
     await page
       .getByRole("group", { name: "Filter by provider" })
       .getByRole("button", { name: "Dropbox", exact: true })
