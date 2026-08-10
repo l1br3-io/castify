@@ -56,6 +56,24 @@ pub struct VideoStreamInfo {
     pub name: String,
 }
 
+/// Shared SQL predicate that restricts catalog rows to those belonging to an
+/// **active** connection (one whose `disconnected_at` is NULL). Applied to
+/// every user-facing and per-id catalog query so a soft-deleted connection's
+/// videos stay hidden until revived. Defined once here and reused everywhere —
+/// no copy-pasted subselects — so a new query added without the filter is
+/// caught by the Phase-1 invisibility test (FR-3.4).
+pub const ACTIVE_CONNECTION_FILTER: &str = "connection_id IN (SELECT id FROM provider_connections \
+     WHERE disconnected_at IS NULL)";
+
+/// Build an active-connection filter scoped to a specific column reference.
+/// Use this for queries that alias the `videos` table (e.g. `"v.connection_id"`);
+/// the un-aliased default is [`ACTIVE_CONNECTION_FILTER`]. Reusing either form —
+/// rather than pasting the subselect into each query — is what the Phase-1
+/// invisibility test guards (FR-3.4).
+fn active_connection_filter_for(column: &str) -> String {
+    format!("{column} IN (SELECT id FROM provider_connections WHERE disconnected_at IS NULL)")
+}
+
 /// Push the shared WHERE predicates (provider, search, duration, resolution,
 /// folder, favorites, rating) onto the representative subquery builder. The
 /// predicates reference the un-aliased `videos` table (the subquery scope).
@@ -63,6 +81,11 @@ pub struct VideoStreamInfo {
 /// Empty/None predicates are skipped. Duration predicates automatically
 /// exclude null-duration rows (NULL comparisons yield false in SQL).
 fn push_video_predicates(qb: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, filter: &VideoFilter) {
+    // Always restrict to active connections first — a soft-deleted connection's
+    // videos must never surface in browse (FR-3.1). Applied to both the dedup
+    // and non-dedup halves of the representative subquery via this single hook.
+    qb.push(" AND ");
+    qb.push(ACTIVE_CONNECTION_FILTER);
     if let Some(p) = &filter.provider {
         qb.push(" AND provider = ");
         qb.push_bind(p.as_str());
@@ -249,6 +272,52 @@ impl CatalogRepository {
         }
     }
 
+    /// Cheap active-state check for a connection. Returns `true` when the row
+    /// exists and `disconnected_at IS NULL`, `false` otherwise (disconnected or
+    /// no such row). Used by the scanner's per-page cancel check (Task 5) and
+    /// any code that needs a cheap gate without fetching the full row.
+    pub async fn is_connection_active(&self, connection_id: &str) -> CatalogResult<bool> {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM provider_connections \
+             WHERE id = ? AND disconnected_at IS NULL)",
+        )
+        .bind(connection_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(active)
+    }
+
+    /// Look up a connection by `(provider, provider_account_id)` **including**
+    /// soft-deleted rows. Distinct from [`find_active_connection_by_account`],
+    /// which filters out soft-deleted rows. The OAuth callback uses this to
+    /// revive a soft-deleted connection on reconnect (clearing
+    /// `disconnected_at`) instead of inserting a duplicate — the
+    /// `UNIQUE(provider, provider_account_id)` constraint makes the revive
+    /// mandatory while the soft-deleted row exists.
+    pub async fn find_connection_by_account(
+        &self,
+        provider: Provider,
+        provider_account_id: &str,
+    ) -> CatalogResult<Option<ProviderConnection>> {
+        let row = sqlx::query(
+            "SELECT id, provider, provider_account_id, provider_account_email, \
+             connected_at, disconnected_at \
+             FROM provider_connections \
+             WHERE provider = ? AND provider_account_id = ?",
+        )
+        .bind(provider.as_str())
+        .bind(provider_account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => Ok(Some(
+                ProviderConnection::from_row(&row).map_err(CatalogError::Other)?,
+            )),
+        }
+    }
+
     /// Soft-delete a connection (set `disconnected_at`). Videos and scan_state
     /// remain until a hard delete (cascade) is performed via [`delete_connection`].
     pub async fn disconnect(&self, id: &str) -> CatalogResult<bool> {
@@ -258,6 +327,23 @@ impl CatalogRepository {
              AND disconnected_at IS NULL",
         )
         .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Revive a soft-deleted connection: clear `disconnected_at` so the row is
+    /// active again. The OAuth callback calls this on reconnect when
+    /// [`find_connection_by_account`] returns a soft-deleted row. Returns
+    /// `true` when a soft-deleted row was revived, `false` when the row was
+    /// already active or does not exist. The connection `id` — and therefore
+    /// every video UUID — is unchanged, making disconnect→reconnect lossless.
+    pub async fn revive_connection(&self, id: &str) -> CatalogResult<bool> {
+        let result = sqlx::query(
+            "UPDATE provider_connections SET disconnected_at = NULL \
+             WHERE id = ? AND disconnected_at IS NOT NULL",
+        )
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -274,9 +360,8 @@ impl CatalogRepository {
     }
 
     /// Hard-delete all connections with the given `(provider, provider_account_id)`.
-    /// Used by the e2e seed endpoint to make seeding idempotent — re-running a
-    /// spec (CI retry, `CASTIFY_E2E_REUSE=1`) replaces the prior connection
-    /// rather than hitting the `UNIQUE(provider, provider_account_id)` constraint.
+    /// Kept as a repository primitive — no production route calls it after the
+    /// soft-delete change, but it remains available for admin/maintenance paths.
     /// Returns the number of rows deleted.
     pub async fn delete_connections_by_account(
         &self,
@@ -422,10 +507,10 @@ impl CatalogRepository {
         &self,
         video_id: &str,
     ) -> CatalogResult<Option<VideoThumbnailInfo>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT id, connection_id, provider, provider_file_id, thumbnail_status \
-             FROM videos WHERE id = ?",
-        )
+             FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER}"
+        ))
         .bind(video_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -453,10 +538,10 @@ impl CatalogRepository {
         &self,
         video_id: &str,
     ) -> CatalogResult<Option<VideoStreamInfo>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT id, connection_id, provider, provider_file_id, mime_type, size_bytes, name \
-             FROM videos WHERE id = ?",
-        )
+             FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER}"
+        ))
         .bind(video_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -615,7 +700,7 @@ impl CatalogRepository {
     /// root-level files (`/filename.ext`, no directory) under `"(Root)"`.
     /// Sorted by `video_count` descending.
     pub async fn fetch_folders(&self) -> CatalogResult<Vec<FolderCount>> {
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             "SELECT \
                 CASE \
                     WHEN path IS NULL THEN '(Unsorted)' \
@@ -626,14 +711,17 @@ impl CatalogRepository {
                 COUNT(*) AS video_count \
              FROM ( \
                 SELECT path FROM videos WHERE id IN ( \
-                    SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL GROUP BY dedup_group \
+                    SELECT MIN(id) FROM videos \
+                    WHERE dedup_group IS NOT NULL AND {ACTIVE_CONNECTION_FILTER} \
+                    GROUP BY dedup_group \
                     UNION ALL \
-                    SELECT id FROM videos WHERE dedup_group IS NULL \
+                    SELECT id FROM videos \
+                    WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER} \
                 ) \
              ) \
              GROUP BY folder \
              ORDER BY video_count DESC",
-        )
+        ))
         .fetch_all(&self.pool)
         .await?;
 
@@ -650,10 +738,12 @@ impl CatalogRepository {
     /// handlers to map a missing-video write attempt to 404 rather than letting
     /// the FK constraint surface as a generic 500.
     pub async fn video_exists(&self, video_id: &str) -> CatalogResult<bool> {
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM videos WHERE id = ?)")
-            .bind(video_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM videos WHERE id = ? AND {ACTIVE_CONNECTION_FILTER})"
+        ))
+        .bind(video_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(exists)
     }
 
@@ -789,7 +879,8 @@ impl CatalogRepository {
         owner_id: &str,
         limit: i64,
     ) -> CatalogResult<Vec<VideoSummary>> {
-        let rows = sqlx::query(
+        let active = active_connection_filter_for("v.connection_id");
+        let rows = sqlx::query(&format!(
             "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
                     v.duration_ms, v.width, v.height, v.dedup_group, \
                     v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
@@ -800,10 +891,10 @@ impl CatalogRepository {
              INNER JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
              LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
-             WHERE pp.position_seconds > 0 AND pp.completed = 0 \
+             WHERE pp.position_seconds > 0 AND pp.completed = 0 AND {active} \
              ORDER BY pp.updated_at DESC \
              LIMIT ?",
-        )
+        ))
         .bind(owner_id)
         .bind(owner_id)
         .bind(owner_id)
@@ -869,7 +960,8 @@ impl CatalogRepository {
         video_id: &str,
         owner_id: &str,
     ) -> CatalogResult<Option<VideoDetail>> {
-        let row = sqlx::query(
+        let active = active_connection_filter_for("v.connection_id");
+        let row = sqlx::query(&format!(
             "SELECT v.id, v.name, v.provider, v.size_bytes, v.mime_type, \
                     v.duration_ms, v.width, v.height, v.dedup_group, \
                     v.connection_id, v.provider_file_id, v.created_at, v.path, v.thumbnail_status, \
@@ -881,8 +973,8 @@ impl CatalogRepository {
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
              LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
              LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
-             WHERE v.id = ?",
-        )
+             WHERE v.id = ? AND {active}",
+        ))
         .bind(owner_id)
         .bind(owner_id)
         .bind(owner_id)
@@ -966,6 +1058,13 @@ impl CatalogRepository {
     /// Upsert a discovered sidecar subtitle track for a video. Idempotent by
     /// `UNIQUE(video_id, provider_file_id)`. Sidecars are always text-family
     /// (srt/vtt/ass/ssa), so `format_family` is fixed at `'text'` here.
+    ///
+    /// The `id` includes the `video_id` so two connections that share the same
+    /// `provider_file_id` (e.g. the same file in two Google Drive accounts) don't
+    /// collide on the PRIMARY KEY after one is soft-deleted — the old subtitle
+    /// row lingers (no cascade on soft-delete), so a `sub-{provider_file_id}`
+    /// id would conflict. Including `video_id` makes the id globally unique
+    /// without weakening the `(video_id, provider_file_id)` dedup target.
     pub async fn upsert_subtitle(
         &self,
         video_id: &str,
@@ -981,7 +1080,7 @@ impl CatalogRepository {
              ON CONFLICT(video_id, provider_file_id) DO UPDATE SET \
                 language = excluded.language, filename = excluded.filename, format = excluded.format, format_family = 'text'",
         )
-        .bind(format!("sub-{provider_file_id}"))
+        .bind(format!("sub-{video_id}-{provider_file_id}"))
         .bind(video_id)
         .bind(connection_id)
         .bind(provider_file_id)
@@ -1103,7 +1202,9 @@ impl CatalogRepository {
         Ok(rows.iter().map(|r| (r.get("id"), r.get("name"))).collect())
     }
 
-    /// Fetch all source copies for a set of dedup groups.
+    /// Fetch all source copies for a set of dedup groups. Filters to active
+    /// connections so a soft-deleted connection's copy doesn't leak into the
+    /// `sources` array of a deduplicated video (FR-3.1/FR-3.4).
     async fn fetch_sources_by_groups(
         &self,
         groups: &[String],
@@ -1111,7 +1212,7 @@ impl CatalogRepository {
         let placeholders = vec!["?"; groups.len()].join(", ");
         let sql = format!(
             "SELECT connection_id, provider, provider_file_id, dedup_group \
-             FROM videos WHERE dedup_group IN ({placeholders})"
+             FROM videos WHERE dedup_group IN ({placeholders}) AND {ACTIVE_CONNECTION_FILTER}"
         );
         let mut query = sqlx::query(&sql);
         for g in groups {
@@ -1738,6 +1839,281 @@ mod tests {
         let active = repo.list_active_connections().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].provider, Provider::GoogleDrive);
+    }
+
+    #[tokio::test]
+    async fn is_connection_active_reflects_disconnect() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-active".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            repo.is_connection_active(&conn.id).await.unwrap(),
+            "freshly created connection should be active"
+        );
+
+        repo.disconnect(&conn.id).await.unwrap();
+
+        assert!(
+            !repo.is_connection_active(&conn.id).await.unwrap(),
+            "disconnected connection should be inactive"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_connection_by_account_includes_soft_deleted() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-revive".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        // Active lookup finds it before disconnect.
+        assert!(repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .is_some());
+
+        repo.disconnect(&conn.id).await.unwrap();
+
+        // Active lookup no longer sees it.
+        assert!(repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .is_none());
+
+        // But the inclusive lookup still finds the soft-deleted row.
+        let found = repo
+            .find_connection_by_account(Provider::GoogleDrive, "acct-revive")
+            .await
+            .unwrap()
+            .expect("soft-deleted row should still be found");
+        assert_eq!(found.id, conn.id);
+        assert!(found.disconnected_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn revive_connection_clears_disconnected_at() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("acct-revive-2".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        repo.disconnect(&conn.id).await.unwrap();
+        assert!(!repo.is_connection_active(&conn.id).await.unwrap());
+
+        assert!(
+            repo.revive_connection(&conn.id).await.unwrap(),
+            "revive should report it revived a soft-deleted row"
+        );
+
+        // fetch_connection filters disconnected_at IS NULL, so it sees the
+        // revived row again.
+        assert!(repo.fetch_connection(&conn.id).await.unwrap().is_some());
+        assert!(
+            repo.is_connection_active(&conn.id).await.unwrap(),
+            "revived connection should be active"
+        );
+
+        // Active account lookup sees it again, with the same id preserved.
+        let active = repo
+            .find_active_connection_by_account(Provider::GoogleDrive, "acct-revive-2")
+            .await
+            .unwrap()
+            .expect("revived connection should be findable by active account lookup");
+        assert_eq!(active.id, conn.id);
+    }
+
+    #[test]
+    fn active_connection_filter_predicate_is_stable() {
+        assert_eq!(
+            ACTIVE_CONNECTION_FILTER,
+            "connection_id IN (SELECT id FROM provider_connections \
+             WHERE disconnected_at IS NULL)"
+        );
+    }
+
+    /// FR-3.4 — the Phase-1 invisibility gate. A soft-deleted connection's
+    /// videos must not surface on ANY user-facing or per-id access path. Every
+    /// catalog read is enumerated here: a future query added without the shared
+    /// predicate will leak and must be added to this test, which is why the
+    /// predicate is defined once and reused (no copy-pasted subselects).
+    #[tokio::test]
+    async fn disconnected_connection_videos_are_invisible_everywhere() {
+        use crate::model::VideoFilter;
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let (owner, conn, video) = seed_owner_conn_video(&repo).await;
+
+        // Give the video in-progress playback so it would show on the
+        // continue-watching shelf while the connection is active.
+        repo.upsert_progress(&owner, &video, 30.0, Some(120.0), false)
+            .await
+            .unwrap();
+
+        let filter = VideoFilter {
+            owner_id: owner.clone(),
+            ..VideoFilter::default()
+        };
+
+        // ── While active: every path sees the video (filter is a no-op). ──
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 1, "active video appears in browse count");
+        assert_eq!(page.videos.len(), 1, "active video appears in browse rows");
+        assert!(
+            !repo.fetch_folders().await.unwrap().is_empty(),
+            "active video appears in folders"
+        );
+        assert_eq!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "active video appears in continue-watching"
+        );
+        assert!(
+            repo.fetch_video_detail(&video, &owner)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video detail resolves"
+        );
+        assert!(
+            repo.fetch_video_stream_info(&video)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video stream-info resolves"
+        );
+        assert!(
+            repo.fetch_video_thumbnail_info(&video)
+                .await
+                .unwrap()
+                .is_some(),
+            "active video thumbnail-info resolves"
+        );
+        assert!(
+            repo.video_exists(&video).await.unwrap(),
+            "active video exists"
+        );
+
+        // ── Soft-delete (disconnect) the connection. ──
+        repo.disconnect(&conn).await.unwrap();
+        // The row + its video stay in place (Task-1 contract); only visibility
+        // changes — that is the whole point of soft-delete.
+        assert_eq!(
+            repo.video_count().await.unwrap(),
+            1,
+            "soft-delete keeps the video row"
+        );
+
+        // ── While disconnected: every access path hides the video. ──
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 0, "browse count excludes disconnected");
+        assert!(page.videos.is_empty(), "browse rows exclude disconnected");
+
+        assert!(
+            repo.fetch_folders().await.unwrap().is_empty(),
+            "folders exclude disconnected"
+        );
+
+        assert!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "continue-watching excludes disconnected"
+        );
+
+        assert!(
+            repo.fetch_video_detail(&video, &owner)
+                .await
+                .unwrap()
+                .is_none(),
+            "video detail 404s for disconnected"
+        );
+        assert!(
+            repo.fetch_video_stream_info(&video)
+                .await
+                .unwrap()
+                .is_none(),
+            "stream-info 404s for disconnected"
+        );
+        assert!(
+            repo.fetch_video_thumbnail_info(&video)
+                .await
+                .unwrap()
+                .is_none(),
+            "thumbnail-info 404s for disconnected"
+        );
+        assert!(
+            !repo.video_exists(&video).await.unwrap(),
+            "video_exists is false for disconnected (mutations 404 cleanly)"
+        );
+
+        // ── After revive: everything visible again, same ids (FR-3.3). ──
+        repo.revive_connection(&conn).await.unwrap();
+
+        let page = repo.fetch_video_page(&filter).await.unwrap();
+        assert_eq!(page.total, 1, "revived video reappears in browse");
+        assert_eq!(page.videos[0].id, video, "revive preserves the video UUID");
+        assert!(
+            !repo.fetch_folders().await.unwrap().is_empty(),
+            "revived video reappears in folders"
+        );
+        assert_eq!(
+            repo.fetch_in_progress_videos(&owner, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "revived video reappears in continue-watching"
+        );
+        assert!(repo
+            .fetch_video_detail(&video, &owner)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .fetch_video_stream_info(&video)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .fetch_video_thumbnail_info(&video)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo.video_exists(&video).await.unwrap());
     }
 
     #[tokio::test]

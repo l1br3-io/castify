@@ -592,20 +592,21 @@ pub struct SeedConnectionResponse {
     pub provider: String,
 }
 
-/// `POST /api/__e2e/seed-connection` — create a mock provider connection.
+/// `POST /api/__e2e/seed-connection` — create (or revive) a mock provider
+/// connection, bypassing the OAuth flow.
 ///
-/// Bypasses the OAuth flow by inserting a connection row with a fake token
-/// bundle. The connection is immediately scannable via `POST /api/connections/{id}/scan`
+/// The connection is immediately scannable via `POST /api/connections/{id}/scan`
 /// because `spawn_scan` uses [`E2eMockFactory`] when the `e2e` feature is on.
 ///
 /// **Idempotent on `(provider, account_email)`:** if a connection already
-/// exists for the same provider + email, it is deleted (cascading to its
-/// videos + scan_state) before the new one is inserted. This lets specs be
-/// re-run under `CASTIFY_E2E_REUSE=1` or CI retries without hitting the
-/// `UNIQUE(provider, provider_account_id)` constraint. The `account_email`
-/// becomes the `provider_account_id` so different specs (using distinct
-/// emails) never collide on the unique pair even if a prior spec's cleanup
-/// didn't run.
+/// exists for the same `(provider, provider_account_id)` — whether active or
+/// soft-deleted — it is reused: revived (clearing `disconnected_at`) if
+/// soft-deleted, then the token is rotated. This mirrors the OAuth callback's
+/// reconnect/revive branching (`callback_inner`) and lets the reconnect spec
+/// prove disconnect→reconnect is lossless (same connection id + video UUIDs).
+/// Only when no prior row exists does the fresh-insert path run. The
+/// `account_email` becomes the `provider_account_id` so different specs (using
+/// distinct emails) never collide on the unique pair.
 pub async fn seed_connection(
     State(state): State<AppState>,
     Json(body): Json<SeedConnectionBody>,
@@ -621,13 +622,6 @@ pub async fn seed_connection(
         .clone()
         .unwrap_or_else(|| format!("e2e-mock-{provider}"));
 
-    // Idempotent cleanup: delete any prior connection with the same
-    // (provider, account_id). Cascades to videos + scan_state.
-    state
-        .catalog_repository()
-        .delete_connections_by_account(provider, &provider_account_id)
-        .await?;
-
     let token_bundle = TokenBundle {
         access_token: "e2e-mock-access-token".into(),
         refresh_token: Some("e2e-mock-refresh-token".into()),
@@ -636,8 +630,29 @@ pub async fn seed_connection(
         scope: None,
     };
 
-    let conn = state
-        .catalog_repository()
+    let repo = state.catalog_repository();
+
+    // Reconnect/revive: if a row already exists for this (provider, account_id)
+    // — active or soft-deleted — reuse it so the connection id + video UUIDs
+    // are preserved across disconnect→reconnect cycles. Revive clears
+    // `disconnected_at` when the row was soft-deleted; the token is rotated
+    // either way. Mirrors the OAuth callback at `callback_inner`.
+    if let Some(existing) = repo
+        .find_connection_by_account(provider, &provider_account_id)
+        .await?
+    {
+        if existing.disconnected_at.is_some() {
+            repo.revive_connection(&existing.id).await?;
+        }
+        repo.update_token_bundle(&existing.id, &token_bundle)
+            .await?;
+        return Ok(Json(SeedConnectionResponse {
+            id: existing.id,
+            provider: provider.to_string(),
+        }));
+    }
+
+    let conn = repo
         .create_connection(&NewConnection {
             provider,
             token_bundle,

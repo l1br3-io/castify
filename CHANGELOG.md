@@ -5,6 +5,19 @@ Reverse-chronological ship history. Shipped efforts live in place under
 this file is the human-facing summary. Direction and sequencing live in
 [`docs/ROADMAP.md`](./docs/ROADMAP.md).
 
+## Lossless Reconnect (shipped)
+
+Corrective UX effort: disconnecting a provider connection is now a **soft-delete**
+instead of a hard cascade. The connection row, its videos, and all dependent data
+(playback progress, favorites, ratings) survive disconnect; the catalog visibility
+layer hides them while disconnected. Reconnecting the **same** provider account
+revives the soft-deleted row in place — preserving the connection id, every video
+UUID, and the user's resume position. The watch page's detail-404 also clears stale
+IndexedDB continue-watching entries (heals already-orphaned cards from past
+hard-deletes). Includes a shared active-connection predicate across every catalog
+query, co-operative scan cancellation at page boundaries, and a sidecar subtitle
+id uniqueness fix exposed by soft-delete lingering rows. No schema migration.
+
 ## M7 — Adaptive bitrate (shipped)
 
 Multi-variant HLS ladder (`CASTIFY_ABR_LADDER`, default 360p/480p/720p/1080p), pre-compute
