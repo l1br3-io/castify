@@ -11,6 +11,7 @@ import type { VideoDetailDto } from "../api/types";
 vi.mock("../lib/player-db", () => ({
   getProgress: vi.fn().mockResolvedValue(null),
   saveProgressEntry: vi.fn().mockResolvedValue(undefined),
+  clearProgress: vi.fn().mockResolvedValue(undefined),
   getGlobalPrefs: vi.fn().mockResolvedValue(null),
   getSubtitlePref: vi.fn().mockResolvedValue(null),
   saveGlobalPrefs: vi.fn().mockResolvedValue(undefined),
@@ -87,9 +88,10 @@ vi.mock("hls.js", () => ({
   },
 }));
 
-import { getProgress } from "../lib/player-db";
+import { getProgress, clearProgress } from "../lib/player-db";
 
 const mockGetProgress = vi.mocked(getProgress);
+const mockClearProgress = vi.mocked(clearProgress);
 
 const VIDEO_DETAIL: VideoDetailDto = {
   id: "v1",
@@ -155,6 +157,7 @@ function mockCanPlayType(value: "maybe" | "probably" | "") {
 describe("WatchPage", () => {
   beforeEach(() => {
     mockGetProgress.mockResolvedValue(null);
+    mockClearProgress.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -232,6 +235,11 @@ describe("WatchPage", () => {
     expect(
       screen.getByRole("link", { name: "Back to browse" }),
     ).toHaveAttribute("href", "/");
+    // FR-4.1: a 404 clears the stale IndexedDB progress entry so the dead
+    // continue-watching card stops surfacing on every browse.
+    await waitFor(() =>
+      expect(mockClearProgress).toHaveBeenCalledWith("missing"),
+    );
   });
 
   it("shows a generic error message on 500", async () => {
@@ -239,6 +247,8 @@ describe("WatchPage", () => {
 
     expect(await screen.findByText("Something went wrong")).toBeInTheDocument();
     expect(screen.getByText(/database is locked/)).toBeInTheDocument();
+    // FR-4.2: non-404 errors are transient — must NOT wipe the progress entry.
+    expect(mockClearProgress).not.toHaveBeenCalled();
   });
 
   it("renders video metadata (title, duration, resolution, provider)", async () => {

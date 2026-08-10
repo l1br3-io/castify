@@ -50,6 +50,7 @@ import {
   resolutionBucket,
 } from "../lib/format";
 import { isAssFormat, isImageFamily } from "../lib/subtitles";
+import { clearProgress } from "../lib/player-db";
 import { otherProviders } from "../lib/video";
 import { downloadUrl, subtitleTrackUrl } from "../api/videos";
 import { startConnect } from "../api/connections";
@@ -89,11 +90,24 @@ export function WatchPage() {
   // whether to render VideoPlayer at all.
   const streamUrlQuery = useStreamUrl(id);
 
+  // FR-4.1: when the detail lookup 404s, the video is gone (disconnect
+  // hard-delete in older binaries, or genuinely missing). Clear the stale
+  // IndexedDB progress entry so the dead continue-watching card stops
+  // resurfacing on every browse. Hoisted above the early return so the
+  // effect is unconditional (Rules of Hooks); the guard inside limits the
+  // clear to genuine 404s — transient errors leave the entry intact (FR-4.2).
+  const isNotFound =
+    query.isError &&
+    query.error instanceof Error &&
+    "status" in query.error &&
+    (query.error as { status: number }).status === 404;
+  useEffect(() => {
+    if (isNotFound && id !== undefined) {
+      void clearProgress(id);
+    }
+  }, [isNotFound, id]);
+
   if (query.isError) {
-    const isNotFound =
-      query.error instanceof Error &&
-      "status" in query.error &&
-      (query.error as { status: number }).status === 404;
     return (
       <div className="flex flex-col items-center gap-4 py-16 text-center">
         <h1 className="text-2xl font-bold">
