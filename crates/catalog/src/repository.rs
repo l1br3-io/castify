@@ -963,7 +963,6 @@ impl CatalogRepository {
                             path: sqlx::Row::get(row, "path"),
                             size_bytes: sqlx::Row::get(row, "size_bytes"),
                             mime_type: sqlx::Row::get(row, "mime_type"),
-                            kind: FileKind::parse(&entry_kind),
                             modified_at: sqlx::Row::get(row, "provider_modified_at"),
                         },
                     })
@@ -983,6 +982,12 @@ impl CatalogRepository {
     /// values, in positional order. Both the video and file halves append
     /// their path/provider/q fragments with binds; the caller wraps the
     /// body in `SELECT COUNT(*)` or `SELECT * … LIMIT`.
+    ///
+    /// On the video half, `provider`/`q` go INSIDE both representative
+    /// subquery halves (like `fetch_video_page`): the `MIN(id)` pick must be
+    /// made among matching rows, so a cross-provider dedup group surfaces
+    /// under each of its providers' filters — not only when the global
+    /// representative happens to be that provider's copy.
     fn folder_contents_union(filter: &FolderContentsFilter) -> (String, Vec<String>) {
         let mut sql = String::new();
         let mut binds: Vec<String> = Vec::new();
@@ -1003,6 +1008,21 @@ impl CatalogRepository {
                 ));
                 binds.push(format!("{prefix}/%"));
                 binds.push(prefix.to_string());
+            }
+        };
+
+        // Helper: objective predicates on the bare table inside the
+        // representative subquery halves. `q` matches per-copy (a group
+        // matches when ANY copy's name matches; the representative is then
+        // chosen among matching copies), consistent with `fetch_video_page`.
+        let sub_frag = |sql: &mut String, binds: &mut Vec<String>| {
+            if let Some(provider) = filter.provider.as_deref() {
+                sql.push_str(" AND provider = ?");
+                binds.push(provider.to_string());
+            }
+            if let Some(q) = filter.q_filter() {
+                sql.push_str(" AND name LIKE ? ESCAPE '\\'");
+                binds.push(q);
             }
         };
 
@@ -1028,20 +1048,14 @@ impl CatalogRepository {
         binds.push(filter.owner_id.clone());
         binds.push(filter.owner_id.clone());
         path_frag(&mut sql, &mut binds, "");
+        sub_frag(&mut sql, &mut binds);
         sql.push_str(&format!(
             " GROUP BY dedup_group UNION ALL SELECT id FROM videos \
              WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER}"
         ));
         path_frag(&mut sql, &mut binds, "");
+        sub_frag(&mut sql, &mut binds);
         sql.push(')');
-        if let Some(q) = filter.q_filter() {
-            sql.push_str(" AND v.name LIKE ? ESCAPE '\\'");
-            binds.push(q);
-        }
-        if let Some(provider) = filter.provider.as_deref() {
-            sql.push_str(" AND v.provider = ?");
-            binds.push(provider.to_string());
-        }
 
         // ── File half ─────────────────────────────────────────────────
         sql.push_str(
@@ -3071,7 +3085,7 @@ mod tests {
 
         // Kind discrimination.
         assert!(matches!(&page.entries[0], FolderEntry::Video(_)));
-        assert!(matches!(&page.entries[1], FolderEntry::File(f) if f.file.kind == FileKind::Audio));
+        assert!(matches!(&page.entries[1], FolderEntry::File(f) if f.kind == FileKind::Audio));
 
         // Pagination: 2 per page.
         let page2 = repo
@@ -3154,6 +3168,153 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(gd.total, 3);
+    }
+
+    /// A cross-provider dedup group must surface under EACH provider's
+    /// filter: the `MIN(id)` representative is picked among matching rows
+    /// (same contract as `fetch_video_page`), not globally — otherwise a
+    /// provider chip randomly hides videos that do live on that provider.
+    /// `q` follows the same rule (a group matches when any copy's name
+    /// matches).
+    #[tokio::test]
+    async fn fetch_folder_contents_provider_and_q_filter_dedup_groups_per_copy() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, gd_conn, _vid) = seed_owner_conn_video(&repo).await;
+        let db_conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::Dropbox,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("a2".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+        async fn seed_video(
+            repo: &CatalogRepository,
+            conn: &str,
+            provider: Provider,
+            id: &str,
+            name: &str,
+            path: &str,
+        ) {
+            repo.upsert_video(
+                conn,
+                provider,
+                &NewVideo {
+                    provider_file_id: id.into(),
+                    name: name.into(),
+                    path: Some(path.into()),
+                    size_bytes: 1,
+                    mime_type: None,
+                    duration_ms: None,
+                    width: None,
+                    height: None,
+                    native_hash: None,
+                    native_hash_algo: None,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        // Same movie on both providers, same folder, different names.
+        seed_video(
+            &repo,
+            &gd_conn,
+            Provider::GoogleDrive,
+            "twin-gd",
+            "Twin (2020).mkv",
+            "/Movies/Twin (2020).mkv",
+        )
+        .await;
+        seed_video(
+            &repo,
+            &db_conn.id,
+            Provider::Dropbox,
+            "twin-db",
+            "twin.mkv",
+            "/Movies/twin.mkv",
+        )
+        .await;
+        sqlx::query("UPDATE videos SET dedup_group = 'twin' WHERE provider_file_id IN ('twin-gd','twin-db')")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        async fn contents(
+            repo: &CatalogRepository,
+            provider: Option<&str>,
+            q: Option<&str>,
+        ) -> FolderContentsPage {
+            repo.fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                provider: provider.map(str::to_string),
+                q: q.map(str::to_string),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+        }
+
+        // Unfiltered: the group appears once, whichever the representative.
+        assert_eq!(contents(&repo, None, None).await.total, 1);
+        // Each provider's chip finds the group — regardless of which copy
+        // is the global MIN(id) representative.
+        assert_eq!(
+            contents(&repo, Some("google_drive"), None).await.total,
+            1,
+            "google_drive chip must find its copy"
+        );
+        assert_eq!(
+            contents(&repo, Some("dropbox"), None).await.total,
+            1,
+            "dropbox chip must find its copy"
+        );
+        // q matches per-copy: "twin.mkv" names only the Dropbox copy, but
+        // the group still surfaces.
+        assert_eq!(contents(&repo, None, Some("twin.mkv")).await.total, 1);
+    }
+
+    /// The contents wire shape is a flat discriminated union on `kind` —
+    /// exactly one `"kind"` key per entry. (`FileEntry` is flattened under
+    /// `FolderFileEntry`, which owns `kind`; a field on both would emit a
+    /// duplicate key that strict JSON consumers reject.)
+    #[tokio::test]
+    async fn folder_contents_entries_serialize_one_kind_key_per_entry() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        repo.upsert_file(
+            &conn,
+            &DiscoveredFile {
+                provider_file_id: "kind-key-mp3".into(),
+                name: "Beta.mp3".into(),
+                path: Some("/Beta.mp3".into()),
+                size_bytes: 1,
+                mime_type: None,
+                kind: FileKind::Audio,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let page = repo
+            .fetch_folder_contents(&FolderContentsFilter::default())
+            .await
+            .unwrap();
+        assert!(page.total >= 2, "want a video and a file entry");
+        for entry in &page.entries {
+            let json = serde_json::to_string(entry).unwrap();
+            assert_eq!(
+                json.matches("\"kind\":").count(),
+                1,
+                "duplicate kind key in entry JSON: {json}"
+            );
+        }
     }
 
     async fn fetch_rating(repo: &CatalogRepository, owner_id: &str, video_id: &str) -> Option<i32> {

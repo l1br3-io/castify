@@ -340,6 +340,19 @@ mod file_download {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        // Provider MIME must not be forwarded — an attachment is served as
+        // opaque bytes, never a provider-chosen (possibly text/html) type.
+        assert_eq!(
+            headers.get("content-type").and_then(|v| v.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        // Global defense-in-depth layer (MIME-confusion / sniffing).
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
         let disposition = headers
             .get("content-disposition")
             .and_then(|v| v.to_str().ok())
@@ -363,6 +376,36 @@ mod file_download {
     async fn file_download_404_unknown_id() {
         let (app, cookie, _repo, _guard) = boot_and_setup().await;
         let (status, _, _) = get_bytes(app, "/api/files/no-such-id/download", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// FR-6.2: a file whose connection was disconnected is 404 — the SQL
+    /// join filters `disconnected_at IS NULL`, mirroring videos.
+    #[tokio::test]
+    async fn file_download_404_inactive_connection() {
+        let (app, cookie, repo, _guard) = boot_and_setup().await;
+        let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+        seed_file(
+            &repo,
+            &conn,
+            "gd-f-stale",
+            "stale.mp3",
+            Some("/Media/Music/stale.mp3"),
+            FileKind::Audio,
+        )
+        .await;
+        sqlx::query("UPDATE provider_connections SET disconnected_at = '2026-01-01T00:00:00Z'")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let file_id = sqlx_like(&repo, "gd-f-stale").await;
+        let (status, _, _) = get_bytes(
+            app,
+            &format!("/api/files/{file_id}/download"),
+            Some(&cookie),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 

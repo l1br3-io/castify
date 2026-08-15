@@ -305,10 +305,13 @@ impl GoogleDriveClient {
             // Excluding `vnd.google-apps.*` server-side keeps virtual docs
             // (Docs/Sheets/folders) out of the transfer — they have no
             // binary `open_stream` (spec FR-2.4); the loop skips any that
-            // slip through anyway (defense in depth).
+            // slip through anyway (defense in depth). Negation must use the
+            // documented *prefix* form (`not mimeType contains …`) — Drive's
+            // q-language documents no infix `mimeType not contains`, and an
+            // unsupported operator 400s every listing.
             (
                 "q",
-                "mimeType not contains 'application/vnd.google-apps' and trashed=false",
+                "not mimeType contains 'application/vnd.google-apps' and trashed=false",
             ),
             (
                 "fields",
@@ -1642,7 +1645,7 @@ mod tests {
             .and(path("/drive/v3/files"))
             .and(query_param(
                 "q",
-                "mimeType not contains 'application/vnd.google-apps' and trashed=false",
+                "not mimeType contains 'application/vnd.google-apps' and trashed=false",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "files": [

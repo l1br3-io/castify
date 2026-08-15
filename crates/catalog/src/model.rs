@@ -223,7 +223,10 @@ pub struct FolderNode {
 
 /// A non-video file row shaped for the contents API (M9 FR-5). `provider`
 /// comes from the owning connection (joined at read time) so the UI's
-/// provider chips work uniformly across videos and files.
+/// provider chips work uniformly across videos and files. `kind` lives on
+/// the wrapping `FolderFileEntry`, NOT here — this struct is only ever
+/// `#[serde(flatten)]`-ed under it, and a field on both would serialize a
+/// duplicate `"kind"` key (strict JSON consumers reject that).
 #[derive(Debug, Clone, Serialize)]
 pub struct FileEntry {
     pub id: String,
@@ -232,7 +235,6 @@ pub struct FileEntry {
     pub path: Option<String>,
     pub size_bytes: i64,
     pub mime_type: Option<String>,
-    pub kind: FileKind,
     pub modified_at: Option<String>,
 }
 

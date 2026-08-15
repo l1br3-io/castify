@@ -1,6 +1,8 @@
 use axum::extract::Request;
+use axum::http::{header, HeaderValue};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -157,6 +159,13 @@ pub fn build_app(state: AppState) -> Router {
     router
         .fallback(spa_handler)
         .with_state(state.clone())
+        // Defense-in-depth against MIME confusion on provider-proxied bytes:
+        // browsers must not sniff a content type the response doesn't declare
+        // (`if_not_present` keeps any explicitly-set header authoritative).
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
         // Layer order is outermost-first: trace logs every request, CSRF runs
         // only on authenticated mutations, auth gates non-allowlisted `/api/*`.
         // `from_fn_with_state` is needed for `auth_middleware` which reads the

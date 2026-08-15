@@ -1450,9 +1450,12 @@ pub(crate) fn stream_to_response(
     resp.headers_mut()
         .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if let Some(disposition) = content_disposition {
-        if let Ok(val) = HeaderValue::from_str(disposition) {
-            resp.headers_mut().insert(header::CONTENT_DISPOSITION, val);
-        }
+        // A download without `attachment` is an XSS vector when the provider
+        // bytes carry a renderable Content-Type — never drop the header; if
+        // the value somehow fails to parse, degrade to a bare `attachment`.
+        let val =
+            HeaderValue::from_str(disposition).unwrap_or(HeaderValue::from_static("attachment"));
+        resp.headers_mut().insert(header::CONTENT_DISPOSITION, val);
     }
     resp
 }
@@ -1460,13 +1463,23 @@ pub(crate) fn stream_to_response(
 /// Build a `Content-Disposition: attachment` header value with both
 /// `filename="..."` (ASCII fallback) and `filename*=UTF-8''...` (RFC 5987
 /// percent-encoded) forms, so non-ASCII filenames work across browsers.
+///
+/// The fallback is restricted to visible ASCII (no quotes/backslashes), so
+/// the built value always parses as a `HeaderValue` — a provider-supplied
+/// name containing control characters must not silently strip the
+/// `attachment` disposition (that would let provider HTML render same-origin).
 pub(crate) fn build_content_disposition(filename: &str) -> String {
-    let sanitized = filename.replace('"', "\\\"");
+    let sanitized: String = filename
+        .chars()
+        .filter(|c| c.is_ascii_graphic() && *c != '"' && *c != '\\')
+        .collect();
+    let fallback = if sanitized.trim().is_empty() {
+        "download"
+    } else {
+        sanitized.trim()
+    };
     let encoded = percent_encode(filename);
-    format!(
-        "attachment; filename=\"{}\"; filename*=UTF-8''{}",
-        sanitized, encoded
-    )
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
 }
 
 /// RFC 3986 percent-encoding for the `filename*` parameter. Unreserved
@@ -2761,5 +2774,49 @@ mod tests {
         );
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// `build_content_disposition` must always produce a value that parses
+    /// as a `HeaderValue` — a provider-supplied filename with control
+    /// characters must not silently strip the `attachment` disposition
+    /// (which would let provider HTML render same-origin).
+    #[test]
+    fn content_disposition_always_parses_regardless_of_filename() {
+        for name in [
+            "song.mp3",
+            "quote\"name.zip",
+            "back\\slash.bin",
+            "ctrl\u{1}note.html",
+            "\u{7f}.pdf",
+            "日本語動画.mkv",
+            "",
+        ] {
+            let disposition = build_content_disposition(name);
+            HeaderValue::from_str(&disposition)
+                .unwrap_or_else(|e| panic!("unparseable disposition for {name:?}: {e}"));
+            assert!(
+                disposition.starts_with("attachment;"),
+                "not an attachment for {name:?}: {disposition}"
+            );
+        }
+    }
+
+    /// The ASCII fallback drops unsafe characters but the RFC 5987
+    /// `filename*` form preserves the original name byte-for-byte.
+    #[test]
+    fn content_disposition_sanitizes_fallback_and_preserves_filename_star() {
+        let d = build_content_disposition("ctrl\u{1}note.html");
+        assert!(
+            d.contains("filename=\"ctrlnote.html\""),
+            "control char must be stripped from fallback: {d}"
+        );
+        assert!(
+            d.contains("filename*=UTF-8''ctrl%01note.html"),
+            "filename* must percent-encode the original: {d}"
+        );
+
+        // Nothing left after sanitizing → generic fallback, never empty.
+        let d = build_content_disposition("\"\"");
+        assert!(d.contains("filename=\"download\""), "{d}");
     }
 }
