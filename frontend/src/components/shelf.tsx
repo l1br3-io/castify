@@ -1,19 +1,20 @@
-// Shelf — horizontal scrollable row of PosterCards (Netflix/Plex style).
+// Shelf — horizontal scrollable row of PosterCards.
 //
-// Used by BrowsePage (T8) to display curated collections: Recently Added,
-// Favorites, By Provider, By Folder. Each shelf is backed by its own
-// `useVideos` query in the parent; this component is purely presentational.
+// Used by BrowsePage to display curated rails: Recently Added, Favorites
+// (and, until M9 task 013 replaces them, By Provider / By Folder). Each
+// shelf is backed by its own `useVideos` query in the parent; this
+// component is purely presentational.
 //
-// Layout (PRD FR-8.3):
+// Layout:
 //   * Header: title (h2) + optional "View All" button.
 //   * Horizontal scroll container: `overflow-x-auto` with hidden scrollbar
 //     (`.no-scrollbar`) + scroll-snap for a magnetic feel.
-//   * Each card: fixed-width 200px wrapper (`flex-shrink-0`), scroll-snap
-//     aligned to `start`. PosterCard fills the wrapper naturally.
+//   * Each card: fixed-width wrapper (`flex-shrink-0`), scroll-snap aligned
+//     to `start`. `compact` narrows the cards + gap — the M9 rails sit
+//     above the folder organizer, not at Netflix scale.
 //
-// "View All" (PRD FR-8.5): the parent owns the filter state and passes an
-// `onViewAll` handler. When omitted, no button renders (e.g., for shelves
-// without a meaningful "all" view).
+// "View All": the parent owns the filter state and passes an `onViewAll`
+// handler. When omitted, no button renders.
 
 import type { VideoSummaryDto } from "../api/types";
 import { FavoriteToggle } from "./favorite-toggle";
@@ -25,13 +26,15 @@ type ShelfProps = {
   videos: VideoSummaryDto[];
   onViewAll?: () => void;
   /** Optional total count to display beside the title (e.g., "Recently Added · 47").
-    Defaults to `videos.length` when omitted. */
+   *  Defaults to `videos.length` when omitted. */
   totalCount?: number;
+  /** Compact sizing (M9 FR-7.3): 160px cards, tighter gap. */
+  compact?: boolean;
 };
 
-export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
+export function Shelf({ title, videos, onViewAll, totalCount, compact }: ShelfProps) {
   // Full sibling list for the ephemeral play queue — every card on this
-  // shelf carries the same `queue` so T11's watch page can offer next/prev
+  // shelf carries the same `queue` so the watch page can offer next/prev
   // skip within the shelf context.
   const queue = videos.map((v) => v.id);
   const count = totalCount ?? videos.length;
@@ -56,7 +59,9 @@ export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
         )}
       </div>
       <div
-        className="no-scrollbar flex gap-4 overflow-x-auto pb-2 pr-4"
+        className={`no-scrollbar flex overflow-x-auto pb-2 pr-4 ${
+          compact ? "gap-3" : "gap-4"
+        }`}
         // `proximity` (not `mandatory`) lets the user settle between cards and
         // — importantly — freely scroll the last card fully into view. With
         // `mandatory`, the scroll container resists scrolling past the final
@@ -66,7 +71,7 @@ export function Shelf({ title, videos, onViewAll, totalCount }: ShelfProps) {
         {videos.map((video) => (
           <div
             key={video.id}
-            className="w-[200px] flex-shrink-0"
+            className={`${compact ? "w-[160px]" : "w-[200px]"} flex-shrink-0`}
             style={{ scrollSnapAlign: "start" }}
           >
             <PosterCard

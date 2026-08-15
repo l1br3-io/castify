@@ -1,29 +1,29 @@
-// Browse page — M2 T7 poster-grid view + T8 hero showcase + scrollable shelves
-// + T9 search + T10 filter panel / URL deep-linking + T13 continue-watching.
+// Browse page — M2 T7 poster-grid view + T8 scrollable shelves + T9 search
+// + T10 filter panel / URL deep-linking + T13 continue-watching. M9 redesign
+// §7: the featured-video hero is gone; a compact library header (stats +
+// search) leads, rails stay compact, and the folder organizer (task 013)
+// becomes the page's spine.
 //
-// Layout (PRD FR-8 + FR-11):
-//   0. Search bar (always at top; "/" focuses it).
-//   1. Hero showcase (featured video: most-recently-scanned, full-width ~40vh).
-//   2. Continue-watching shelf (T13, IndexedDB-backed; hidden when empty).
-//   3. Shelves section (horizontal scrollable rows):
+// Layout (M9 FR-7):
+//   0. Compact header: "Your library · N videos · M clouds" + SearchBar
+//      (always at top; "/" focuses it).
+//   1. Continue-watching rail (T13, IndexedDB-backed; hidden when empty).
+//   2. Rails section (horizontal scrollable rows):
 //      - Recently Added (always shown)
 //      - Favorites (shown only when owner has ≥1 favorite)
-//      - By Provider (one shelf per connected provider)
-//      - By Folder (one per top-5 folder by count)
+//   3. Folder organizer (M9 task 013: tree + contents + provider chips).
 //   4. "All Videos" grid section (poster grid + sort + filter panel + pagination).
 //
 // Search (T9, FR-2): when the debounced query is non-empty, the layout enters
-// a focused search-results mode — hero + shelves (incl. continue-watching)
-// are hidden and the grid section shows "Search results for "q"" + count.
-// Search composes with sort and all filters (FR-2.2).
+// a focused search-results mode — rails (incl. continue-watching) and the
+// organizer are hidden and the grid section shows "Search results for "q"" +
+// count. Search composes with sort and all filters (FR-2.2).
 //
 // URL state (T10): all filter + sort + search state lives in URL search params
-// via `useBrowseFilters()` for deep-linking + back-button support. `page` is
-// the only state kept local (deep-linking to page N is fragile). The raw
-// search input is also local (debounced before writing to URL).
-//
-// "View All" (FR-8.5): each shelf's button resets filters, applies the shelf's
-// single filter, and scrolls to `#all-videos`.
+// via `useBrowseFilters()` for deep-linking + back-button support; the tree's
+// `?dir=` (use-folder-dir) is separate. `page` is the only state kept local
+// (deep-linking to page N is fragile). The raw search input is also local
+// (debounced before writing to URL).
 //
 // Empty states:
 //   * Library truly empty (recentlyAdded has 0 videos): scan-aware CTA.
@@ -35,13 +35,13 @@ import { useNavigate } from "react-router-dom";
 
 import { FilterPanel } from "../components/filter-panel";
 import { FavoriteToggle } from "../components/favorite-toggle";
-import { HeroShowcase, HeroSkeleton } from "../components/hero-showcase";
 import { PosterCard } from "../components/poster-card";
 import { RatingStars } from "../components/rating-stars";
 import { SearchBar } from "../components/search-bar";
 import { Shelf } from "../components/shelf";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
+import { Skeleton } from "../components/ui/skeleton";
 import { useConnections } from "../hooks/use-connections";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { useFolders } from "../hooks/use-folders";
@@ -147,11 +147,11 @@ export function BrowsePage() {
       ?.scrollIntoView({ behavior: "smooth" });
   }
 
-  // --- Initial load: skeleton hero + skeleton grid ---
+  // --- Initial load: skeleton header + skeleton grid ---
   if (recentlyAdded.isLoading) {
     return (
       <div className="space-y-6">
-        <HeroSkeleton />
+        <Skeleton className="h-12 w-full" />
         <LoadingSkeletonGrid />
       </div>
     );
@@ -173,39 +173,39 @@ export function BrowsePage() {
     return <LibraryEmptyState />;
   }
 
-  const heroVideo = recentlyAdded.data.videos[0];
   const hasActiveFilter = filters.activeCount > 0;
-  // Recently Added list also feeds the hero — same queue for both so the
-  // watch page can next/prev through recently-added context.
-  const recentlyAddedQueue = recentlyAdded.data.videos.map((v) => v.id);
+  const libraryStats = `Your library · ${recentlyAdded.data.total} ${
+    recentlyAdded.data.total === 1 ? "video" : "videos"
+  } · ${connections.data?.length ?? 0} ${connections.data?.length === 1 ? "cloud" : "clouds"}`;
 
   return (
     <div className="space-y-8">
-      {/* Search + Sort row — sticky at the top of the browse area. */}
+      {/* Compact library header (M9 FR-7.2): stats + search in one sticky
+          row. This replaces the old 40vh featured-video hero — an organizer,
+          not a premiere. */}
       <div className="sticky top-0 z-20 -mx-4 bg-[var(--color-castify-canvas)]/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-castify-canvas)]/80">
-        <SearchBar ref={searchRef} value={query} onChange={setQuery} />
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <h1 className="text-lg font-semibold tracking-tight">{libraryStats}</h1>
+          <div className="md:w-96">
+            <SearchBar ref={searchRef} value={query} onChange={setQuery} />
+          </div>
+        </div>
       </div>
 
-      {/* Hero + shelves — hidden during active search (focused results mode) */}
+      {/* Rails + shelves — hidden during active search (focused results mode) */}
       {!isSearching && (
         <>
-          <HeroShowcase
-            video={heroVideo}
-            queue={recentlyAddedQueue}
-            favoriteSlot={<FavoriteToggle video={heroVideo} variant="hero" />}
-            ratingSlot={<RatingStars video={heroVideo} variant="hero" />}
-          />
-
-          {/* T13: continue-watching shelf (IndexedDB-backed) */}
+          {/* T13: continue-watching rail (IndexedDB-backed) */}
           <ContinueWatchingShelf />
 
-          {/* Shelves */}
+          {/* Rails */}
           <div className="space-y-6">
             <Shelf
               title="Recently Added"
               videos={recentlyAdded.data.videos}
               totalCount={recentlyAdded.data.total}
               onViewAll={() => handleViewAll({})}
+              compact
             />
 
             <FavoritesShelf
@@ -336,7 +336,7 @@ function ContinueWatchingShelf() {
         {entries.map((entry) => (
           <div
             key={entry.videoId}
-            className="w-[200px] flex-shrink-0"
+            className="w-[160px] flex-shrink-0"
             style={{ scrollSnapAlign: "start" }}
           >
             <ContinueWatchingCard entry={entry} queue={queue} />
@@ -365,6 +365,7 @@ function FavoritesShelf({ onViewAll }: { onViewAll: () => void }) {
       videos={query.data.videos}
       totalCount={query.data.total}
       onViewAll={onViewAll}
+      compact
     />
   );
 }

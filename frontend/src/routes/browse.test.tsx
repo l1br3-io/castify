@@ -152,16 +152,23 @@ describe("BrowsePage", () => {
   });
   afterEach(() => setCsrfToken(null));
 
-  // --- Hero ---
+  // --- Compact library header (M9 FR-7.1/7.2: hero removed) ---
 
-  it("renders the hero with the featured video name", async () => {
+  it("renders the compact library header with stats and no featured hero", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    // Hero h2 shows the first video's name.
-    expect(await screen.findByRole("heading", { level: 2, name: "cat.mp4" })).toBeInTheDocument();
+    // Header h1 carries the library stats (60 videos from VIDEO_PAGE_ONE,
+    // 1 connection); the featured-video hero is gone entirely — no h2 with
+    // a video name.
+    expect(
+      await screen.findByRole("heading", { level: 1, name: /Your library · 60 videos/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 2, name: "cat.mp4" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("renders skeleton hero on initial load before data resolves", () => {
+  it("renders skeleton header on initial load before data resolves", () => {
     renderWithProviders(<BrowsePage />, {
       fetchImplementation: () => new Promise<Response>(() => {}),
     });
@@ -178,7 +185,7 @@ describe("BrowsePage", () => {
     });
 
     // Wait for data to load.
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Scope to the grid section — the hero + shelves also render PosterCards.
     const gridSection = container.querySelector("#all-videos");
@@ -192,7 +199,7 @@ describe("BrowsePage", () => {
   it("renders all nine sort options in the dropdown", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     const select = screen.getByLabelText("Sort videos");
     const options = select.querySelectorAll("option");
     expect(options.length).toBe(9);
@@ -205,7 +212,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Sort videos"), {
       target: { value: "size" },
@@ -244,7 +251,7 @@ describe("BrowsePage", () => {
       },
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -258,7 +265,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     const gridSection = container.querySelector("#all-videos");
     const grid = gridSection!.querySelector(
       ".grid.grid-cols-2.sm\\:grid-cols-3.md\\:grid-cols-4.lg\\:grid-cols-5.xl\\:grid-cols-6",
@@ -322,9 +329,9 @@ describe("BrowsePage", () => {
   it("renders the Recently Added shelf with a View All button", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    // "Recently Added" appears as a shelf heading (level 2).
-    // There are multiple h2 elements (hero title + "All Videos" + shelf titles).
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    // "Recently Added" appears as a rail heading (level 2), alongside
+    // "All Videos" in the grid section.
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(screen.getByRole("heading", { name: "Recently Added" })).toBeInTheDocument();
 
     // View All button for Recently Added.
@@ -335,7 +342,7 @@ describe("BrowsePage", () => {
   it("hides the Favorites shelf when owner has no favorites", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(screen.queryByRole("heading", { name: "Favorites" })).not.toBeInTheDocument();
   });
 
@@ -400,7 +407,7 @@ describe("BrowsePage", () => {
       }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(screen.queryByRole("heading", { name: "Dropbox" })).not.toBeInTheDocument();
   });
 
@@ -460,7 +467,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Search videos"), {
       target: { value: "concert" },
@@ -482,7 +489,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const input = screen.getByLabelText("Search videos");
     fireEvent.change(input, { target: { value: "c" } });
@@ -500,12 +507,12 @@ describe("BrowsePage", () => {
     });
   });
 
-  it("hides hero and shelves and shows search results header when searching", async () => {
+  it("hides rails and shows search results header when searching", async () => {
     renderWithProviders(<BrowsePage />, {
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Search videos"), {
       target: { value: "concert" },
@@ -524,9 +531,7 @@ describe("BrowsePage", () => {
     // the old card is gone.
     expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
 
-    // Hero heading is gone.
-    expect(screen.queryByRole("heading", { name: "cat.mp4" })).not.toBeInTheDocument();
-    // Shelves are gone.
+    // Rails are gone (the poster cards + their headings).
     expect(screen.queryByRole("heading", { name: "Recently Added" })).not.toBeInTheDocument();
   });
 
@@ -537,7 +542,7 @@ describe("BrowsePage", () => {
       }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Search videos"), {
       target: { value: "xyz" },
@@ -555,7 +560,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Type and enter search mode.
     fireEvent.change(screen.getByLabelText("Search videos"), {
@@ -570,7 +575,7 @@ describe("BrowsePage", () => {
     // Click clear.
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
 
-    // Should return to browse layout (hero reappears).
+    // Should return to browse layout (rails reappear).
     await waitFor(() => {
       expect(
         screen.getByRole("heading", { name: "All Videos" }),
@@ -584,7 +589,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const searchInput = screen.getByLabelText("Search videos");
     expect(searchInput).not.toHaveFocus();
@@ -599,7 +604,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Focus the search input, then dispatch / keydown from it.
     const searchInput = screen.getByLabelText("Search videos");
@@ -623,7 +628,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // The grid query should include provider=dropbox.
     await waitFor(() => {
@@ -641,7 +646,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Sort videos"), {
       target: { value: "name" },
@@ -664,7 +669,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.change(screen.getByLabelText("Search videos"), {
       target: { value: "concert" },
@@ -688,7 +693,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const gridSection = container.querySelector("#all-videos");
     const filterToggle = within(gridSection as HTMLElement).getByRole("button", {
@@ -715,7 +720,7 @@ describe("BrowsePage", () => {
       }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Provider chip is always visible inline — no toggle click required.
     expect(
@@ -743,7 +748,7 @@ describe("BrowsePage", () => {
       }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Open the More filters drawer, then click the duration preset.
     fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
@@ -765,7 +770,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
     fireEvent.click(screen.getByRole("button", { name: "HD+" }));
@@ -783,7 +788,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     fireEvent.click(screen.getByRole("button", { name: /More filters/i }));
     fireEvent.click(screen.getByRole("button", { name: "FHD+" }));
@@ -827,7 +832,7 @@ describe("BrowsePage", () => {
       }),
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Long-tail filter chips (HD+, < 5 min) are visible. Provider chip text
     // ("Google Drive") is intentionally not asserted here because it also
@@ -894,7 +899,7 @@ describe("BrowsePage", () => {
       },
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Scope to the grid section — the hero + Recently Added shelf also have
     // favorite toggles for v1.
@@ -928,7 +933,7 @@ describe("BrowsePage", () => {
       },
     });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const gridSection = container.querySelector("#all-videos")!;
     const gridStarBtns = within(gridSection as HTMLElement).getAllByRole("radio", {
@@ -1010,7 +1015,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     mockGetInProgressVideos.mockResolvedValue([]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
       screen.queryByRole("heading", { name: "Continue Watching" }),
     ).not.toBeInTheDocument();
@@ -1021,7 +1026,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     mockGetInProgressVideos.mockReturnValue(new Promise<ProgressEntry[]>(() => {}));
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { level: 2, name: "cat.mp4" });
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
       screen.queryByRole("heading", { name: "Continue Watching" }),
     ).not.toBeInTheDocument();
@@ -1059,7 +1064,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     expect(resumeLink).toHaveAttribute("href", "/watch/cw-1");
   });
 
-  it("places the Continue Watching shelf between hero and Recently Added", async () => {
+  it("places the Continue Watching rail between the library header and Recently Added", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 

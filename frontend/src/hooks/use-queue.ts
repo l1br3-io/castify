@@ -1,7 +1,7 @@
 // `useQueue` — ephemeral session-scoped play queue (PRD FR-10).
 //
 // Reads the sibling video IDs from `location.state.queue` (populated by
-// PosterCard / HeroShowcase / Shelf click navigation in T7) and the current
+// PosterCard / Shelf click navigation) and the current
 // `:id` route param, derives the queue position, and exposes navigation
 // helpers that preserve the queue across skips.
 //

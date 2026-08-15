@@ -16,7 +16,7 @@
 // `usePlaybackTracking`). T11 adds the ephemeral queue: skip prev/next
 // controls (PlayerControls), 5s auto-advance countdown overlay
 // (`useAutoAdvance`), and an UpNext panel below VideoInfo. Queue state
-// comes from `location.state.queue` (set by PosterCard / HeroShowcase /
+// comes from `location.state.queue` (set by PosterCard / Shelf /
 // Shelf click navigation in T7) — direct URL access or reload starts with
 // no queue (FR-10.5).
 
