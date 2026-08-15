@@ -626,14 +626,14 @@ impl CatalogRepository {
         &self,
         file_id: &str,
     ) -> CatalogResult<Option<VideoStreamInfo>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(
             "SELECT f.id, f.connection_id, pc.provider, f.provider_file_id, f.mime_type, \
                     f.size_bytes, f.name \
              FROM files f \
              JOIN provider_connections pc ON pc.id = f.connection_id \
                   AND pc.disconnected_at IS NULL \
-             WHERE f.id = ?"
-        ))
+             WHERE f.id = ?",
+        )
         .bind(file_id)
         .fetch_optional(&self.pool)
         .await?;
@@ -1033,7 +1033,7 @@ impl CatalogRepository {
              WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER}"
         ));
         path_frag(&mut sql, &mut binds, "");
-        sql.push_str(")");
+        sql.push(')');
         if let Some(q) = filter.q_filter() {
             sql.push_str(" AND v.name LIKE ? ESCAPE '\\'");
             binds.push(q);
