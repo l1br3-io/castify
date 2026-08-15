@@ -1,7 +1,7 @@
 // FolderTree tests (M9 task 011): render, selection, URL sync via the
 // `use-folder-dir` hook, and the ARIA tree keyboard pattern.
 
-import { fireEvent, screen } from "-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { FolderTree } from "./folder-tree";
