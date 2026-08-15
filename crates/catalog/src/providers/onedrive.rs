@@ -2,12 +2,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
-    infer_image_mime, response_to_stream, to_hex, TokenResponse,
+    classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
+    has_subtitle_extension, has_video_extension, infer_image_mime, response_to_stream, to_hex,
+    TokenResponse,
 };
 
 const AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
@@ -284,6 +285,116 @@ fn is_video_item(item: &DriveItem) -> bool {
     has_video_extension(&item.name)
 }
 
+/// Partition a delta page into (videos, sidecar subtitles, non-media
+/// files). Extracted from the listing method so the classification rules
+/// are testable without a mock HTTP server (same pattern as Drive's
+/// `classify_drive_file` and Dropbox's `partition_dropbox_entries`).
+///
+/// M9: non-video, non-sidecar files are emitted as `DiscoveredFile` rows
+/// instead of being dropped; sidecar subtitles are dual-represented
+/// (playback routing + folder-tree visibility).
+fn partition_onedrive_items(
+    items: Vec<DriveItem>,
+) -> (
+    Vec<DiscoveredVideo>,
+    Vec<DiscoveredSubtitle>,
+    Vec<crate::model::DiscoveredFile>,
+) {
+    let mut videos = Vec::new();
+    let mut subtitles = Vec::new();
+    let mut files = Vec::new();
+
+    for item in items {
+        // Items without a file facet are folders (or deleted tombstones) —
+        // never catalog rows.
+        if item.file.is_none() {
+            continue;
+        }
+        let path = item
+            .parent_reference
+            .as_ref()
+            .and_then(|p| p.path.as_ref())
+            .map(|p| {
+                let parent = p.split(':').nth(1).unwrap_or("");
+                if parent.is_empty() {
+                    format!("/{}", item.name)
+                } else {
+                    format!("{parent}/{}", item.name)
+                }
+            });
+        let mime_type = item.file.as_ref().and_then(|f| f.mime_type.clone());
+
+        if has_subtitle_extension(&item.name) {
+            let language = guess_language(&item.name);
+            files.push(discovered_file_of_kind(
+                FileKind::Subtitle,
+                item.id.clone(),
+                item.name.clone(),
+                path.clone(),
+                item.size.unwrap_or(0),
+                mime_type.clone(),
+                item.last_modified_date_time.clone(),
+            ));
+            subtitles.push(DiscoveredSubtitle {
+                provider_file_id: item.id,
+                name: item.name,
+                path,
+                language,
+            });
+        } else if is_video_item(&item) {
+            let hashes = item.file.as_ref().and_then(|f| f.hashes.as_ref());
+
+            let (native_hash, native_hash_algo) = match hashes {
+                Some(h) => {
+                    if let Some(qx) = &h.quick_xor_hash {
+                        (Some(qx.clone()), Some("quickxor".to_string()))
+                    } else if let Some(s256) = &h.sha256_hash {
+                        (Some(s256.clone()), Some("sha256".to_string()))
+                    } else if let Some(s1) = &h.sha1_hash {
+                        (Some(s1.clone()), Some("sha1".to_string()))
+                    } else {
+                        (None, None)
+                    }
+                }
+                None => (None, None),
+            };
+
+            let (duration_ms, width, height) = item
+                .video
+                .as_ref()
+                .map(|v| (v.duration, v.width, v.height))
+                .unwrap_or((None, None, None));
+
+            videos.push(DiscoveredVideo {
+                provider_file_id: item.id,
+                name: item.name,
+                path,
+                size_bytes: item.size.unwrap_or(0),
+                mime_type,
+                duration_ms,
+                width,
+                height,
+                native_hash,
+                native_hash_algo,
+                provider_modified_at: item.last_modified_date_time,
+            });
+        } else {
+            // M9: every remaining file is cataloged metadata-only.
+            files.push(discovered_file_of_kind(
+                classify_kind(&item.name, mime_type.as_deref()),
+                item.id,
+                item.name,
+                path,
+                item.size.unwrap_or(0),
+                mime_type,
+                item.last_modified_date_time,
+            ));
+        }
+    }
+
+    (videos, subtitles, files)
+}
+
 // ── OneDrive Graph API methods ──────────────────────────────────────
 
 impl OneDriveClient {
@@ -332,79 +443,12 @@ impl OneDriveClient {
 
         let response: DeltaResponse = serde_json::from_str(&resp_body)?;
 
-        let mut videos = Vec::new();
-        let mut subtitles = Vec::new();
-
-        for item in response.value {
-            let path = item
-                .parent_reference
-                .as_ref()
-                .and_then(|p| p.path.as_ref())
-                .map(|p| {
-                    let parent = p.split(':').nth(1).unwrap_or("");
-                    if parent.is_empty() {
-                        format!("/{}", item.name)
-                    } else {
-                        format!("{parent}/{}", item.name)
-                    }
-                });
-
-            if item.file.is_some() && has_subtitle_extension(&item.name) {
-                let language = guess_language(&item.name);
-                subtitles.push(DiscoveredSubtitle {
-                    provider_file_id: item.id,
-                    name: item.name,
-                    path,
-                    language,
-                });
-            } else if is_video_item(&item) {
-                let hashes = item.file.as_ref().and_then(|f| f.hashes.as_ref());
-
-                let (native_hash, native_hash_algo) = match hashes {
-                    Some(h) => {
-                        if let Some(qx) = &h.quick_xor_hash {
-                            (Some(qx.clone()), Some("quickxor".to_string()))
-                        } else if let Some(s256) = &h.sha256_hash {
-                            (Some(s256.clone()), Some("sha256".to_string()))
-                        } else if let Some(s1) = &h.sha1_hash {
-                            (Some(s1.clone()), Some("sha1".to_string()))
-                        } else {
-                            (None, None)
-                        }
-                    }
-                    None => (None, None),
-                };
-
-                let (duration_ms, width, height) = item
-                    .video
-                    .as_ref()
-                    .map(|v| (v.duration, v.width, v.height))
-                    .unwrap_or((None, None, None));
-
-                let mime_type = item.file.as_ref().and_then(|f| f.mime_type.clone());
-
-                videos.push(DiscoveredVideo {
-                    provider_file_id: item.id,
-                    name: item.name,
-                    path,
-                    size_bytes: item.size.unwrap_or(0),
-                    mime_type,
-                    duration_ms,
-                    width,
-                    height,
-                    native_hash,
-                    native_hash_algo,
-                    provider_modified_at: item.last_modified_date_time,
-                });
-            }
-        }
+        let (videos, subtitles, files) = partition_onedrive_items(response.value);
 
         Ok(ListPage {
             videos,
             subtitles,
-            // M9 Task 003 fills this; the constructor sweep keeps the
-            // workspace compiling before provider partitioning lands.
-            files: Vec::new(),
+            files,
             next_cursor: response.next_link,
         })
     }
@@ -888,6 +932,51 @@ mod tests {
         assert_eq!(videos.len(), 2);
         assert_eq!(videos[0].id, "v1");
         assert_eq!(videos[1].id, "v2");
+    }
+
+    /// M9: non-video, non-sidecar files are emitted as `DiscoveredFile`
+    /// rows instead of being dropped; sidecars are dual-represented.
+    #[test]
+    fn partition_onedrive_items_emits_files_and_dual_sidecars() {
+        let json = r#"{
+            "value": [
+                { "id": "v1", "name": "movie.mp4", "size": 1000,
+                  "file": { "mimeType": "video/mp4" },
+                  "parentReference": { "path": "/drive/root:/Media" } },
+                { "id": "s1", "name": "movie.en.srt", "size": 2,
+                  "file": { "mimeType": "application/octet-stream" },
+                  "parentReference": { "path": "/drive/root:/Media" } },
+                { "id": "f1", "name": "thesis.pdf", "size": 500,
+                  "file": { "mimeType": "application/pdf" },
+                  "parentReference": { "path": "/drive/root:/Docs" } },
+                { "id": "f2", "name": "weird.dat", "size": 7,
+                  "file": { "mimeType": "application/octet-stream" } },
+                { "id": "d1", "name": "Movies", "size": 0, "folder": {} }
+            ]
+        }"#;
+
+        let response: DeltaResponse = serde_json::from_str(json).unwrap();
+        let (videos, subtitles, files) = partition_onedrive_items(response.value);
+
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].provider_file_id, "v1");
+        assert_eq!(videos[0].path.as_deref(), Some("/Media/movie.mp4"));
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].provider_file_id, "s1");
+
+        // srt (dual) + pdf + dat; folder dropped.
+        assert_eq!(files.len(), 3);
+        let srt = files.iter().find(|f| f.provider_file_id == "s1").unwrap();
+        assert_eq!(srt.kind, FileKind::Subtitle);
+        let pdf = files.iter().find(|f| f.provider_file_id == "f1").unwrap();
+        assert_eq!(pdf.kind, FileKind::Document);
+        assert_eq!(pdf.path.as_deref(), Some("/Docs/thesis.pdf"));
+        let dat = files.iter().find(|f| f.provider_file_id == "f2").unwrap();
+        assert_eq!(dat.kind, FileKind::Other);
+        assert!(
+            !files.iter().any(|f| f.provider_file_id == "d1"),
+            "folders are never file rows"
+        );
     }
 
     #[test]

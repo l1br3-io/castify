@@ -2,12 +2,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
-    infer_image_mime, infer_mime_type, response_to_stream, to_hex, TokenResponse,
+    classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
+    has_subtitle_extension, has_video_extension, infer_image_mime, infer_mime_type,
+    response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://www.dropbox.com/oauth2/authorize";
@@ -297,6 +298,83 @@ fn extract_video_dims(media_info: &Option<MediaInfo>) -> (Option<i64>, Option<i6
     (None, None, None)
 }
 
+/// Partition a `list_folder` page into (videos, sidecar subtitles,
+/// non-media files). Extracted from the listing method so the classification
+/// rules are testable without a mock HTTP server (same pattern as Drive's
+/// `classify_drive_file`).
+///
+/// M9: files that aren't videos or sidecar subtitles are no longer skipped —
+/// they become `DiscoveredFile` rows (metadata-only) so the folder tree
+/// mirrors the user's cloud. Sidecar subtitles are dual-represented:
+/// `DiscoveredSubtitle` drives playback routing, the file row keeps the
+/// tree honest.
+fn partition_dropbox_entries(
+    entries: Vec<DropboxEntry>,
+) -> (
+    Vec<DiscoveredVideo>,
+    Vec<DiscoveredSubtitle>,
+    Vec<crate::model::DiscoveredFile>,
+) {
+    let mut videos = Vec::new();
+    let mut subtitles = Vec::new();
+    let mut files = Vec::new();
+
+    for e in entries {
+        if e.tag != "file" {
+            continue;
+        }
+        if is_video_entry(&e) {
+            let (width, height, duration_ms) = extract_video_dims(&e.media_info);
+            let native_hash_algo = e.content_hash.as_ref().map(|_| "content_hash".to_string());
+            let mime_type = infer_mime_type(&e.name);
+            videos.push(DiscoveredVideo {
+                provider_file_id: e.id,
+                name: e.name,
+                path: e.path_display,
+                size_bytes: e.size.unwrap_or(0),
+                mime_type,
+                duration_ms,
+                width,
+                height,
+                native_hash: e.content_hash,
+                native_hash_algo,
+                provider_modified_at: e.server_modified,
+            });
+        } else if has_subtitle_extension(&e.name) {
+            let language = guess_language(&e.name);
+            // Dropbox's list_folder carries no MIME type; the extension
+            // tables do the classifying here.
+            files.push(discovered_file_of_kind(
+                FileKind::Subtitle,
+                e.id.clone(),
+                e.name.clone(),
+                e.path_display.clone(),
+                e.size.unwrap_or(0),
+                None,
+                e.server_modified.clone(),
+            ));
+            subtitles.push(DiscoveredSubtitle {
+                provider_file_id: e.id,
+                name: e.name,
+                path: e.path_display,
+                language,
+            });
+        } else {
+            files.push(discovered_file_of_kind(
+                classify_kind(&e.name, None),
+                e.id,
+                e.name,
+                e.path_display,
+                e.size.unwrap_or(0),
+                None,
+                e.server_modified,
+            ));
+        }
+    }
+
+    (videos, subtitles, files)
+}
+
 // ── Dropbox API methods ─────────────────────────────────────────────
 
 impl DropboxClient {
@@ -350,40 +428,7 @@ impl DropboxClient {
 
         let response: ListFolderResponse = serde_json::from_str(&resp_body)?;
 
-        let mut videos = Vec::new();
-        let mut subtitles = Vec::new();
-
-        for e in response.entries {
-            if e.tag != "file" {
-                continue;
-            }
-            if is_video_entry(&e) {
-                let (width, height, duration_ms) = extract_video_dims(&e.media_info);
-                let native_hash_algo = e.content_hash.as_ref().map(|_| "content_hash".to_string());
-                let mime_type = infer_mime_type(&e.name);
-                videos.push(DiscoveredVideo {
-                    provider_file_id: e.id,
-                    name: e.name,
-                    path: e.path_display,
-                    size_bytes: e.size.unwrap_or(0),
-                    mime_type,
-                    duration_ms,
-                    width,
-                    height,
-                    native_hash: e.content_hash,
-                    native_hash_algo,
-                    provider_modified_at: e.server_modified,
-                });
-            } else if has_subtitle_extension(&e.name) {
-                let language = guess_language(&e.name);
-                subtitles.push(DiscoveredSubtitle {
-                    provider_file_id: e.id,
-                    name: e.name,
-                    path: e.path_display,
-                    language,
-                });
-            }
-        }
+        let (videos, subtitles, files) = partition_dropbox_entries(response.entries);
 
         let next_cursor = if response.has_more {
             Some(response.cursor)
@@ -394,9 +439,7 @@ impl DropboxClient {
         Ok(ListPage {
             videos,
             subtitles,
-            // M9 Task 003 fills this; the constructor sweep keeps the
-            // workspace compiling before provider partitioning lands.
-            files: Vec::new(),
+            files,
             next_cursor,
         })
     }
@@ -852,6 +895,44 @@ mod tests {
         }"#;
         let entry: DropboxEntry = serde_json::from_str(entry_json).unwrap();
         assert!(!is_video_entry(&entry));
+    }
+
+    /// M9: non-video, non-sidecar files are emitted as `DiscoveredFile`
+    /// rows instead of being dropped; sidecars are dual-represented.
+    #[test]
+    fn partition_dropbox_entries_emits_files_and_dual_sidecars() {
+        let page_json = r#"{
+            "entries": [
+                { ".tag": "file", "id": "id:1", "name": "clip.mp4", "path_display": "/Media/clip.mp4", "size": 100 },
+                { ".tag": "file", "id": "id:2", "name": "movie.en.srt", "path_display": "/Media/movie.en.srt", "size": 2 },
+                { ".tag": "file", "id": "id:3", "name": "song.mp3", "path_display": "/Music/song.mp3", "size": 40 },
+                { ".tag": "file", "id": "id:4", "name": "weird.dat", "size": 7 },
+                { ".tag": "folder", "id": "id:5", "name": "Photos" }
+            ]
+        }"#;
+        let response: ListFolderResponse = serde_json::from_str(page_json).unwrap();
+
+        let (videos, subtitles, files) = partition_dropbox_entries(response.entries);
+
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].provider_file_id, "id:1");
+        assert_eq!(subtitles.len(), 1);
+        assert_eq!(subtitles[0].provider_file_id, "id:2");
+
+        // srt (dual) + mp3 + dat; folder dropped.
+        assert_eq!(files.len(), 3);
+        let srt = files.iter().find(|f| f.provider_file_id == "id:2").unwrap();
+        assert_eq!(srt.kind, FileKind::Subtitle);
+        assert_eq!(srt.path.as_deref(), Some("/Media/movie.en.srt"));
+        let mp3 = files.iter().find(|f| f.provider_file_id == "id:3").unwrap();
+        assert_eq!(mp3.kind, FileKind::Audio);
+        assert_eq!(mp3.size_bytes, 40);
+        let dat = files.iter().find(|f| f.provider_file_id == "id:4").unwrap();
+        assert_eq!(dat.kind, FileKind::Other);
+        assert!(
+            !files.iter().any(|f| f.provider_file_id == "id:5"),
+            "folders are never file rows"
+        );
     }
 
     #[test]

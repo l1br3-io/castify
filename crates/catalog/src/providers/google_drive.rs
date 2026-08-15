@@ -5,12 +5,13 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::crypto::TokenBundle;
-use crate::model::{DiscoveredSubtitle, DiscoveredVideo, ListPage, Provider};
+use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
-    classify_token_error, guess_language, has_subtitle_extension, has_video_extension,
-    infer_image_mime, response_to_stream, to_hex, TokenResponse,
+    classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
+    has_subtitle_extension, has_video_extension, infer_image_mime, response_to_stream, to_hex,
+    TokenResponse,
 };
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -298,9 +299,16 @@ impl GoogleDriveClient {
         folder_cache: &mut HashMap<String, String>,
     ) -> ProviderResult<ListPage> {
         let mut query: Vec<(&str, &str)> = vec![
+            // M9: unfiltered listing. Everything non-Google-apps and not
+            // trashed comes back; partitioning (video/subtitle/file) happens
+            // client-side below, unifying Drive with Dropbox/OneDrive.
+            // Excluding `vnd.google-apps.*` server-side keeps virtual docs
+            // (Docs/Sheets/folders) out of the transfer — they have no
+            // binary `open_stream` (spec FR-2.4); the loop skips any that
+            // slip through anyway (defense in depth).
             (
                 "q",
-                "(mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed=false",
+                "mimeType not contains 'application/vnd.google-apps' and trashed=false",
             ),
             (
                 "fields",
@@ -320,7 +328,11 @@ impl GoogleDriveClient {
 
         let resp = self
             .http
-            .get(DRIVE_FILES_URL)
+            // `drive_files_base` (not the constant) so wiremock tests can
+            // point listing at a local server — same pattern as
+            // `resolve_direct_download_url`. Production value is the
+            // constant.
+            .get(&self.drive_files_base)
             .bearer_auth(access_token)
             .query(&query)
             .send()
@@ -373,11 +385,24 @@ impl GoogleDriveClient {
                 .await?;
         }
 
-        // Single pass: partition files into videos and subtitles.
+        // Single pass: partition files into videos, subtitles, and
+        // non-media files (M9).
         let mut videos = Vec::new();
         let mut subtitles = Vec::new();
+        let mut files = Vec::new();
 
         for f in response.files {
+            // Defense in depth: virtual Google docs have no downloadable
+            // binary — skip even if the query filter somehow let them in.
+            if f.mime_type.starts_with("application/vnd.google-apps") {
+                tracing::debug!(
+                    name = %f.name,
+                    mime_type = %f.mime_type,
+                    "skipping Drive virtual document"
+                );
+                continue;
+            }
+
             let path = f
                 .parents
                 .as_ref()
@@ -389,6 +414,18 @@ impl GoogleDriveClient {
             match class {
                 DriveFileClass::Subtitle => {
                     let language = guess_language(&f.name);
+                    // Dual representation (M9): the sidecar row drives
+                    // playback routing; the file row keeps the folder tree
+                    // honest.
+                    files.push(discovered_file_of_kind(
+                        FileKind::Subtitle,
+                        f.id.clone(),
+                        f.name.clone(),
+                        path.clone(),
+                        f.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
+                        Some(f.mime_type.clone()),
+                        f.modified_time.clone(),
+                    ));
                     subtitles.push(DiscoveredSubtitle {
                         provider_file_id: f.id,
                         name: f.name,
@@ -397,10 +434,9 @@ impl GoogleDriveClient {
                     });
                 }
                 DriveFileClass::Video => {
-                    // Defense in depth: Drive's `mimeType contains 'video/'`
-                    // query can match files that aren't actually playable
-                    // videos (Google-internal types, mock files, mislabeled
-                    // uploads). Require a known video extension before
+                    // Defense in depth: mislabeled uploads (Google-internal
+                    // types, mock files) can carry a video MIME without
+                    // being playable. Require a known video extension before
                     // treating something as a video — matches Dropbox +
                     // OneDrive's contract.
                     let native_hash = f.sha256_checksum.clone().or(f.md5_checksum.clone());
@@ -430,12 +466,16 @@ impl GoogleDriveClient {
                         provider_modified_at: f.modified_time.clone(),
                     });
                 }
-                DriveFileClass::Other => {
-                    tracing::debug!(
-                        name = %f.name,
-                        mime_type = %f.mime_type,
-                        "skipping Drive file matched by query but lacking a recognized video extension"
-                    );
+                DriveFileClass::File(kind) => {
+                    files.push(discovered_file_of_kind(
+                        kind,
+                        f.id,
+                        f.name,
+                        path,
+                        f.size.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0),
+                        Some(f.mime_type.clone()),
+                        f.modified_time.clone(),
+                    ));
                 }
             }
         }
@@ -443,9 +483,7 @@ impl GoogleDriveClient {
         Ok(ListPage {
             videos,
             subtitles,
-            // M9 Task 003 fills this; the constructor sweep keeps the
-            // workspace compiling before provider partitioning lands.
-            files: Vec::new(),
+            files,
             next_cursor: response.next_page_token,
         })
     }
@@ -923,19 +961,19 @@ enum ProbeOutcome {
 
 /// How a Drive file should be classified by `list_drive_videos`. Extracted
 /// from the partition loop so the rule (subtitle extension → subtitle,
-/// known video extension → video, anything else → skip) is testable
-/// without spinning up a mock HTTP server.
+/// known video extension → video, anything else → a non-media file) is
+/// testable without spinning up a mock HTTP server.
 ///
-/// Defense in depth: Drive's `mimeType contains 'video/'` query can match
-/// files that aren't actually playable videos (Google-internal types, mock
-/// files, mislabeled uploads). The classifier requires a known video
-/// extension before classifying as `Video` — matches Dropbox + OneDrive's
-/// contract.
+/// Defense in depth: mislabeled uploads (Google-internal types, mock files)
+/// can carry a video MIME without being playable. The classifier requires a
+/// known video extension before classifying as `Video` — matches Dropbox +
+/// OneDrive's contract. Everything else lands in `files` with a
+/// [`FileKind`] from `classify_kind` (M9).
 #[derive(Debug, PartialEq, Eq)]
 enum DriveFileClass {
     Video,
     Subtitle,
-    Other,
+    File(FileKind),
 }
 
 fn classify_drive_file(file: &DriveFile) -> DriveFileClass {
@@ -944,7 +982,7 @@ fn classify_drive_file(file: &DriveFile) -> DriveFileClass {
     } else if has_video_extension(&file.name) {
         DriveFileClass::Video
     } else {
-        DriveFileClass::Other
+        DriveFileClass::File(classify_kind(&file.name, Some(&file.mime_type)))
     }
 }
 
@@ -1231,17 +1269,18 @@ mod tests {
     }
 
     #[test]
-    fn classify_drive_file_skips_non_video_extensions_even_when_drive_labeled_them_video() {
+    fn classify_drive_file_routes_non_video_extensions_to_file_class() {
         // The bug this guards against: Drive assigns `mimeType: video/*` to
         // files matching its internal heuristics — not always playable videos.
         // Documents, mock files, or mislabeled uploads would all end up in
         // the catalog with a play button if we trusted mimeType alone.
-        for name in [
-            "notes.txt",
-            "photo.jpg",
-            "archive.zip",
-            "noext",
-            "video.mp4.part",
+        // M9: instead of being skipped, they now land in `files` with a kind.
+        for (name, kind) in [
+            ("notes.txt", FileKind::Document),
+            ("photo.jpg", FileKind::Image),
+            ("archive.zip", FileKind::Archive),
+            ("noext", FileKind::Other),
+            ("video.mp4.part", FileKind::Other),
         ] {
             let file = DriveFile {
                 id: "x".into(),
@@ -1254,7 +1293,11 @@ mod tests {
                 video_media_metadata: None,
                 parents: None,
             };
-            assert_eq!(classify_drive_file(&file), DriveFileClass::Other, "{name}");
+            assert_eq!(
+                classify_drive_file(&file),
+                DriveFileClass::File(kind),
+                "{name}"
+            );
         }
     }
 
@@ -1584,5 +1627,68 @@ mod tests {
             .expect_err("should return Unauthorized");
 
         assert!(matches!(err, ProviderError::Unauthorized));
+    }
+
+    /// M9: the list query is unfiltered (no `mimeType contains 'video/'`) —
+    /// everything except Google-apps virtual docs and trashed items comes
+    /// back, and partitioning happens client-side. Asserts the exact `q`
+    /// payload so a regression to the old server-side video filter fails
+    /// loudly (spec FR-2.3).
+    #[tokio::test]
+    async fn list_drive_videos_query_is_unfiltered_and_partitions_client_side() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/drive/v3/files"))
+            .and(query_param(
+                "q",
+                "mimeType not contains 'application/vnd.google-apps' and trashed=false",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "files": [
+                    { "id": "v1", "name": "movie.mp4", "mimeType": "video/mp4", "size": "100" },
+                    { "id": "s1", "name": "movie.en.srt", "mimeType": "application/octet-stream", "size": "2" },
+                    { "id": "f1", "name": "song.mp3", "mimeType": "audio/mpeg", "size": "40" },
+                    { "id": "g1", "name": "My Doc", "mimeType": "application/vnd.google-apps.document", "size": "1" },
+                    { "id": "f2", "name": "weird.dat", "mimeType": "application/octet-stream", "size": "7" }
+                ],
+                "nextPageToken": null
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client_for_mock(&server);
+        let mut cache = std::collections::HashMap::new();
+        let page = client
+            .list_drive_videos("ya29.test", None, &mut cache)
+            .await
+            .expect("listing should succeed");
+
+        assert_eq!(page.videos.len(), 1, "only the .mp4 is a video");
+        assert_eq!(page.videos[0].provider_file_id, "v1");
+        assert_eq!(page.subtitles.len(), 1, "sidecar captured for playback");
+        assert_eq!(page.subtitles[0].provider_file_id, "s1");
+        // Dual representation: the .srt is both a sidecar and a file row…
+        assert_eq!(
+            page.files.len(),
+            3,
+            "srt + mp3 + dat; google-apps doc skipped"
+        );
+        assert!(page
+            .files
+            .iter()
+            .any(|f| f.provider_file_id == "s1" && f.kind == FileKind::Subtitle));
+        assert!(page
+            .files
+            .iter()
+            .any(|f| f.provider_file_id == "f1" && f.kind == FileKind::Audio));
+        assert!(page
+            .files
+            .iter()
+            .any(|f| f.provider_file_id == "f2" && f.kind == FileKind::Other));
+        assert!(
+            !page.files.iter().any(|f| f.provider_file_id == "g1"),
+            "virtual Google docs are never file rows"
+        );
     }
 }

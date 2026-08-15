@@ -88,6 +88,31 @@ fn classify_by_mime(mime: &str) -> FileKind {
     }
 }
 
+/// Build a [`DiscoveredFile`] with an explicit kind. Providers call this for
+/// the subtitle dual-representation (sidecar row + file row) where the kind
+/// is known without classification; everything else goes through
+/// [`classify_kind`] at the call site.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn discovered_file_of_kind(
+    kind: FileKind,
+    provider_file_id: String,
+    name: String,
+    path: Option<String>,
+    size_bytes: i64,
+    mime_type: Option<String>,
+    provider_modified_at: Option<String>,
+) -> crate::model::DiscoveredFile {
+    crate::model::DiscoveredFile {
+        provider_file_id,
+        name,
+        path,
+        size_bytes,
+        mime_type,
+        kind,
+        provider_modified_at,
+    }
+}
+
 /// Lowercase hex encoding of a byte slice.
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
