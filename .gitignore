@@ -26,3 +26,7 @@ Cargo.lock.bak
 .vscode/
 *.swp
 .understand-anything
+
+# Playwright artifacts
+test-results/
+playwright-report/

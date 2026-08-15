@@ -906,11 +906,17 @@ mod tests {
                     file.name
                 );
             }
-            // File ids carry `-f-` so open_stream serves text bytes.
+            // File ids carry `-f-` so open_stream serves text bytes — and
+            // video ids must NOT (the sentinel routes by substring; a video
+            // id containing `-f-` would serve text instead of the MP4).
             assert!(page
                 .files
                 .iter()
                 .all(|f| f.provider_file_id.contains("-f-")));
+            assert!(page
+                .videos
+                .iter()
+                .all(|v| !v.provider_file_id.contains("-f-")));
         }
     }
 

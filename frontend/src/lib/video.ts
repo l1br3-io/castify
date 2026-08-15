@@ -1,7 +1,6 @@
-// Video-domain helpers shared across PosterCard, Shelf,
-// and Shelf (T8). Extracted from poster-card.tsx when the second caller
-// arrived (deviation #43 — Rule 0: single caller = inline, second caller =
-// lift into shared module).
+// Video-domain helpers shared across PosterCard and Shelf. Extracted from
+// poster-card.tsx when the second caller arrived (deviation #43 — Rule 0:
+// single caller = inline, second caller = lift into shared module).
 
 import type { ProviderKey, VideoSummaryDto } from "../api/types";
 

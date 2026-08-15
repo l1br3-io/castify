@@ -111,7 +111,7 @@ export function BrowsePage() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Hero + Recently Added shelf — always fires; also drives the empty check.
+  // Recently Added rail — always fires; also drives the empty check.
   const recentlyAdded = useVideos({ page: 1, sort: "date-desc", limit: 20 });
 
   // Grid query — reads all filter params from the URL hook.
@@ -122,7 +122,8 @@ export function BrowsePage() {
 
   const isSearching = filters.values.q !== "";
 
-  // Provider shelves data source.
+  // Connected providers — drives the organizer's chip row + watch-page
+  // source pickers.
   const connections = useConnections();
   const connectedProviders: ProviderKey[] = Array.from(
     new Set((connections.data ?? []).map((c) => c.provider)),

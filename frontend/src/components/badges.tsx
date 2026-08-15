@@ -1,6 +1,7 @@
-// Shared badge primitives used by PosterCard (T7), HeroShowcase + Shelf (T8).
-// Extracted from M1's `routes/videos.tsx` to keep the badge styling consistent
-// across every surface that surfaces provider attribution + dedup state.
+// Shared badge primitives used by PosterCard, Shelf, ContinueWatchingCard,
+// and the watch-page header. Extracted from M1's `routes/videos.tsx` to
+// keep the badge styling consistent across every surface that shows
+// provider attribution + dedup state.
 
 import { PROVIDER_LABELS, type ProviderKey } from "../api/types";
 

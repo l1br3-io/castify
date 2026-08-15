@@ -332,7 +332,7 @@ mod file_download {
         )
         .await;
 
-        let file_id: String = sqlx_like(&repo, "gd-f-song").await;
+        let file_id: String = file_row_id(&repo, "gd-f-song").await;
         let (status, headers, bytes) = get_bytes(
             app,
             &format!("/api/files/{file_id}/download"),
@@ -399,7 +399,7 @@ mod file_download {
             .await
             .unwrap();
 
-        let file_id = sqlx_like(&repo, "gd-f-stale").await;
+        let file_id = file_row_id(&repo, "gd-f-stale").await;
         let (status, _, _) = get_bytes(
             app,
             &format!("/api/files/{file_id}/download"),
@@ -409,7 +409,8 @@ mod file_download {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
-    async fn sqlx_like(repo: &CatalogRepository, provider_file_id: &str) -> String {
+    /// Exact-match row id for a provider_file_id (no LIKE involved).
+    async fn file_row_id(repo: &CatalogRepository, provider_file_id: &str) -> String {
         sqlx::query_scalar("SELECT id FROM files WHERE provider_file_id = ?")
             .bind(provider_file_id)
             .fetch_one(repo.pool())

@@ -827,9 +827,10 @@ impl CatalogRepository {
     }
 
     /// Build the full folder tree over active connections' `videos ∪ files`
-    /// (M9 FR-4). One DB round-trip (two path queries) + O(paths) assembly
-    /// in [`build_folder_tree`]. Video counts are dedup-aware (same
-    /// representative subquery as `fetch_folders`); file counts are raw.
+    /// (M9 FR-4). Two path queries (videos, files) + O(paths) assembly in
+    /// [`build_folder_tree`] — reads every distinct path once; no per-node
+    /// queries. Video counts are dedup-aware (same representative subquery
+    /// as `fetch_folders`); file counts are raw.
     pub async fn fetch_folder_tree(&self) -> CatalogResult<Vec<FolderNode>> {
         let video_paths: Vec<(Option<String>,)> = sqlx::query_as(&format!(
             "SELECT path FROM videos WHERE id IN ( \
@@ -2178,18 +2179,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn probe_union_sql_prints() {
-        let f = FolderContentsFilter {
-            path: "/Movies".into(),
-            owner_id: "o1".into(),
-            q: Some("z".into()),
-            ..Default::default()
-        };
-        let (sql, binds) = super::CatalogRepository::folder_contents_union(&f);
-        println!("SQL:\n{sql}\n\nBINDS: {binds:?}");
-    }
 
     use crate::crypto::{TokenBundle, TokenKey};
 
