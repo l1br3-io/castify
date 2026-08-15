@@ -40,6 +40,8 @@ import {
   useConnections,
 } from "../hooks/use-connections";
 import { VIDEOS_QUERY_KEY } from "../hooks/use-videos";
+import { FOLDER_TREE_QUERY_KEY } from "../hooks/use-folder-tree";
+import { FOLDER_CONTENTS_QUERY_KEY } from "../hooks/use-folder-contents";
 import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
 import { ErrorState } from "../components/ui/error-state";
@@ -244,6 +246,14 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
       // a stale `reauth_required` from a previously-dead grant — must be
       // cleared so the watch page re-fetches with the live token state.
       void queryClient.invalidateQueries({ queryKey: VIDEOS_QUERY_KEY });
+      // The M9 backfill rescan is what fills the `files` table and updates
+      // folder paths — the tree (counts) and every cached folder view must
+      // refetch, or Browse shows fresh videos beside a stale tree within
+      // the 30s staleTime window.
+      void queryClient.invalidateQueries({ queryKey: FOLDER_TREE_QUERY_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: FOLDER_CONTENTS_QUERY_KEY,
+      });
       toast.info(`Rescanning ${PROVIDER_LABELS[connection.provider]}…`);
     },
     onError: (err: unknown) => setError(describeError(err)),
@@ -295,6 +305,14 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
       // the watch page doesn't keep rendering a stale Reconnect card or
       // serving a now-invalid CDN URL after the user reconnects.
       void queryClient.invalidateQueries({ queryKey: VIDEOS_QUERY_KEY });
+      // Cascading delete removes the connection's file rows and hides its
+      // videos — the folder tree (counts) and cached folder views must
+      // follow, or the dead provider's folders linger for the staleTime
+      // window.
+      void queryClient.invalidateQueries({ queryKey: FOLDER_TREE_QUERY_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: FOLDER_CONTENTS_QUERY_KEY,
+      });
       toast.success(
         `Disconnected from ${PROVIDER_LABELS[connection.provider]}.`,
       );

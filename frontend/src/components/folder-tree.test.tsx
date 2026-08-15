@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { FolderTree } from "./folder-tree";
 import { useFolderDir } from "../hooks/use-folder-dir";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { FolderNodeDto } from "../api/types";
 import { renderWithProviders } from "../test/utils";
 
@@ -53,13 +53,18 @@ const TREE: FolderNodeDto[] = [
 
 // Harness wiring the tree to the URL hook, mirroring how browse.tsx will.
 // The location readout makes URL-state assertions possible under
-// MemoryRouter (window.location never changes).
+// MemoryRouter (window.location never changes); the Back button drives
+// history through a real navigate(-1) for FR-9.1 assertions.
 function TreeHarness() {
   const [dir, setDir] = useFolderDir();
   const location = useLocation();
+  const navigate = useNavigate();
   return (
     <div>
       <output data-testid="location">{location.search}</output>
+      <button type="button" onClick={() => navigate(-1)}>
+        Back
+      </button>
       <FolderTree nodes={TREE} selectedPath={dir} onSelect={setDir} />
     </div>
   );
@@ -105,6 +110,26 @@ describe("FolderTree", () => {
     );
   });
 
+  // FR-9.1: folder selections push history entries — back/forward walks
+  // folder history (a replaceState URL would take Back off the page).
+  it("back navigates to the previously selected folder", () => {
+    renderTree(["/"]);
+
+    fireEvent.click(screen.getByRole("treeitem", { name: /Media/ }).querySelector("button[data-tree-path]")!);
+    expect(screen.getByTestId("location").textContent).toContain("dir=");
+
+    fireEvent.click(screen.getByRole("treeitem", { name: /\(Unsorted\)/ }).querySelector("button[data-tree-path]")!);
+    // URLSearchParams escapes parens (encodeURIComponent does not).
+    expect(screen.getByTestId("location").textContent).toContain(
+      "dir=%28Unsorted%29",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByTestId("location").textContent).toContain(
+      `dir=${encodeURIComponent("/Media")}`,
+    );
+  });
+
   it("deep-links: ?dir= selects the node and expands its ancestors", async () => {
     renderTree([`/?dir=${encodeURIComponent("/Media/Movies/Sci-fi")}`]);
 
@@ -113,11 +138,15 @@ describe("FolderTree", () => {
     expect(screen.getByRole("treeitem", { name: /Movies/ })).toBeVisible();
   });
 
-  it("invalid dir falls back to root selection without crashing", () => {
+  it("renders without selection when dir names no known node", () => {
     renderTree(["/?dir=%2Fnope%2Fnot%2Fa%2Ffolder"]);
 
-    // Root node (selected by default) still rendered.
+    // The tree itself is router-free — it simply has nothing selected
+    // (fallback-to-root is FolderOrganizer's job, tested there).
     expect(screen.getByRole("treeitem", { name: /\(Root\)/ })).toBeInTheDocument();
+    expect(
+      document.querySelector("[data-tree-path][aria-current]"),
+    ).toBeNull();
   });
 
   it("supports arrow-key navigation through visible nodes", () => {
@@ -153,6 +182,54 @@ describe("FolderTree", () => {
     expect(
       screen.getByRole("treeitem", { name: /Movies/ }),
     ).toBeInTheDocument();
+  });
+
+  it("arrow keys from a disclosure button keep the tree position", () => {
+    renderTree(["/?dir=/Media"]); // Media auto-expanded
+
+    const disclosure = screen.getByRole("button", { name: "Collapse Media" });
+    disclosure.focus();
+
+    // Down from Media's disclosure must land on the NEXT node (Movies) —
+    // not yank focus back to the first treeitem (the old resolve-by-
+    // activeElement bug: disclosures carry no data-tree-path).
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "ArrowDown" });
+    const movies = screen
+      .getByRole("treeitem", { name: /Movies/ })
+      .querySelector<HTMLElement>("[data-tree-path='/Media/Movies']")!;
+    expect(movies).toHaveFocus();
+
+    // Up from the Movies disclosure walks back to Media, still in place.
+    const moviesDisclosure = screen.getByRole("button", {
+      name: /Collapse Movies|Expand Movies/,
+    });
+    moviesDisclosure.focus();
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "ArrowUp" });
+    const media = document.querySelector<HTMLElement>(
+      "[data-tree-path='/Media']",
+    )!;
+    expect(media).toHaveFocus();
+  });
+
+  it("Home/End jump to the first and last visible nodes", () => {
+    renderTree(["/?dir=/Media"]); // visible: Root, Media, Movies, (Unsorted)
+
+    const movies = screen
+      .getByRole("treeitem", { name: /Movies/ })
+      .querySelector<HTMLElement>("[data-tree-path='/Media/Movies']")!;
+    movies.focus();
+
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "End" });
+    const unsorted = document.querySelector<HTMLElement>(
+      "[data-tree-path='(Unsorted)']",
+    )!;
+    expect(unsorted).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "Home" });
+    const root = document.querySelector<HTMLElement>(
+      "[data-tree-path='']",
+    )!;
+    expect(root).toHaveFocus();
   });
 });
 

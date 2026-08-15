@@ -167,7 +167,7 @@ describe("FolderOrganizer", () => {
     });
   });
 
-  it("provider chips filter contents and All clears", async () => {
+  it("provider chips filter contents and All clears the filter", async () => {
     renderOrganizer({ connectedProviders: ["google_drive", "dropbox"] });
     await screen.findByText("Zeta.mp4");
 
@@ -179,6 +179,17 @@ describe("FolderOrganizer", () => {
       expect(
         calls.some((c) => c.includes("provider=dropbox")),
       ).toBe(true);
+    });
+
+    // All resets to an unfiltered listing (no provider param).
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await waitFor(() => {
+      const lastContents = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => String(c[0]))
+        .filter((c) => c.startsWith("/api/folders/contents"))
+        .pop();
+      expect(lastContents).toBeDefined();
+      expect(lastContents).not.toContain("provider=");
     });
   });
 
@@ -197,6 +208,18 @@ describe("FolderOrganizer", () => {
     await screen.findByText(/This folder is empty/i);
   });
 
+  it("distinguishes filter-empty from folder-empty", async () => {
+    renderOrganizer({ contents: { entries: [], total: 0, page: 1, limit: 50 } });
+    await screen.findByText(/This folder is empty/i);
+
+    fireEvent.change(screen.getByLabelText("Filter by name"), {
+      target: { value: "zzz-no-match" },
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/No entries match the current filters/i)).toBeInTheDocument();
+    });
+  });
+
   it("name filter forwards q to the contents query", async () => {
     renderOrganizer();
     await screen.findByText("Zeta.mp4");
@@ -210,6 +233,31 @@ describe("FolderOrganizer", () => {
       );
       expect(calls.some((c) => c.includes("q=zeta"))).toBe(true);
     });
+  });
+
+  // FR-9.2: a ?dir= naming no known folder (stale bookmark, hand-edited
+  // URL) falls back to the root listing once the tree loads.
+  it("falls back to the root listing when ?dir= is unknown", async () => {
+    renderOrganizer({}, [`/?dir=${encodeURIComponent("/nope/not/a/folder")}`]);
+
+    // The bogus path may fetch first, but the tree rejects it…
+    await waitFor(() => {
+      expect(screen.getByTestId("contents-path")).toHaveTextContent("(Root)");
+    });
+
+    // …and the root contents are fetched (no path param value).
+    await waitFor(() => {
+      const rootFetch = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+        .map((c) => String(c[0]))
+        .filter((c) => c.startsWith("/api/folders/contents"))
+        .some((c) => !c.includes(`path=${encodeURIComponent("/nope")}`));
+      expect(rootFetch).toBe(true);
+    });
+
+    // Root is the selected tree node afterwards.
+    expect(
+      document.querySelector<HTMLElement>("[data-tree-path='']"),
+    ).toHaveAttribute("aria-current");
   });
 });
 

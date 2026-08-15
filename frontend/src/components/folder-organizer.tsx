@@ -16,16 +16,17 @@
 // File/kind filters (FR-5.2's `kind`) are wired through the hook params;
 // no UI yet — the chips row is provider-scoped v1.
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { FileCard, FileRow } from "./file-card";
 import { FolderTree } from "./folder-tree";
 import { PosterCard } from "./poster-card";
 import { FavoriteToggle } from "./favorite-toggle";
-import { PROVIDER_LABELS, type FileEntryDto, type FolderEntryDto, type ProviderKey } from "../api/types";
+import { PROVIDER_LABELS, type FileEntryDto, type FolderEntryDto, type FolderNodeDto, type ProviderKey } from "../api/types";
 import { useFolderContents } from "../hooks/use-folder-contents";
 import { useFolderTree } from "../hooks/use-folder-tree";
 import { useFolderDir } from "../hooks/use-folder-dir";
+import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { describeError } from "../lib/format";
 import { Skeleton } from "./ui/skeleton";
 import { ErrorState } from "./ui/error-state";
@@ -42,18 +43,70 @@ function isListRowEntry(entry: FolderEntryDto): entry is FileEntryDto {
   return entry.kind !== "video" && LIST_ROW_KINDS.has(entry.kind);
 }
 
+/**
+ * Entries rendered in the card grid: videos (PosterCard) + icon-tile kinds
+ * (FileCard) — the complement of LIST_ROW_KINDS.
+ *
+ * Deliberately a plain boolean, NOT a type predicate: TS's inferred
+ * predicates would narrow `filter((e) => !isListRowEntry(e))` to
+ * videos-only (`Exclude<FolderEntryDto, FileEntryDto>`), silently dropping
+ * audio/image tiles. The explicit `: boolean` return disables that
+ * inference; the element union stays intact and narrows on `kind` at the
+ * render site.
+ */
+function isTileEntry(entry: FolderEntryDto): boolean {
+  return !isListRowEntry(entry);
+}
+
+/** Every node path in the tree, recursively ("" root included). */
+function collectPaths(nodes: FolderNodeDto[]): Set<string> {
+  const paths = new Set<string>();
+  function walk(list: FolderNodeDto[]): void {
+    for (const node of list) {
+      paths.add(node.path);
+      if (node.children.length > 0) walk(node.children);
+    }
+  }
+  walk(nodes);
+  return paths;
+}
+
 export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
   const [dir, setDir] = useFolderDir();
   const tree = useFolderTree();
   const [page, setPage] = useState(1);
   const [providerFilter, setProviderFilter] = useState<string | undefined>();
   const [nameQuery, setNameQuery] = useState("");
+  // Debounced like the global SearchBar (300ms) — one fetch per pause, not
+  // per keystroke.
+  const debouncedNameQuery = useDebouncedValue(nameQuery, 300);
+
+  // FR-9.2: an unknown `?dir=` (stale bookmark, hand-edited URL) falls back
+  // to the root listing. Only once the tree is loaded — a pending tree must
+  // not clobber a possibly-valid deep link.
+  const knownPaths = useMemo(
+    () => (tree.data ? collectPaths(tree.data) : null),
+    [tree.data],
+  );
+  useEffect(() => {
+    // replace: this is a correction of the current entry, not a navigation —
+    // pushing would trap Back in a loop (back → bogus dir → push → …).
+    if (knownPaths && dir !== "" && !knownPaths.has(dir)) {
+      setDir("", { replace: true });
+    }
+  }, [dir, knownPaths, setDir]);
+
+  // Folder switches always land on page 1 — covers tree selection,
+  // breadcrumbs, and back/forward popstate alike.
+  useEffect(() => {
+    setPage(1);
+  }, [dir]);
 
   const contents = useFolderContents({
     path: dir,
     page,
     provider: providerFilter,
-    q: nameQuery || undefined,
+    q: debouncedNameQuery || undefined,
   });
 
   const folderName = dir === "" ? "(Root)" : dir === "(Unsorted)" ? "(Unsorted)" : dir.split("/").filter(Boolean).pop() ?? dir;
@@ -74,13 +127,26 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
 
   function handleSelect(path: string): void {
     setDir(path);
-    setPage(1);
   }
 
   function handleChip(value: string | undefined): void {
     setProviderFilter(value);
     setPage(1);
   }
+
+  // Hoisted once per render: grid vs list split derives from a single
+  // source of truth (`isListRowEntry`), and the play queue is computed
+  // once — not per card.
+  const gridEntries = contents.data?.entries.filter(isTileEntry) ?? [];
+  const listEntries = contents.data?.entries.filter(isListRowEntry) ?? [];
+  const videoQueue =
+    contents.data?.entries
+      .filter((entry) => entry.kind === "video")
+      .map((entry) => entry.id) ?? [];
+  const filtersActive = providerFilter !== undefined || nameQuery.trim() !== "";
+  const totalPages = contents.data
+    ? Math.max(1, Math.ceil(contents.data.total / contents.data.limit))
+    : 1;
 
   return (
     <section aria-label="Folder organizer" className="flex flex-col gap-4 lg:flex-row">
@@ -113,8 +179,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
             onClick={() => handleSelect("")}
             className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
               dir === ""
-                ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)]"
-                : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)]"
+                ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
             }`}
           >
             All folders
@@ -128,7 +194,7 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 <button
                   type="button"
                   onClick={() => handleSelect(segment.path)}
-                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-3 py-1 text-xs font-medium text-[var(--color-castify-muted)] transition hover:border-[var(--color-castify-accent)]/40"
+                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-3 py-1 text-xs font-medium text-[var(--color-castify-muted)] transition hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
                 >
                   {segment.name}
                 </button>
@@ -161,8 +227,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 onClick={() => handleChip(undefined)}
                 className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
                   providerFilter === undefined
-                    ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)]"
-                    : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40"
+                    ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                    : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
                 }`}
               >
                 All
@@ -175,8 +241,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                   onClick={() => handleChip(provider)}
                   className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
                     providerFilter === provider
-                      ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)]"
-                      : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40"
+                      ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                      : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
                   }`}
                 >
                   {PROVIDER_LABELS[provider]}
@@ -208,7 +274,9 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
         )}
         {contents.data && contents.data.entries.length === 0 && (
           <p className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-6 text-center text-sm text-[var(--color-castify-muted)]">
-            This folder is empty.
+            {filtersActive
+              ? "No entries match the current filters."
+              : "This folder is empty."}
           </p>
         )}
         {contents.data && contents.data.entries.length > 0 && (
@@ -216,27 +284,23 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
             {/* Grid children: videos + tile files; list kinds render as rows
                 below (a mixed grid breaks on wildly different card heights). */}
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-              {contents.data.entries
-                .filter((e) => e.kind === "video" || e.kind === "audio" || e.kind === "image")
-                .map((entry) =>
-                  entry.kind === "video" ? (
-                    <PosterCard
-                      key={entry.id}
-                      video={entry}
-                      href={`/watch/${entry.id}`}
-                      queue={contents.data!.entries
-                        .filter((v) => v.kind === "video")
-                        .map((v) => v.id)}
-                      topRightSlot={<FavoriteToggle video={entry} />}
-                    />
-                  ) : (
-                    <FileCard key={entry.id} file={entry} />
-                  ),
-                )}
+              {gridEntries.map((entry) =>
+                entry.kind === "video" ? (
+                  <PosterCard
+                    key={entry.id}
+                    video={entry}
+                    href={`/watch/${entry.id}`}
+                    queue={videoQueue}
+                    topRightSlot={<FavoriteToggle video={entry} />}
+                  />
+                ) : (
+                  <FileCard key={entry.id} file={entry} />
+                ),
+              )}
             </div>
             {/* List children: documents/archives/subtitles/other. */}
             <div className="space-y-2">
-              {contents.data.entries.filter(isListRowEntry).map((entry) => (
+              {listEntries.map((entry) => (
                 <FileRow key={entry.id} file={entry} />
               ))}
             </div>
@@ -246,18 +310,18 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 <button
                   type="button"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page <= 1}
+                  disabled={page <= 1 || contents.isFetching}
                   className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-40"
                 >
                   Previous
                 </button>
                 <span className="text-sm text-[var(--color-castify-muted)]">
-                  Page {page} of {Math.max(1, Math.ceil(contents.data.total / contents.data.limit))}
+                  Page {page} of {totalPages}
                 </span>
                 <button
                   type="button"
                   onClick={() => setPage((p) => p + 1)}
-                  disabled={page >= Math.ceil(contents.data.total / contents.data.limit)}
+                  disabled={page >= totalPages || contents.isFetching}
                   className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-40"
                 >
                   Next

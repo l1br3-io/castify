@@ -3,12 +3,12 @@
 // Recursive ARIA tree: role="tree"/"treeitem"/"group", disclosure buttons
 // with aria-expanded, arrow-key navigation per the WAI-ARIA tree pattern
 // (Down/Up move between visible nodes, Right expands-or-descends,
-// Left collapses-or-ascends). Selection is caller-owned (`selectedPath` +
-// `onSelect`) so the component stays router-free; browse.tsx wires it to
-// `useFolderDir`. Ancestors of the selected path auto-expand (deep links
-// land with the node visible); user toggles are remembered for the
-// session. No animation on expand — instant, reduced-motion-safe by
-// default.
+// Left collapses-or-ascends, Home/End jump to first/last). Selection is
+// caller-owned (`selectedPath` + `onSelect`) so the component stays
+// router-free; browse.tsx wires it to `useFolderDir`. Ancestors of the
+// selected path auto-expand (deep links land with the node visible); user
+// toggles are remembered for the session. No animation on expand —
+// instant, reduced-motion-safe by default.
 //
 // Counts display "N videos · M files" per node (cumulative, server-computed).
 
@@ -87,10 +87,15 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
 
   function handleTreeKeyDown(event: KeyboardEvent<HTMLElement>): void {
     const items = visible;
-    const currentIndex = items.findIndex((v) => {
-      const el = document.activeElement;
-      return el?.getAttribute("data-tree-path") === v.node.path;
-    });
+    // Resolve the focused treeitem even when focus sits on its disclosure
+    // button (which carries no data-tree-path): walk up to the enclosing
+    // treeitem, then back down to its path button. Falls back to -1 (before
+    // first) when focus is on the tree itself.
+    const focusedPath = document.activeElement
+      ?.closest('[role="treeitem"]')
+      ?.querySelector<HTMLElement>("[data-tree-path]")
+      ?.getAttribute("data-tree-path");
+    const currentIndex = items.findIndex((v) => v.node.path === focusedPath);
 
     switch (event.key) {
       case "ArrowDown": {
@@ -128,6 +133,16 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
         } else if (current.parentPath !== null) {
           focusPath(current.parentPath);
         }
+        break;
+      }
+      case "Home": {
+        event.preventDefault();
+        focusPath(items[0]?.node.path);
+        break;
+      }
+      case "End": {
+        event.preventDefault();
+        focusPath(items[items.length - 1]?.node.path);
         break;
       }
     }

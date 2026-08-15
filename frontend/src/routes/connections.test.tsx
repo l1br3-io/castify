@@ -345,7 +345,9 @@ describe("ConnectionsPage", () => {
   // may be gone entirely). Any cached /stream-url error — including the
   // structured `reauth_required` that routed the user here — must be
   // invalidated so a stale Reconnect card doesn't keep rendering on the
-  // watch page after the user reconnects.
+  // watch page after the user reconnects. The M9 folder tree + contents
+  // caches must be invalidated too: scans mutate the paths/counts the tree
+  // is derived from, and disconnect cascades the connection's rows away.
 
   it("invalidates cached stream-url queries on disconnect", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -374,6 +376,40 @@ describe("ConnectionsPage", () => {
         invalidateSpy,
       ).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["videos"] }));
     });
+
+    confirmSpy.mockRestore();
+  });
+
+  it("invalidates the folder tree and contents caches on disconnect", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const { queryClient } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1" && method === "DELETE")
+          return new Response(null, { status: 204 });
+        return jsonError(404, "unmocked");
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await screen.findByText("user@example.com");
+    fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["folder-tree"] }),
+      );
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["folder-contents"] }),
+    );
 
     confirmSpy.mockRestore();
   });
@@ -412,6 +448,39 @@ describe("ConnectionsPage", () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith(
       expect.objectContaining({ queryKey: ["videos"] }),
+    );
+  });
+
+  it("invalidates the folder tree and contents caches on rescan", async () => {
+    const { queryClient } = renderWithProviders(
+      <ConnectionsPage />,
+      {
+        initialEntries: ["/connections"],
+        fetchImplementation: (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+          if (url === "/api/connections" && method === "GET")
+            return jsonResponse([GOOGLE_CONNECTED]);
+          if (url === "/api/connections/available")
+            return jsonResponse(ALL_AVAILABLE);
+          if (url === "/api/connections/c1/scan" && method === "POST")
+            return new Response(null, { status: 202 });
+          return jsonError(404, "unmocked");
+        },
+      },
+    );
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await screen.findByText("user@example.com");
+    fireEvent.click(screen.getByRole("button", { name: /rescan/i }));
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["folder-tree"] }),
+      );
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["folder-contents"] }),
     );
   });
 });

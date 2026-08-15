@@ -1,8 +1,8 @@
 // `useFolderTree` — nested folder tree over `videos ∪ files` (M9 FR-4).
 //
-// Wraps `GET /api/folders/tree`. The query key is invalidated with the
-// connection-scan churn the rest of the app already keys on — see BrowsePage
-// wiring in task 013.
+// Wraps `GET /api/folders/tree`. Invalidation: connections.tsx refreshes
+// this key (plus folder-contents) on rescan/disconnect success — scans
+// mutate the paths and counts the tree is derived from.
 
 import { useQuery } from "@tanstack/react-query";
 
