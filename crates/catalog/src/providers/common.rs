@@ -7,6 +7,7 @@
 use serde::Deserialize;
 
 use crate::crypto::TokenBundle;
+use crate::model::FileKind;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse};
 
 /// Seconds subtracted from a token's advertised `expires_in` so refresh happens
@@ -22,6 +23,70 @@ pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
 /// Known sidecar subtitle extensions. Used by all three providers to capture
 /// `.srt`/`.vtt` files during the same listing pass as videos.
 pub(crate) const SUBTITLE_EXTENSIONS: &[&str] = &[".srt", ".vtt"];
+
+// --- Non-video classification tables (M9) ---
+//
+// These drive `classify_kind` only — organizational metadata for the folder
+// tree. They deliberately do NOT gate any playback path, so they can be
+// wider than their playback counterparts (e.g. subtitle classification
+// includes ASS/SSA/PGS from M8, while sidecar capture above stays
+// `.srt`/`.vtt`).
+
+const AUDIO_EXTENSIONS: &[&str] = &[".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus"];
+
+const IMAGE_EXTENSIONS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".tiff", ".bmp", ".svg",
+];
+
+const SUBTITLE_KIND_EXTENSIONS: &[&str] = &[".srt", ".vtt", ".ass", ".ssa", ".pgs"];
+
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".txt", ".md",
+    ".rtf",
+];
+
+const ARCHIVE_EXTENSIONS: &[&str] = &[".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"];
+
+/// Classify a non-video file by extension (primary) or provider MIME type
+/// (fallback). Unknown files degrade to [`FileKind::Other`] — a file is never
+/// dropped from the catalog because its type is unrecognized (M9 FR-2.1).
+/// Only called for entries that already failed the video gate.
+pub(crate) fn classify_kind(name: &str, mime_type: Option<&str>) -> FileKind {
+    let lower = name.to_lowercase();
+    let by_extension = |exts: &[&str]| exts.iter().any(|ext| lower.ends_with(ext));
+    if by_extension(AUDIO_EXTENSIONS) {
+        FileKind::Audio
+    } else if by_extension(IMAGE_EXTENSIONS) {
+        FileKind::Image
+    } else if by_extension(SUBTITLE_KIND_EXTENSIONS) {
+        FileKind::Subtitle
+    } else if by_extension(DOCUMENT_EXTENSIONS) {
+        FileKind::Document
+    } else if by_extension(ARCHIVE_EXTENSIONS) {
+        FileKind::Archive
+    } else if let Some(mime) = mime_type {
+        classify_by_mime(mime)
+    } else {
+        FileKind::Other
+    }
+}
+
+/// MIME fallback when the extension is unrecognized. Coarse prefixes only —
+/// this is organizational metadata, not playback routing.
+fn classify_by_mime(mime: &str) -> FileKind {
+    let lower = mime.to_lowercase();
+    if lower.starts_with("audio/") {
+        FileKind::Audio
+    } else if lower.starts_with("image/") {
+        FileKind::Image
+    } else if lower.starts_with("text/") || lower == "application/pdf" {
+        FileKind::Document
+    } else if lower == "application/zip" || lower == "application/x-rar-compressed" {
+        FileKind::Archive
+    } else {
+        FileKind::Other
+    }
+}
 
 /// Lowercase hex encoding of a byte slice.
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
@@ -318,6 +383,67 @@ mod tests {
     fn to_hex_produces_lowercase_hex() {
         assert_eq!(to_hex(&[0x01, 0x23, 0xab, 0xff]), "0123abff");
         assert_eq!(to_hex(&[]), "");
+    }
+
+    #[test]
+    fn classify_kind_extension_matrix() {
+        // Extension match is primary and case-insensitive.
+        assert_eq!(classify_kind("song.mp3", None), FileKind::Audio);
+        assert_eq!(classify_kind("track.FLAC", None), FileKind::Audio);
+        assert_eq!(classify_kind("cover.JPG", None), FileKind::Image);
+        assert_eq!(classify_kind("photo.heic", None), FileKind::Image);
+        assert_eq!(classify_kind("thesis.pdf", None), FileKind::Document);
+        assert_eq!(classify_kind("notes.txt", None), FileKind::Document);
+        assert_eq!(classify_kind("backup.tar.gz", None), FileKind::Archive);
+        assert_eq!(classify_kind("riven.7z", None), FileKind::Archive);
+        // Subtitle classification covers M8's wider format set — this table
+        // is organizational only (folder tree), unlike SUBTITLE_EXTENSIONS
+        // which gates playback sidecar capture at .srt/.vtt.
+        assert_eq!(classify_kind("movie.en.srt", None), FileKind::Subtitle);
+        assert_eq!(classify_kind("movie.ass", None), FileKind::Subtitle);
+        assert_eq!(classify_kind("movie.pgs", None), FileKind::Subtitle);
+        // Multi-dot names match the final extension.
+        assert_eq!(classify_kind("a.b.c.flac", None), FileKind::Audio);
+    }
+
+    #[test]
+    fn classify_kind_mime_fallback_when_extension_unknown() {
+        assert_eq!(
+            classify_kind("untitled", Some("audio/mpeg")),
+            FileKind::Audio
+        );
+        assert_eq!(
+            classify_kind("untitled", Some("image/png")),
+            FileKind::Image
+        );
+        assert_eq!(
+            classify_kind("untitled", Some("application/pdf")),
+            FileKind::Document
+        );
+        assert_eq!(
+            classify_kind("untitled", Some("application/zip")),
+            FileKind::Archive
+        );
+        assert_eq!(
+            classify_kind("untitled", Some("text/plain")),
+            FileKind::Document
+        );
+        // Extension wins over a disagreeing MIME type.
+        assert_eq!(
+            classify_kind("song.mp3", Some("application/octet-stream")),
+            FileKind::Audio
+        );
+    }
+
+    #[test]
+    fn classify_kind_unknown_degrades_to_other() {
+        assert_eq!(classify_kind("weird.dat", None), FileKind::Other);
+        assert_eq!(classify_kind("noext", None), FileKind::Other);
+        assert_eq!(
+            classify_kind("noext", Some("application/octet-stream")),
+            FileKind::Other
+        );
+        assert_eq!(classify_kind("", None), FileKind::Other);
     }
 
     #[test]
