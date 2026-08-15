@@ -28,6 +28,7 @@ castify-catalog.workspace = true
 castify-core.workspace = true
 castify-storage.workspace = true
 cookie = "0.18.1"
+dotenvy = "0.15"
 futures = "0.3"
 mime_guess = "2.0.5"
 rand = { version = "0.8", features = ["std_rng"] }

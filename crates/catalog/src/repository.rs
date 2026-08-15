@@ -95,10 +95,16 @@ fn push_video_predicates(qb: &mut sqlx::QueryBuilder<'_, sqlx::Sqlite>, filter: 
         if !trimmed.is_empty() {
             // Wrap each whitespace-separated token in double quotes so FTS5
             // treats them as string literals (immune to syntax errors from
-            // special characters). Multiple tokens are implicit AND.
+            // special characters), and append `*` to make it a *prefix* term
+            // so "vid" matches "video"/"videos" and "screen" matches
+            // "screens". The `unicode61` tokenizer does no stemming, so without
+            // the prefix glob the search would be exact-token-only. Multiple
+            // tokens are implicit AND.
             let sanitized: String = trimmed
                 .split_whitespace()
-                .map(|w| format!("\"{}\"", w.replace('"', "")))
+                .map(|w| w.replace('"', ""))
+                .filter(|w| !w.is_empty())
+                .map(|w| format!("\"{}\"*", w))
                 .collect::<Vec<_>>()
                 .join(" ");
             if !sanitized.is_empty() {
@@ -2457,6 +2463,55 @@ mod tests {
             total_ratings, 0,
             "ratings should cascade-delete with the video"
         );
+    }
+
+    // ── Search (FTS5 prefix matching) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn video_search_matches_prefix_tokens() {
+        use crate::model::VideoFilter;
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (owner, _conn, _video) = seed_owner_conn_video(&repo).await;
+
+        // The seeded video's path "/Videos" indexes the token "videos".
+        // A prefix query for "vid" must match it — before the prefix glob
+        // (`"token"*`) the search was exact-token-only and this returned 0.
+        let page = repo
+            .fetch_video_page(&VideoFilter {
+                q: Some("vid".into()),
+                owner_id: owner.clone(),
+                ..VideoFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            page.total, 1,
+            "prefix query 'vid' should match the 'videos' token"
+        );
+
+        // Exact token still matches.
+        let page = repo
+            .fetch_video_page(&VideoFilter {
+                q: Some("videos".into()),
+                owner_id: owner.clone(),
+                ..VideoFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1, "exact query 'videos' matches");
+
+        // A token that is not a prefix of any indexed token matches nothing.
+        let page = repo
+            .fetch_video_page(&VideoFilter {
+                q: Some("xyz".into()),
+                owner_id: owner,
+                ..VideoFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 0, "non-matching query returns nothing");
     }
 
     // ── Video cache manifest tests (M4) ────────────────────────────────

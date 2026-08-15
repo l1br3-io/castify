@@ -10,6 +10,10 @@ use castify_storage::{connect, run_migrations};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load `.env` if present (dev/`cargo run`). Missing file is fine —
+    // production/Docker sets env vars directly. Must run before Config::from_env.
+    let _ = dotenvy::dotenv();
+
     let config = Config::from_env().context("failed to load configuration")?;
     init_tracing(&config);
 

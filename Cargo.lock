@@ -286,6 +286,7 @@ dependencies = [
  "castify-core",
  "castify-storage",
  "cookie",
+ "dotenvy",
  "futures",
  "http-body-util",
  "mime_guess",
