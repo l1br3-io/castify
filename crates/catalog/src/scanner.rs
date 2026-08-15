@@ -136,6 +136,14 @@ async fn run_scan_inner(
                     }
                 }
 
+                // M9: non-video files are metadata-only upserts; a failure
+                // warns and continues like a video failure (spec FR-3.1).
+                for df in &page.files {
+                    if let Err(e) = repo.upsert_file(connection_id, df).await {
+                        tracing::warn!(error = %e, "failed to upsert file");
+                    }
+                }
+
                 all_subtitles.extend(page.subtitles);
                 videos_found += count as i64;
                 cursor = page.next_cursor;
@@ -371,7 +379,7 @@ fn iso_now() -> String {
 mod tests {
     use super::*;
     use crate::crypto::{TokenBundle, TokenKey};
-    use crate::model::{DiscoveredVideo, ListPage, Provider};
+    use crate::model::{DiscoveredFile, DiscoveredVideo, FileKind, ListPage, Provider};
     use crate::provider::{ProviderResult, StreamResponse, ThumbnailData};
     use crate::repository::CatalogRepository;
     use std::collections::HashMap;
@@ -404,6 +412,7 @@ mod tests {
             include_str!("../../storage/migrations/0005_browse_perf.sql"),
             include_str!("../../storage/migrations/0006_play.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
+            include_str!("../../storage/migrations/0011_files.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -610,6 +619,77 @@ mod tests {
         let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
         assert_eq!(scan.status, ScanStatus::Idle);
         assert_eq!(scan.videos_found, 3);
+    }
+
+    /// M9: mixed pages store files alongside videos, metadata-only. A
+    /// rescan is idempotent (upsert on connection+provider_file_id).
+    #[tokio::test]
+    async fn scan_stores_files_from_mixed_pages_and_is_idempotent() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        let factory = || {
+            Box::new(MockFactory {
+                pages: vec![ListPage {
+                    videos: vec![discovered("f1", "v1.mp4", 5000)],
+                    subtitles: vec![],
+                    files: vec![
+                        DiscoveredFile {
+                            provider_file_id: "x1".into(),
+                            name: "song.mp3".into(),
+                            path: Some("/Media/Music/song.mp3".into()),
+                            size_bytes: 40,
+                            mime_type: None,
+                            kind: FileKind::Audio,
+                            provider_modified_at: None,
+                        },
+                        DiscoveredFile {
+                            provider_file_id: "x2".into(),
+                            name: "weird.dat".into(),
+                            path: None,
+                            size_bytes: 7,
+                            mime_type: Some("application/octet-stream".into()),
+                            kind: FileKind::Other,
+                            provider_modified_at: None,
+                        },
+                    ],
+                    next_cursor: None,
+                }],
+                call_count: Arc::new(AtomicU32::new(0)),
+                prefix_hashes: HashMap::new(),
+                fail_prefix: true,
+                refresh_count: Arc::new(AtomicU32::new(0)),
+            })
+        };
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            factory(),
+        )
+        .await;
+
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 2);
+
+        // Rescan: same page again — upsert, not duplicate.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            factory(),
+        )
+        .await;
+        assert_eq!(
+            repo.file_count_by_connection(&conn_id).await.unwrap(),
+            2,
+            "rescan upserts, never duplicates"
+        );
+
+        // videos_found stays video-scoped with mixed listings.
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_found, 1);
     }
 
     #[tokio::test]

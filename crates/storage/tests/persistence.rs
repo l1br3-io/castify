@@ -1098,3 +1098,35 @@ async fn migration_0011_files_connection_file_unique() {
         "duplicate connection_id+provider_file_id must reject"
     );
 }
+
+/// M9 FR-1.2: hard-deleting a connection cascades to its `files` rows,
+/// mirroring the videos lifecycle. (Disconnect is a soft-delete — rows
+/// stay but become invisible via active-connection filters, exactly like
+/// videos; the cascade here is the eventual hard-delete path.)
+#[tokio::test]
+async fn migration_0011_files_cascade_on_connection_hard_delete() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+         VALUES ('f-a', 'conn-x', 'pid-1', 'song.mp3', 'audio')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query("DELETE FROM provider_connections WHERE id = 'conn-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE connection_id = 'conn-x'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, 0, "files rows cascade away with the connection");
+}

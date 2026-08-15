@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::crypto::{TokenBundle, TokenKey};
 use crate::model::{
-    NewConnection, NewVideo, PlaybackProgress, Provider, ProviderConnection, ScanState, ScanStatus,
-    SubtitleTrack, VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSource, VideoSummary,
+    DiscoveredFile, NewConnection, NewVideo, PlaybackProgress, Provider, ProviderConnection,
+    ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry, VideoDetail, VideoFilter, VideoPage,
+    VideoSource, VideoSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -500,6 +501,54 @@ impl CatalogRepository {
     pub async fn video_count_by_connection(&self, connection_id: &str) -> CatalogResult<i64> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM videos WHERE connection_id = ?")
+                .bind(connection_id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Upsert a non-video file row (M9). Metadata-only — no thumbnail,
+    /// probe, or FTS side effects. Identity is `(connection_id,
+    /// provider_file_id)`, mirroring `upsert_video`, so rescans refresh
+    /// rather than duplicate.
+    pub async fn upsert_file(
+        &self,
+        connection_id: &str,
+        file: &DiscoveredFile,
+    ) -> CatalogResult<()> {
+        let id = Uuid::new_v4().to_string();
+        let now = iso_now();
+
+        sqlx::query(
+            "INSERT INTO files \
+             (id, connection_id, provider_file_id, name, path, size_bytes, mime_type, kind, \
+              provider_modified_at, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(connection_id, provider_file_id) DO UPDATE SET \
+              name = excluded.name, path = excluded.path, \
+              size_bytes = excluded.size_bytes, mime_type = excluded.mime_type, \
+              kind = excluded.kind, provider_modified_at = excluded.provider_modified_at",
+        )
+        .bind(&id)
+        .bind(connection_id)
+        .bind(&file.provider_file_id)
+        .bind(&file.name)
+        .bind(&file.path)
+        .bind(file.size_bytes)
+        .bind(&file.mime_type)
+        .bind(file.kind.as_str())
+        .bind(&file.provider_modified_at)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Count of file rows for a connection (test/diagnostic helper, M9).
+    pub async fn file_count_by_connection(&self, connection_id: &str) -> CatalogResult<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE connection_id = ?")
                 .bind(connection_id)
                 .fetch_one(&self.pool)
                 .await?,
