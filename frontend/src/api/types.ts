@@ -155,6 +155,65 @@ export interface FolderDto {
   video_count: number;
 }
 
+// --- M9 — File-aware library DTOs ---
+
+// Non-video file kinds (`FileKind` in the backend, snake_case on the wire).
+export type FileKindKey =
+  | "audio"
+  | "image"
+  | "subtitle"
+  | "document"
+  | "archive"
+  | "other";
+
+export const FILE_KIND_LABELS: Record<FileKindKey, string> = {
+  audio: "Audio",
+  image: "Image",
+  subtitle: "Subtitle",
+  document: "Document",
+  archive: "Archive",
+  other: "File",
+};
+
+// A non-video file entry (`FileEntry` in the backend) — the flat wire shape
+// of a contents entry's file half.
+export interface FileEntryDto {
+  id: string;
+  name: string;
+  provider: ProviderKey;
+  path: string | null;
+  size_bytes: number;
+  mime_type: string | null;
+  kind: FileKindKey;
+  modified_at: string | null;
+}
+
+// One node in the folder tree (`FolderNode` in the backend, M9 FR-4).
+// Counts are cumulative (subtree). `path` doubles as the contents selector:
+// "" = library root, "(Unsorted)" = NULL-path bucket, "/A/B" = folder.
+export interface FolderNodeDto {
+  name: string;
+  path: string;
+  video_count: number;
+  file_count: number;
+  children: FolderNodeDto[];
+}
+
+// Discriminated union over the flat contents wire shape: the backend emits
+// `{ kind: "video", …VideoSummary fields }` or `{ kind: <fileKind>, …FileEntry
+// fields }` (untagged serde flatten), so the TS side narrows on `kind`.
+export type FolderEntryDto =
+  | ({ kind: "video" } & VideoSummaryDto)
+  | ({ kind: FileKindKey } & FileEntryDto);
+
+// Response from `GET /api/folders/contents` (`FolderContentsPage`).
+export interface FolderContentsPageDto {
+  entries: FolderEntryDto[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 // Mutation response bodies — the backend echoes the post-mutation state so
 // the client can update its cache without a refetch (M2 T6 deviation #33).
 export interface FavoriteResponseDto {
