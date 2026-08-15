@@ -80,6 +80,9 @@ export function PosterCard({
         hover:-translate-y-0.5 hover:border-[var(--color-castify-accent)]/40
         focus-within:-translate-y-0.5
         focus-within:border-[var(--color-castify-accent)]/40
+        motion-reduce:transition-none
+        motion-reduce:hover:translate-y-0
+        motion-reduce:focus-within:translate-y-0
       `}
     >
       {href && (

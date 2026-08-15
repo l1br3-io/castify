@@ -212,3 +212,28 @@ describe("FolderOrganizer", () => {
     });
   });
 });
+
+// --- Responsive: breadcrumb chips replace the sidebar under lg (task 014) ---
+
+describe("FolderOrganizer breadcrumbs", () => {
+  it("renders breadcrumb chips for the selected path, tappable to navigate up", async () => {
+    renderOrganizer(
+      {},
+      [`/?dir=${encodeURIComponent("/Media/Movies")}`],
+    );
+    await screen.findByText("Zeta.mp4");
+
+    // Breadcrumb trail: root + each segment.
+    expect(screen.getByRole("button", { name: "All folders" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Media" })).toBeInTheDocument();
+    // Deepest segment is the current location — not a button. (The expanded
+    // tree also shows a Movies node; assert at least one plain text.)
+    expect(screen.getAllByText("Movies").length).toBeGreaterThan(0);
+
+    // Tapping a segment selects that folder.
+    fireEvent.click(screen.getByRole("button", { name: "Media" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("contents-path")).toHaveTextContent("Media");
+    });
+  });
+});

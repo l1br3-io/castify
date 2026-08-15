@@ -58,6 +58,20 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
 
   const folderName = dir === "" ? "(Root)" : dir === "(Unsorted)" ? "(Unsorted)" : dir.split("/").filter(Boolean).pop() ?? dir;
 
+  // Breadcrumb segments (responsive, FR-10.1): under lg the sidebar is
+  // hidden and the path itself becomes the navigation — root + each real
+  // folder is a chip; the deepest segment is the current location (plain).
+  const breadcrumbSegments =
+    dir === "" || dir === "(Unsorted)"
+      ? []
+      : dir
+          .split("/")
+          .filter(Boolean)
+          .map((segment, index, all) => ({
+            name: segment,
+            path: `/${all.slice(0, index + 1).join("/")}`,
+          }));
+
   function handleSelect(path: string): void {
     setDir(path);
     setPage(1);
@@ -90,6 +104,46 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
 
       {/* Contents pane */}
       <div className="min-w-0 flex-1 space-y-4">
+        {/* Breadcrumbs — the mobile/small-screen folder navigation (the
+            sidebar is lg+ only). Rendered always; hidden above lg so the
+            tree is the navigation there. */}
+        <nav aria-label="Folder path" className="flex flex-wrap items-center gap-1 lg:hidden">
+          <button
+            type="button"
+            onClick={() => handleSelect("")}
+            className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
+              dir === ""
+                ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)]"
+                : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)]"
+            }`}
+          >
+            All folders
+          </button>
+          {breadcrumbSegments.map((segment, index) => (
+            <span key={segment.path} className="flex items-center gap-1">
+              <span aria-hidden className="text-xs text-[var(--color-castify-muted)]">
+                /
+              </span>
+              {index < breadcrumbSegments.length - 1 ? (
+                <button
+                  type="button"
+                  onClick={() => handleSelect(segment.path)}
+                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-3 py-1 text-xs font-medium text-[var(--color-castify-muted)] transition hover:border-[var(--color-castify-accent)]/40"
+                >
+                  {segment.name}
+                </button>
+              ) : (
+                <span
+                  aria-current="page"
+                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] px-3 py-1 text-xs font-semibold text-[var(--color-castify-accent)]"
+                >
+                  {segment.name}
+                </span>
+              )}
+            </span>
+          ))}
+        </nav>
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2
             className="text-xl font-semibold tracking-tight"
