@@ -43,7 +43,9 @@ test.describe("Catalog flow (e2e mock)", () => {
     await expect(
       page.getByRole("heading", { name: "All Videos" }),
     ).toBeVisible();
-    await expect(page.getByText("3 videos")).toBeVisible();
+    await expect(
+      page.locator("#all-videos").getByText("3 videos"),
+    ).toBeVisible();
     await expect(page.getByText("vacation.mp4").first()).toBeVisible();
     await expect(page.getByText("concert.mp4").first()).toBeVisible();
     await expect(page.getByText("shared-doc.mp4").first()).toBeVisible();
@@ -56,7 +58,11 @@ test.describe("Catalog flow (e2e mock)", () => {
     await expect(
       page.getByRole("heading", { name: "All Videos" }),
     ).toBeVisible();
-    await expect(page.getByText("4 videos")).toBeVisible();
+    // Scope to the grid — M9's library header ("Your library · 4 videos …")
+    // also matches the substring.
+    await expect(
+      page.locator("#all-videos").getByText("4 videos"),
+    ).toBeVisible();
 
     // Dedup badge on the shared video. Multiple shelves (Recently Added,
     // By Provider, All Videos) render the badge — match the first.
@@ -74,7 +80,10 @@ test.describe("Catalog flow (e2e mock)", () => {
 
     // 2 videos remain: screenshots.mp4 + shared-doc.mp4 (from Dropbox)
     await page.reload();
-    await expect(page.getByText("2 videos")).toBeVisible();
+    await expect(
+      page.locator("#all-videos").getByText("2 videos"),
+    ).toBeVisible();
+    // vacation.mp4 is gone everywhere (its only copy was on Google Drive).
     await expect(page.getByText("vacation.mp4")).toHaveCount(0);
     await expect(page.getByText("shared-doc.mp4").first()).toBeVisible();
     // No more dedup badge (only one copy of shared-doc remains)
