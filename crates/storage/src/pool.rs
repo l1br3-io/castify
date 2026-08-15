@@ -40,7 +40,7 @@ pub async fn connect(database_path: impl AsRef<Path>) -> Result<SqlitePool> {
 
 // Migrations live in `./migrations`; the `migrate!` proc-macro snapshots them
 // at compile time. Adding a new .sql file requires touching this file (or any
-// `src/*.rs` in the crate) to trigger re-expansion. Latest: `0010_subtitle_formats`.
+// `src/*.rs` in the crate) to trigger re-expansion. Latest: `0011_files`.
 pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     sqlx::migrate!("./migrations")
         .run(pool)

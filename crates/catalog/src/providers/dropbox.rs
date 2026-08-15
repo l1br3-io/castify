@@ -394,6 +394,9 @@ impl DropboxClient {
         Ok(ListPage {
             videos,
             subtitles,
+            // M9 Task 003 fills this; the constructor sweep keeps the
+            // workspace compiling before provider partitioning lands.
+            files: Vec::new(),
             next_cursor,
         })
     }

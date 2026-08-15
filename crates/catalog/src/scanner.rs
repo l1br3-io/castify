@@ -440,6 +440,7 @@ mod tests {
                 return Ok(ListPage {
                     videos: vec![],
                     subtitles: vec![],
+                    files: vec![],
                     next_cursor: None,
                 });
             }
@@ -448,6 +449,7 @@ mod tests {
             Ok(ListPage {
                 videos: page.videos.clone(),
                 subtitles: page.subtitles.clone(),
+                files: page.files.clone(),
                 next_cursor: page.next_cursor.clone(),
             })
         }
@@ -579,11 +581,13 @@ mod tests {
                         discovered("f2", "v2.mp4", 6000),
                     ],
                     subtitles: vec![],
+                    files: vec![],
                     next_cursor: Some("page2".into()),
                 },
                 ListPage {
                     videos: vec![discovered("f3", "v3.mp4", 7000)],
                     subtitles: vec![],
+                    files: vec![],
                     next_cursor: None,
                 },
             ],
@@ -675,6 +679,7 @@ mod tests {
                     discovered("f2", "v2.mp4", 6000),
                 ],
                 subtitles: vec![],
+                files: vec![],
                 next_cursor: None,
             }],
             call_count: Arc::new(AtomicU32::new(0)),
@@ -728,6 +733,7 @@ mod tests {
                     provider_modified_at: None,
                 }],
                 subtitles: vec![],
+                files: vec![],
                 next_cursor: None,
             }],
             call_count: Arc::new(AtomicU32::new(0)),
@@ -791,12 +797,14 @@ mod tests {
                     Ok(ListPage {
                         videos: vec![discovered("f1", "v1.mp4", 5000)],
                         subtitles: vec![],
+                        files: vec![],
                         next_cursor: Some("page2".into()),
                     })
                 } else {
                     Ok(ListPage {
                         videos: vec![discovered("f2", "v2.mp4", 6000)],
                         subtitles: vec![],
+                        files: vec![],
                         next_cursor: None,
                     })
                 }
@@ -938,6 +946,7 @@ mod tests {
                         language: None,
                     },
                 ],
+                files: vec![],
                 next_cursor: None,
             }],
             call_count: Arc::new(AtomicU32::new(0)),

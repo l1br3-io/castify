@@ -281,6 +281,8 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
         Ok(ListPage {
             videos: self.videos.clone(),
             subtitles: self.subtitles.clone(),
+            // M9 Task 005 adds non-media fixtures; sweep keeps this compiling.
+            files: Vec::new(),
             next_cursor: None,
         })
     }

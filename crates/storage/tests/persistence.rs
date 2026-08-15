@@ -1031,3 +1031,70 @@ async fn migration_0010_preserves_existing_sidecar_rows() {
     assert_eq!(b.get::<String, _>("format_family"), "text");
     assert_eq!(b.get::<String, _>("language"), "fr");
 }
+
+// ---- Migration 0011: Files (M9 — file-aware library) ----
+
+/// The `files.kind` CHECK accepts exactly the six non-video kinds and
+/// rejects anything else — including 'video', which by construction only
+/// ever belongs in `videos`.
+#[tokio::test]
+async fn migration_0011_files_kind_check() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    for kind in ["audio", "image", "subtitle", "document", "archive", "other"] {
+        sqlx::query(
+            "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+             VALUES (?, 'conn-x', ?, ?, ?)",
+        )
+        .bind(format!("file-{kind}"))
+        .bind(format!("pid-{kind}"))
+        .bind(format!("item.{kind}"))
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("kind = '{kind}' should be accepted: {e}"));
+    }
+
+    for bad in ["video", "unknown", "Audio"] {
+        let res = sqlx::query(
+            "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+             VALUES ('file-bad', 'conn-x', 'pid-bad', 'item.bad', ?)",
+        )
+        .bind(bad)
+        .execute(&pool)
+        .await;
+        assert!(res.is_err(), "kind = '{bad}' must be rejected");
+    }
+}
+
+/// `(connection_id, provider_file_id)` is the scan upsert identity — the
+/// same provider file listed twice must not create two rows.
+#[tokio::test]
+async fn migration_0011_files_connection_file_unique() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+         VALUES ('f-a', 'conn-x', 'pid-1', 'song.mp3', 'audio')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let dup = sqlx::query(
+        "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+         VALUES ('f-b', 'conn-x', 'pid-1', 'song.mp3', 'audio')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup.is_err(),
+        "duplicate connection_id+provider_file_id must reject"
+    );
+}

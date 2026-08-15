@@ -150,6 +150,60 @@ pub struct DiscoveredSubtitle {
     pub language: Option<String>,
 }
 
+/// Broad classification for a non-video catalog file (M9). `video` is
+/// deliberately absent: entries matching a video extension go to `videos`
+/// via the providers' video gates; only non-video entries are classified
+/// into `files`. Mirrors the `files.kind` CHECK in migration 0011.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    Audio,
+    Image,
+    Subtitle,
+    Document,
+    Archive,
+    Other,
+}
+
+impl FileKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FileKind::Audio => "audio",
+            FileKind::Image => "image",
+            FileKind::Subtitle => "subtitle",
+            FileKind::Document => "document",
+            FileKind::Archive => "archive",
+            FileKind::Other => "other",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "audio" => FileKind::Audio,
+            "image" => FileKind::Image,
+            "subtitle" => FileKind::Subtitle,
+            "document" => FileKind::Document,
+            "archive" => FileKind::Archive,
+            _ => FileKind::Other,
+        }
+    }
+}
+
+/// A non-video file discovered during a provider scan (M9). Metadata-only —
+/// no thumbnails, probe, or FTS. Subtitle sidecars appear both here and in
+/// `DiscoveredSubtitle`: the `files` row is organizational (folder tree),
+/// the subtitle row drives playback routing.
+#[derive(Debug, Clone)]
+pub struct DiscoveredFile {
+    pub provider_file_id: String,
+    pub name: String,
+    pub path: Option<String>,
+    pub size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub kind: FileKind,
+    pub provider_modified_at: Option<String>,
+}
+
 /// A paginated result from `Provider::list_videos`.
 #[derive(Debug, Clone)]
 pub struct ListPage {
@@ -158,6 +212,9 @@ pub struct ListPage {
     /// Sidecar subtitle files (`.srt`/`.vtt`) discovered during the same
     /// listing pass. Matched to videos by base name during scanning.
     pub subtitles: Vec<DiscoveredSubtitle>,
+    /// Non-video files discovered during the same listing pass (M9).
+    /// Metadata-only catalog rows for the folder organizer.
+    pub files: Vec<DiscoveredFile>,
 }
 
 /// Data needed to insert or upsert a video row.
