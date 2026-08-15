@@ -263,3 +263,130 @@ export function SlidersIcon({ className }: PlayerIconProps) {
     </svg>
   );
 }
+
+// ---------------------------------------------------------------------------
+// File-kind icons (M9 task 010). Single-state outline glyphs identifying
+// non-media entries in the folder organizer. A file's kind is identity, not
+// a state — no `filled` prop.
+// ---------------------------------------------------------------------------
+
+type KindIconProps = {
+  className?: string;
+};
+
+/** Music note — audio files. */
+export function AudioIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+/** Photo frame — image files. */
+export function ImageIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="9" cy="9" r="2" />
+      <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+    </svg>
+  );
+}
+
+/** Caption dialog — subtitle files. */
+export function SubtitleIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M6 14h4M14 14h4" />
+    </svg>
+  );
+}
+
+/** Document page — documents. */
+export function DocIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6M9 13h6M9 17h4" />
+    </svg>
+  );
+}
+
+/** Archive box — archives. */
+export function ArchiveIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="2" y="3" width="20" height="5" rx="1" />
+      <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+      <path d="M10 12h4" />
+    </svg>
+  );
+}
+
+/** Generic file — anything unrecognized. */
+export function FileIcon({ className }: KindIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  );
+}
