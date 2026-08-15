@@ -13,7 +13,7 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
 
-use castify_catalog::FolderNode;
+use castify_catalog::{FolderContentsFilter, FolderContentsPage, FolderNode};
 
 use crate::auth::resolve_owner;
 use crate::error::ApiResult;
@@ -37,4 +37,41 @@ pub async fn tree(
     let _owner = resolve_owner(&state, &jar).await?;
     let nodes = state.catalog_repository().fetch_folder_tree().await?;
     Ok(Json(nodes))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FolderContentsParams {
+    /// Folder selector: absent/empty → library root; `"(Unsorted)"` → the
+    /// NULL-path bucket; otherwise a folder path like `/Movies`.
+    pub path: Option<String>,
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+    pub provider: Option<String>,
+    /// `video` or one of the six file kinds; unknown values are ignored.
+    pub kind: Option<String>,
+    pub q: Option<String>,
+}
+
+/// `GET /api/folders/contents` — mixed, paginated, direct-children listing
+/// (M9 FR-5). Default sort: name ascending.
+pub async fn contents(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(params): Query<FolderContentsParams>,
+) -> ApiResult<Json<FolderContentsPage>> {
+    let owner = resolve_owner(&state, &jar).await?;
+    let filter = FolderContentsFilter {
+        path: params.path.unwrap_or_default(),
+        page: params.page.unwrap_or(1),
+        limit: params.limit.unwrap_or(50),
+        owner_id: owner.id,
+        provider: params.provider.filter(|s| !s.is_empty()),
+        kind: params.kind.filter(|s| !s.is_empty()),
+        q: params.q.filter(|s| !s.is_empty()),
+    };
+    let page = state
+        .catalog_repository()
+        .fetch_folder_contents(&filter)
+        .await?;
+    Ok(Json(page))
 }

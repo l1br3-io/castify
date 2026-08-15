@@ -11,10 +11,11 @@ pub mod transcode_cache;
 
 pub use crypto::{decrypt, encrypt, TokenBundle, TokenKey};
 pub use model::{
-    DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, EmbeddedSubtitleTrack, FileKind,
-    FolderNode, ListPage, NewConnection, NewVideo, PlaybackProgress, Provider, ProviderConnection,
-    ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry, VideoCacheEntry, VideoDetail,
-    VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
+    DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, EmbeddedSubtitleTrack, FileEntry,
+    FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry, FolderFileEntry, FolderNode,
+    FolderVideoEntry, ListPage, NewConnection, NewVideo, PlaybackProgress, Provider,
+    ProviderConnection, ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry, VideoCacheEntry,
+    VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
 };
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
 pub use provider::{

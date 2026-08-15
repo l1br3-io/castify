@@ -5,9 +5,10 @@ use uuid::Uuid;
 
 use crate::crypto::{TokenBundle, TokenKey};
 use crate::model::{
-    DiscoveredFile, FolderNode, NewConnection, NewVideo, PlaybackProgress, Provider,
-    ProviderConnection, ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry, VideoDetail,
-    VideoFilter, VideoPage, VideoSource, VideoSummary,
+    DiscoveredFile, FileEntry, FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry,
+    FolderFileEntry, FolderNode, FolderVideoEntry, NewConnection, NewVideo, PlaybackProgress,
+    Provider, ProviderConnection, ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry,
+    VideoDetail, VideoFilter, VideoPage, VideoSource, VideoSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -818,6 +819,216 @@ impl CatalogRepository {
             video_paths.into_iter().map(|(p,)| p),
             file_paths.into_iter().map(|(p,)| p),
         ))
+    }
+
+    /// Mixed direct-children listing of one folder across active connections
+    /// (M9 FR-5). Videos come deduplicated + owner-enriched (favorites,
+    /// ratings, progress); files carry their kind. One UNION query per page
+    /// (+ one count); video dedup-group sources hydrate after, same as
+    /// `fetch_video_page`.
+    pub async fn fetch_folder_contents(
+        &self,
+        filter: &FolderContentsFilter,
+    ) -> CatalogResult<FolderContentsPage> {
+        let page = filter.page.max(1);
+        let limit = filter.limit.clamp(1, 200);
+        let offset = (page - 1) * limit;
+
+        // One builder produces the shared UNION body plus its binds, in
+        // order — the count and page queries wrap it identically, so the
+        // positional `?`s always line up. A kind filter (video or a file
+        // kind) is applied at the wrapper level — the video half must be
+        // excluded for file kinds, not just the file half restricted.
+        let (union_sql, binds) = Self::folder_contents_union(filter);
+        let kind_entry_frag = match filter.kind.as_deref() {
+            Some(k) if FolderContentsFilter::is_valid_kind(k) => {
+                format!(" WHERE entry_kind = '{k}'")
+            }
+            _ => String::new(),
+        };
+
+        // ── Count ─────────────────────────────────────────────────────
+        let count_sql = format!("SELECT COUNT(*) FROM ({union_sql}){kind_entry_frag}");
+        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+        for b in &binds {
+            count_q = count_q.bind(b);
+        }
+        let total: i64 = count_q.fetch_one(&self.pool).await?;
+
+        // ── Page ──────────────────────────────────────────────────────
+        let page_sql = format!(
+            "SELECT * FROM ({union_sql}){kind_entry_frag} \
+             ORDER BY name COLLATE NOCASE, entry_kind, id LIMIT {limit} OFFSET {offset}"
+        );
+        let mut page_q = sqlx::query(&page_sql);
+        for b in &binds {
+            page_q = page_q.bind(b);
+        }
+        let rows = page_q.fetch_all(&self.pool).await?;
+
+        // ── Hydrate video sources (dedup groups on this page) ─────────
+        let dedup_groups: Vec<String> = rows
+            .iter()
+            .filter(|r| sqlx::Row::get::<String, _>(*r, "entry_kind") == "video")
+            .filter_map(|r| sqlx::Row::get::<Option<String>, _>(r, "dedup_group"))
+            .collect();
+        let sources_by_group = if dedup_groups.is_empty() {
+            HashMap::new()
+        } else {
+            self.fetch_sources_by_groups(&dedup_groups).await?
+        };
+
+        let entries = rows
+            .iter()
+            .map(|row| {
+                let entry_kind: String = sqlx::Row::get(row, "entry_kind");
+                if entry_kind == "video" {
+                    let dedup_group: Option<String> = sqlx::Row::get(row, "dedup_group");
+                    let own_source = VideoSource {
+                        connection_id: sqlx::Row::get(row, "connection_id"),
+                        provider: sqlx::Row::get::<String, _>(row, "provider"),
+                        provider_file_id: sqlx::Row::get(row, "provider_file_id"),
+                    };
+                    let sources = match &dedup_group {
+                        Some(group) => sources_by_group
+                            .get(group)
+                            .cloned()
+                            .unwrap_or_else(|| vec![own_source.clone()]),
+                        None => vec![own_source],
+                    };
+                    FolderEntry::Video(FolderVideoEntry {
+                        kind: "video",
+                        video: VideoSummary {
+                            id: sqlx::Row::get(row, "id"),
+                            name: sqlx::Row::get(row, "name"),
+                            provider: sqlx::Row::get(row, "provider"),
+                            size_bytes: sqlx::Row::get(row, "size_bytes"),
+                            mime_type: sqlx::Row::get(row, "mime_type"),
+                            duration_ms: sqlx::Row::get(row, "duration_ms"),
+                            width: sqlx::Row::get(row, "width"),
+                            height: sqlx::Row::get(row, "height"),
+                            sources,
+                            created_at: sqlx::Row::get(row, "created_at"),
+                            path: sqlx::Row::get(row, "path"),
+                            is_favorite: sqlx::Row::get(row, "is_favorite"),
+                            my_rating: sqlx::Row::get(row, "my_rating"),
+                            thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
+                            position_seconds: sqlx::Row::get(row, "position_seconds"),
+                            completed: sqlx::Row::get(row, "completed"),
+                        },
+                    })
+                } else {
+                    FolderEntry::File(FolderFileEntry {
+                        kind: FileKind::parse(&entry_kind),
+                        file: FileEntry {
+                            id: sqlx::Row::get(row, "id"),
+                            name: sqlx::Row::get(row, "name"),
+                            provider: sqlx::Row::get(row, "provider"),
+                            path: sqlx::Row::get(row, "path"),
+                            size_bytes: sqlx::Row::get(row, "size_bytes"),
+                            mime_type: sqlx::Row::get(row, "mime_type"),
+                            kind: FileKind::parse(&entry_kind),
+                            modified_at: sqlx::Row::get(row, "provider_modified_at"),
+                        },
+                    })
+                }
+            })
+            .collect();
+
+        Ok(FolderContentsPage {
+            entries,
+            total,
+            page,
+            limit,
+        })
+    }
+
+    /// Build the shared UNION body for the contents queries and its bind
+    /// values, in positional order. Both the video and file halves append
+    /// their path/provider/q fragments with binds; the caller wraps the
+    /// body in `SELECT COUNT(*)` or `SELECT * … LIMIT`.
+    fn folder_contents_union(filter: &FolderContentsFilter) -> (String, Vec<String>) {
+        let mut sql = String::new();
+        let mut binds: Vec<String> = Vec::new();
+
+        // Helper: append the direct-children path predicate. `qualifier` is
+        // the column qualifier for the surrounding scope — "v." for the
+        // video half's outer WHERE, "" inside the un-aliased representative
+        // subquery (an alias there would correlate to the outer query and
+        // silently filter the wrong table), "f." for the file half. Two
+        // binds: LIKE prefix, prefix for length().
+        let path_frag = |sql: &mut String, binds: &mut Vec<String>, qualifier: &str| {
+            if filter.path == UNSORTED_BUCKET {
+                sql.push_str(&format!(" AND {qualifier}path IS NULL"));
+            } else {
+                let prefix = filter.path.trim_end_matches('/');
+                sql.push_str(&format!(
+                    " AND {qualifier}path LIKE ? AND substr({qualifier}path, length(?) + 2) NOT LIKE '%/%'"
+                ));
+                binds.push(format!("{prefix}/%"));
+                binds.push(prefix.to_string());
+            }
+        };
+
+        // ── Video half ────────────────────────────────────────────────
+        let active = ACTIVE_CONNECTION_FILTER;
+        sql.push_str(&format!(
+            "SELECT 'video' AS entry_kind, v.id, v.name, v.provider, v.size_bytes, \
+                    v.mime_type, v.duration_ms, v.width, v.height, v.dedup_group, \
+                    v.connection_id, v.provider_file_id, v.created_at, v.path, \
+                    v.thumbnail_status, v.provider_modified_at, \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
+                    pp.position_seconds AS position_seconds, \
+                    COALESCE(pp.completed, 0) AS completed \
+             FROM videos v \
+             LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
+             LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
+             LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
+             WHERE v.id IN ( \
+                 SELECT MIN(id) FROM videos WHERE dedup_group IS NOT NULL \
+                    AND {active}",
+        ));
+        binds.push(filter.owner_id.clone());
+        binds.push(filter.owner_id.clone());
+        binds.push(filter.owner_id.clone());
+        path_frag(&mut sql, &mut binds, "");
+        sql.push_str(&format!(
+            " GROUP BY dedup_group UNION ALL SELECT id FROM videos \
+             WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER}"
+        ));
+        path_frag(&mut sql, &mut binds, "");
+        sql.push_str(")");
+        if let Some(q) = filter.q_filter() {
+            sql.push_str(" AND v.name LIKE ? ESCAPE '\\'");
+            binds.push(q);
+        }
+        if let Some(provider) = filter.provider.as_deref() {
+            sql.push_str(" AND v.provider = ?");
+            binds.push(provider.to_string());
+        }
+
+        // ── File half ─────────────────────────────────────────────────
+        sql.push_str(
+            " UNION ALL \
+             SELECT f.kind AS entry_kind, f.id, f.name, pc.provider, f.size_bytes, \
+                    f.mime_type, NULL, NULL, NULL, NULL, f.connection_id, \
+                    f.provider_file_id, f.created_at, f.path, NULL, \
+                    f.provider_modified_at, 0, NULL, NULL, 0 \
+             FROM files f \
+             JOIN provider_connections pc ON pc.id = f.connection_id \
+                    AND pc.disconnected_at IS NULL",
+        );
+        path_frag(&mut sql, &mut binds, "f.");
+        if let Some(provider) = filter.provider.as_deref() {
+            sql.push_str(" AND pc.provider = ?");
+            binds.push(provider.to_string());
+        }
+        if let Some(q) = filter.q_filter() {
+            sql.push_str(" AND f.name LIKE ? ESCAPE '\\'");
+            binds.push(q);
+        }
+
+        (sql, binds)
     }
 
     /// Returns true if a video row with the given id exists. Used by mutation
@@ -1917,8 +2128,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_union_sql_prints() {
+        let f = FolderContentsFilter {
+            path: "/Movies".into(),
+            owner_id: "o1".into(),
+            q: Some("z".into()),
+            ..Default::default()
+        };
+        let (sql, binds) = super::CatalogRepository::folder_contents_union(&f);
+        println!("SQL:\n{sql}\n\nBINDS: {binds:?}");
+    }
+
     use crate::crypto::{TokenBundle, TokenKey};
-    use crate::model::FileKind;
 
     fn test_key() -> TokenKey {
         TokenKey::from_bytes(vec![42u8; 32]).unwrap()
@@ -2696,6 +2919,205 @@ mod tests {
         assert_eq!(sci_fi.path, "/Movies/Sci-fi");
 
         assert_eq!(by_name("Misc").file_count, 1);
+    }
+
+    /// M9 task 007: direct-children-only mixed listing with name-asc sort,
+    /// exact pagination, kind/provider/q filters, and the synthetic-path
+    /// conventions.
+    #[tokio::test]
+    async fn fetch_folder_contents_lists_direct_children_mixed() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        async fn seed_video(
+            repo: &CatalogRepository,
+            conn: &str,
+            id: &str,
+            name: &str,
+            path: Option<&str>,
+        ) {
+            repo.upsert_video(
+                conn,
+                Provider::GoogleDrive,
+                &NewVideo {
+                    provider_file_id: id.into(),
+                    name: name.into(),
+                    path: path.map(str::to_string),
+                    size_bytes: 1,
+                    mime_type: None,
+                    duration_ms: None,
+                    width: None,
+                    height: None,
+                    native_hash: None,
+                    native_hash_algo: None,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        seed_video(&repo, &conn, "v-a", "Zeta.mp4", Some("/Movies/Zeta.mp4")).await;
+        seed_video(&repo, &conn, "v-b", "Alpha.mp4", Some("/Movies/Alpha.mp4")).await;
+        // Nested deeper — must NOT appear in /Movies listing.
+        seed_video(
+            &repo,
+            &conn,
+            "v-c",
+            "nested.mp4",
+            Some("/Movies/Sci-fi/nested.mp4"),
+        )
+        .await;
+        // Root + unsorted videos — must not appear in /Movies listing.
+        seed_video(&repo, &conn, "v-r", "root.mp4", Some("/root.mp4")).await;
+        seed_video(&repo, &conn, "v-u", "loose.mp4", None).await;
+
+        async fn seed_file(
+            repo: &CatalogRepository,
+            conn: &str,
+            id: &str,
+            name: &str,
+            path: Option<&str>,
+            kind: FileKind,
+        ) {
+            repo.upsert_file(
+                conn,
+                &DiscoveredFile {
+                    provider_file_id: id.into(),
+                    name: name.into(),
+                    path: path.map(str::to_string),
+                    size_bytes: 1,
+                    mime_type: None,
+                    kind,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        seed_file(
+            &repo,
+            &conn,
+            "x-mp3",
+            "Beta.mp3",
+            Some("/Movies/Beta.mp3"),
+            FileKind::Audio,
+        )
+        .await;
+        seed_file(
+            &repo,
+            &conn,
+            "x-deep",
+            "deep.txt",
+            Some("/Movies/Sci-fi/deep.txt"),
+            FileKind::Document,
+        )
+        .await;
+
+        let filter = FolderContentsFilter {
+            path: "/Movies".into(),
+            ..Default::default()
+        };
+        let page = repo.fetch_folder_contents(&filter).await.unwrap();
+        // Name-asc mixed: Alpha.mp4, Beta.mp3, Zeta.mp4 — no nested, no root/loose.
+        assert_eq!(page.total, 3);
+        let names: Vec<&str> = page
+            .entries
+            .iter()
+            .map(|e| match e {
+                FolderEntry::Video(v) => v.video.name.as_str(),
+                FolderEntry::File(f) => f.file.name.as_str(),
+            })
+            .collect();
+        assert_eq!(names, vec!["Alpha.mp4", "Beta.mp3", "Zeta.mp4"]);
+
+        // Kind discrimination.
+        assert!(matches!(&page.entries[0], FolderEntry::Video(_)));
+        assert!(matches!(&page.entries[1], FolderEntry::File(f) if f.file.kind == FileKind::Audio));
+
+        // Pagination: 2 per page.
+        let page2 = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                page: 2,
+                limit: 2,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page2.entries.len(), 1);
+        assert!(matches!(&page2.entries[0], FolderEntry::Video(v) if v.video.name == "Zeta.mp4"));
+
+        // Root listing: root.mp4 + the seed fixture's "/Videos" (a
+        // single-segment path is a root-level entry).
+        let root = repo
+            .fetch_folder_contents(&FolderContentsFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(root.total, 2);
+        assert!(root
+            .entries
+            .iter()
+            .any(|e| matches!(e, FolderEntry::Video(v) if v.video.name == "root.mp4")));
+
+        // (Unsorted): only the NULL-path video.
+        let unsorted = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "(Unsorted)".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(unsorted.total, 1);
+        assert!(
+            matches!(&unsorted.entries[0], FolderEntry::Video(v) if v.video.name == "loose.mp4")
+        );
+
+        // Kind filter: audio only.
+        let audio = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                kind: Some("audio".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(audio.total, 1);
+        assert!(matches!(&audio.entries[0], FolderEntry::File(_)));
+
+        // q filter: plain name contains.
+        let q = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                q: Some("zeta".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(q.total, 1);
+        assert!(matches!(&q.entries[0], FolderEntry::Video(_)));
+
+        // Provider filter applies to both halves.
+        let dropbox = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                provider: Some("dropbox".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(dropbox.total, 0, "seeded rows are all google_drive");
+        let gd = repo
+            .fetch_folder_contents(&FolderContentsFilter {
+                path: "/Movies".into(),
+                provider: Some("google_drive".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(gd.total, 3);
     }
 
     async fn fetch_rating(repo: &CatalogRepository, owner_id: &str, video_id: &str) -> Option<i32> {

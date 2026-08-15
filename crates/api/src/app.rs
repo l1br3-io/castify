@@ -87,6 +87,10 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/api/folders/tree", axum::routing::get(folders::tree))
         .route(
+            "/api/folders/contents",
+            axum::routing::get(folders::contents),
+        )
+        .route(
             "/api/videos/{id}/subtitles",
             axum::routing::get(videos::list_subtitles),
         )

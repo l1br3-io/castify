@@ -221,6 +221,114 @@ pub struct FolderNode {
     pub children: Vec<FolderNode>,
 }
 
+/// A non-video file row shaped for the contents API (M9 FR-5). `provider`
+/// comes from the owning connection (joined at read time) so the UI's
+/// provider chips work uniformly across videos and files.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileEntry {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub path: Option<String>,
+    pub size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub kind: FileKind,
+    pub modified_at: Option<String>,
+}
+
+/// Flat wire shape for one contents entry: `{ kind: "video", …VideoSummary }`
+/// or `{ kind: "audio", …FileEntry }` (M9 FR-5.1). Flat (not nested) so the
+/// TS side is a simple discriminated union on `kind`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderVideoEntry {
+    pub kind: &'static str,
+    #[serde(flatten)]
+    pub video: VideoSummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderFileEntry {
+    pub kind: FileKind,
+    #[serde(flatten)]
+    pub file: FileEntry,
+}
+
+/// One entry in a folder-contents page.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum FolderEntry {
+    Video(FolderVideoEntry),
+    File(FolderFileEntry),
+}
+
+/// A mixed, paginated folder listing (M9 FR-5). Default sort: name ascending
+/// (file-browser mental model); direct children only.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct FolderContentsPage {
+    pub entries: Vec<FolderEntry>,
+    pub total: i64,
+    pub page: i64,
+    pub limit: i64,
+}
+
+/// Filters for [`crate::repository::CatalogRepository::fetch_folder_contents`].
+///
+/// `path` semantics: `""` → library root (files directly at `/`);
+/// `"(Unsorted)"` → rows with a NULL path; `"/A/B"` → direct children of
+/// that folder. `kind` matches file kinds (`audio` … `other`) or `video`.
+#[derive(Debug, Clone)]
+pub struct FolderContentsFilter {
+    pub path: String,
+    pub page: i64,
+    pub limit: i64,
+    /// Owner for the video-half enrichment joins (favorites/ratings/progress).
+    pub owner_id: String,
+    pub provider: Option<String>,
+    pub kind: Option<String>,
+    pub q: Option<String>,
+}
+
+impl Default for FolderContentsFilter {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            page: 1,
+            limit: 50,
+            owner_id: String::new(),
+            provider: None,
+            kind: None,
+            q: None,
+        }
+    }
+}
+
+impl FolderContentsFilter {
+    /// `q` with `%`/`_`/`\\` escaped and wrapped in `%…%` for LIKE, or None
+    /// when empty. Escaping keeps user input literal (a `%` in a filename
+    /// query must not act as a wildcard).
+    pub fn q_filter(&self) -> Option<String> {
+        let q = self.q.as_deref()?.trim();
+        if q.is_empty() {
+            return None;
+        }
+        let escaped = q
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        Some(format!("%{escaped}%"))
+    }
+
+    /// Closed kind set accepted by the contents filter: the six file kinds
+    /// plus `video`. Values outside the set are ignored (no filtering)
+    /// rather than interpolated into SQL.
+    pub fn is_valid_kind(kind: &str) -> bool {
+        matches!(
+            kind,
+            "video" | "audio" | "image" | "subtitle" | "document" | "archive" | "other"
+        )
+    }
+}
+
 /// A paginated result from `Provider::list_videos`.
 #[derive(Debug, Clone)]
 pub struct ListPage {

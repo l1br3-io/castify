@@ -184,3 +184,98 @@ async fn folders_tree_returns_nested_nodes_over_videos_and_files() {
     assert_eq!(root["file_count"], 1, "poster.jpg is a root-level file");
     assert_eq!(root["video_count"], 0);
 }
+
+// ── GET /api/folders/contents (M9 FR-5) ──────────────────────────────
+
+#[tokio::test]
+async fn folders_contents_requires_auth() {
+    let (app, _cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _) = get_json(app, "/api/folders/contents", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn folders_contents_returns_mixed_sorted_entries() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+
+    repo.upsert_video(
+        &conn,
+        Provider::GoogleDrive,
+        &NewVideo {
+            provider_file_id: "v1".into(),
+            name: "Zeta.mp4".into(),
+            path: Some("/Movies/Zeta.mp4".into()),
+            size_bytes: 1_000,
+            mime_type: Some("video/mp4".into()),
+            duration_ms: None,
+            width: None,
+            height: None,
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    seed_file(
+        &repo,
+        &conn,
+        "x1",
+        "Alpha.mp3",
+        Some("/Movies/Alpha.mp3"),
+        FileKind::Audio,
+    )
+    .await;
+    // Deeper entry — excluded from the direct-children listing.
+    seed_file(
+        &repo,
+        &conn,
+        "x2",
+        "nested.txt",
+        Some("/Movies/Deep/nested.txt"),
+        FileKind::Document,
+    )
+    .await;
+
+    let (status, body) = get_json(
+        app.clone(),
+        "/api/folders/contents?path=%2FMovies",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(body["total"], 2);
+    let entries = body["entries"].as_array().expect("entries");
+    // Name-asc across kinds: Alpha (file) before Zeta (video).
+    assert_eq!(entries[0]["kind"], "audio");
+    assert_eq!(entries[0]["name"], "Alpha.mp3");
+    assert_eq!(entries[0]["provider"], "google_drive");
+    assert_eq!(entries[1]["kind"], "video");
+    assert_eq!(entries[1]["name"], "Zeta.mp4");
+    // Video entries carry the enriched fields PosterCard needs.
+    assert_eq!(entries[1]["is_favorite"], false);
+    assert!(entries[1]["my_rating"].is_null());
+    assert_eq!(entries[1]["thumbnail_status"], "pending");
+
+    // Kind filter isolates videos.
+    let (_, video_only) = get_json(
+        app.clone(),
+        "/api/folders/contents?path=%2FMovies&kind=video",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(video_only["total"], 1);
+    assert_eq!(video_only["entries"][0]["kind"], "video");
+
+    // q filter is a plain name contains.
+    let (_, zeta) = get_json(
+        app,
+        "/api/folders/contents?path=%2FMovies&q=zeta",
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(zeta["total"], 1);
+    assert_eq!(zeta["entries"][0]["name"], "Zeta.mp4");
+}
