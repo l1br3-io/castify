@@ -2130,11 +2130,16 @@ async fn stream_range_returns_206_with_content_range() {
     .await;
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     let content_range = headers.get("content-range").unwrap().to_str().unwrap();
+    // The e2e mock serves MOCK_MP4 (3015 bytes) for video ids, so `bytes=0-7`
+    // is honored verbatim: end stays 7. (An M8 commit briefly flipped this
+    // to `0-3/4` against a 4-byte stub; the mock has always served MOCK_MP4
+    // on this path — the breakage was masked because e2e-feature test runs
+    // weren't part of the routine sweep.)
     assert!(
-        content_range.starts_with("bytes 0-3/"),
+        content_range.starts_with("bytes 0-7/"),
         "content-range: {content_range}"
     );
-    assert_eq!(bytes.len(), 4);
+    assert_eq!(bytes.len(), 8, "should return 8 bytes for range 0-7");
 }
 
 // ── M8 Task 006: embedded text subtitle extraction ──────────────────
