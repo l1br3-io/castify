@@ -619,6 +619,42 @@ impl CatalogRepository {
         }
     }
 
+    /// Resolve a non-video file row to its stream info (M9 FR-6): provider
+    /// comes from the owning connection. Active connections only — a
+    /// soft-disconnected connection's files 404 like its videos.
+    pub async fn fetch_file_stream_info(
+        &self,
+        file_id: &str,
+    ) -> CatalogResult<Option<VideoStreamInfo>> {
+        let row = sqlx::query(&format!(
+            "SELECT f.id, f.connection_id, pc.provider, f.provider_file_id, f.mime_type, \
+                    f.size_bytes, f.name \
+             FROM files f \
+             JOIN provider_connections pc ON pc.id = f.connection_id \
+                  AND pc.disconnected_at IS NULL \
+             WHERE f.id = ?"
+        ))
+        .bind(file_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None => Ok(None),
+            Some(row) => {
+                let provider_str: String = row.get("provider");
+                Ok(Some(VideoStreamInfo {
+                    id: row.get("id"),
+                    connection_id: row.get("connection_id"),
+                    provider: Provider::parse(&provider_str).map_err(CatalogError::Other)?,
+                    provider_file_id: row.get("provider_file_id"),
+                    mime_type: row.get("mime_type"),
+                    size_bytes: row.get("size_bytes"),
+                    name: row.get("name"),
+                }))
+            }
+        }
+    }
+
     /// Update the thumbnail cache state for a video. The caller is responsible
     /// for passing one of the four convention values: `"pending"`, `"cached"`,
     /// `"failed"`, `"unsupported"`.

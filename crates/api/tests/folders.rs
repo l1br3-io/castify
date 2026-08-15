@@ -279,3 +279,98 @@ async fn folders_contents_returns_mixed_sorted_entries() {
     assert_eq!(zeta["total"], 1);
     assert_eq!(zeta["entries"][0]["name"], "Zeta.mp4");
 }
+
+// ── GET /api/files/{id}/download (M9 FR-6) ───────────────────────────
+// These need the e2e mock provider (open_stream against canned bytes).
+
+#[cfg(feature = "e2e")]
+mod file_download {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::Router;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    async fn get_bytes(
+        app: Router,
+        uri: &str,
+        cookie: Option<&str>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        if let Some(c) = cookie {
+            builder = builder.header("cookie", c);
+        }
+        let response = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn file_download_requires_auth() {
+        let (app, _cookie, _repo, _guard) = boot_and_setup().await;
+        let (status, _, _) = get_bytes(app, "/api/files/whatever/download", None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn file_download_streams_attachment_with_mock_bytes() {
+        let (app, cookie, repo, _guard) = boot_and_setup().await;
+        let conn = seed_connection(&repo, Provider::GoogleDrive).await;
+        seed_file(
+            &repo,
+            &conn,
+            "gd-f-song",
+            "song.mp3",
+            Some("/Media/Music/song.mp3"),
+            FileKind::Audio,
+        )
+        .await;
+
+        let file_id: String = sqlx_like(&repo, "gd-f-song").await;
+        let (status, headers, bytes) = get_bytes(
+            app,
+            &format!("/api/files/{file_id}/download"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let disposition = headers
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .expect("content-disposition present");
+        assert!(
+            disposition.starts_with("attachment;"),
+            "disposition: {disposition}"
+        );
+        assert!(
+            disposition.contains("filename=\"song.mp3\""),
+            "disposition: {disposition}"
+        );
+        let body = String::from_utf8(bytes).unwrap();
+        assert!(
+            body.starts_with("e2e mock file content: gd-f-song"),
+            "mock text bytes: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_download_404_unknown_id() {
+        let (app, cookie, _repo, _guard) = boot_and_setup().await;
+        let (status, _, _) = get_bytes(app, "/api/files/no-such-id/download", Some(&cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    async fn sqlx_like(repo: &CatalogRepository, provider_file_id: &str) -> String {
+        sqlx::query_scalar("SELECT id FROM files WHERE provider_file_id = ?")
+            .bind(provider_file_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
+    }
+}

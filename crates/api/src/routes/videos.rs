@@ -1427,7 +1427,10 @@ impl Stream for InstrumentedStream {
 /// `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges: bytes`,
 /// and optionally `Content-Disposition` headers. The streaming body is
 /// forwarded directly via `Body::from_stream`.
-fn stream_to_response(stream: StreamResponse, content_disposition: Option<&str>) -> Response {
+pub(crate) fn stream_to_response(
+    stream: StreamResponse,
+    content_disposition: Option<&str>,
+) -> Response {
     let status = StatusCode::from_u16(stream.status).unwrap_or(StatusCode::OK);
     let mut resp = Response::new(Body::from_stream(stream.body));
     *resp.status_mut() = status;
@@ -1457,7 +1460,7 @@ fn stream_to_response(stream: StreamResponse, content_disposition: Option<&str>)
 /// Build a `Content-Disposition: attachment` header value with both
 /// `filename="..."` (ASCII fallback) and `filename*=UTF-8''...` (RFC 5987
 /// percent-encoded) forms, so non-ASCII filenames work across browsers.
-fn build_content_disposition(filename: &str) -> String {
+pub(crate) fn build_content_disposition(filename: &str) -> String {
     let sanitized = filename.replace('"', "\\\"");
     let encoded = percent_encode(filename);
     format!(
