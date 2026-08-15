@@ -5,6 +5,7 @@
 // with a "Play" accessible name, no play-glyph anywhere in the card.
 
 import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
 import { FileCard, FileRow } from "./file-card";
 import type { FileEntryDto } from "../api/types";
