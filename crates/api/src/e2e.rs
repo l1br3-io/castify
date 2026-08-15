@@ -30,7 +30,8 @@ use castify_catalog::provider::{
     ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
 };
 use castify_catalog::{
-    DiscoveredSubtitle, DiscoveredVideo, ListPage, NewConnection, Provider, TokenBundle,
+    DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, NewConnection,
+    Provider, TokenBundle,
 };
 
 use crate::error::{ApiError, ApiResult};
@@ -262,6 +263,10 @@ struct E2eMockProvider {
     provider: Provider,
     videos: Vec<DiscoveredVideo>,
     subtitles: Vec<DiscoveredSubtitle>,
+    /// Non-media fixtures (M9) — every kind, spread across nested folders so
+    /// the folder tree/contents APIs and the browser organizer have
+    /// realistic mixed data.
+    files: Vec<DiscoveredFile>,
     prefix_hashes: HashMap<String, String>,
     /// Shared with the factory so both provider instances created within a
     /// single request's refresh-and-retry path see the same counters.
@@ -281,8 +286,7 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
         Ok(ListPage {
             videos: self.videos.clone(),
             subtitles: self.subtitles.clone(),
-            // M9 Task 005 adds non-media fixtures; sweep keeps this compiling.
-            files: Vec::new(),
+            files: self.files.clone(),
             next_cursor: None,
         })
     }
@@ -336,6 +340,23 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
 
         use bytes::Bytes;
         use futures::stream;
+
+        // Non-media file fixtures stream deterministic text bytes instead
+        // of the MP4 payload — the download endpoint (M9 task 008) serves
+        // these with an attachment disposition, and tests assert content.
+        if file_id.contains("-f-") {
+            let payload = format!("e2e mock file content: {file_id}\n");
+            let bytes = Bytes::from(payload);
+            let total = bytes.len() as u64;
+            let body = stream::once(async move { Ok::<_, std::io::Error>(bytes) });
+            return Ok(StreamResponse {
+                status: 200,
+                content_type: "application/octet-stream".into(),
+                content_length: Some(total),
+                content_range: None,
+                body: Box::pin(body),
+            });
+        }
 
         let total = MOCK_MP4.len() as u64;
 
@@ -498,6 +519,110 @@ impl E2eMockFactory {
             _ => vec![],
         }
     }
+
+    /// Non-media fixtures (M9): every kind represented, in nested folders
+    /// distinct from the video folders so tree queries have real structure.
+    /// The Google Drive set includes the subtitle sidecar's dual
+    /// representation (file row mirroring the DiscoveredSubtitle above),
+    /// matching production provider behavior.
+    fn files(&self) -> Vec<DiscoveredFile> {
+        match self.provider {
+            Provider::GoogleDrive => vec![
+                mock_file(
+                    "gd-f-song",
+                    "song.mp3",
+                    "/Media/Music/song.mp3",
+                    40,
+                    Some("audio/mpeg"),
+                    FileKind::Audio,
+                ),
+                mock_file(
+                    "gd-f-cover",
+                    "cover.jpg",
+                    "/Photos/cover.jpg",
+                    120,
+                    Some("image/jpeg"),
+                    FileKind::Image,
+                ),
+                mock_file(
+                    "gd-f-thesis",
+                    "thesis.pdf",
+                    "/Docs/thesis.pdf",
+                    500,
+                    Some("application/pdf"),
+                    FileKind::Document,
+                ),
+                mock_file(
+                    "gd-f-backup",
+                    "backup.zip",
+                    "/Docs/backup.zip",
+                    900,
+                    Some("application/zip"),
+                    FileKind::Archive,
+                ),
+                mock_file(
+                    "gd-f-weird",
+                    "weird.dat",
+                    "/Misc/weird.dat",
+                    7,
+                    None,
+                    FileKind::Other,
+                ),
+                mock_file(
+                    "gd-f-srt",
+                    "vacation.en.srt",
+                    "/Movies/vacation.en.srt",
+                    2,
+                    None,
+                    FileKind::Subtitle,
+                ),
+            ],
+            Provider::Dropbox => vec![
+                mock_file(
+                    "db-f-track",
+                    "track.flac",
+                    "/Music/track.flac",
+                    3_000,
+                    None,
+                    FileKind::Audio,
+                ),
+                mock_file(
+                    "db-f-notes",
+                    "notes.txt",
+                    "/Docs/notes.txt",
+                    12,
+                    None,
+                    FileKind::Document,
+                ),
+                mock_file(
+                    "db-f-cover",
+                    "cover.png",
+                    "/Photos/cover.png",
+                    80,
+                    None,
+                    FileKind::Image,
+                ),
+            ],
+            Provider::OneDrive => vec![
+                mock_file(
+                    "od-f-archive",
+                    "old.rar",
+                    "/Archives/old.rar",
+                    1_500,
+                    None,
+                    FileKind::Archive,
+                ),
+                mock_file(
+                    "od-f-mystery",
+                    "mystery.bin",
+                    "/Misc/mystery.bin",
+                    64,
+                    None,
+                    FileKind::Other,
+                ),
+            ],
+        }
+    }
 }
 
 #[async_trait]
@@ -510,6 +635,7 @@ impl ProviderFactory for E2eMockFactory {
             provider: self.provider,
             videos: self.videos(),
             subtitles: self.subtitles(),
+            files: self.files(),
             prefix_hashes: self.prefix_hashes(),
             refresh_state: self.refresh_state.clone(),
         }))
@@ -536,6 +662,27 @@ impl ProviderFactory for E2eMockFactory {
         _: &TokenBundle,
     ) -> ProviderResult<(Option<String>, Option<String>)> {
         Ok((Some("e2e-account".into()), Some("e2e@example.com".into())))
+    }
+}
+
+/// Build a non-media mock fixture. IDs carry `-f-` so `open_stream` serves
+/// deterministic text bytes for them (see the mock's stream branch).
+fn mock_file(
+    id: &str,
+    name: &str,
+    path: &str,
+    size: i64,
+    mime_type: Option<&str>,
+    kind: FileKind,
+) -> DiscoveredFile {
+    DiscoveredFile {
+        provider_file_id: id.to_string(),
+        name: name.to_string(),
+        path: Some(path.to_string()),
+        size_bytes: size,
+        mime_type: mime_type.map(|s| s.to_string()),
+        kind,
+        provider_modified_at: None,
     }
 }
 
@@ -725,5 +872,69 @@ pub async fn mock_cdn(Path(file_id): Path<String>, headers: HeaderMap) -> Respon
                 .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
             resp
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M9 task 005: every provider's mock listing carries non-media files
+    /// across all kinds and nested folders, alongside videos + subtitles.
+    #[tokio::test]
+    async fn mock_listing_carries_non_media_fixtures() {
+        for provider in [Provider::GoogleDrive, Provider::Dropbox, Provider::OneDrive] {
+            let factory = E2eMockFactory::new(provider);
+            let provider_inst = factory
+                .create(&TokenBundle {
+                    access_token: "mock".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                    token_type: "Bearer".into(),
+                    scope: None,
+                })
+                .await
+                .expect("mock provider creates without OAuth");
+            let page = provider_inst.list_videos(None).await.expect("listing");
+
+            assert!(!page.videos.is_empty(), "{provider}: videos present");
+            assert!(!page.files.is_empty(), "{provider}: files present");
+            for file in &page.files {
+                assert!(
+                    file.path.is_some(),
+                    "{provider}: fixture {} needs a path for the tree",
+                    file.name
+                );
+            }
+            // File ids carry `-f-` so open_stream serves text bytes.
+            assert!(page
+                .files
+                .iter()
+                .all(|f| f.provider_file_id.contains("-f-")));
+        }
+    }
+
+    /// Google Drive mirrors production dual-representation: the sidecar
+    /// subtitle appears both as a DiscoveredSubtitle and as a Subtitle-kind
+    /// file row.
+    #[tokio::test]
+    async fn mock_drive_sidecar_is_dual_represented() {
+        let factory = E2eMockFactory::new(Provider::GoogleDrive);
+        let provider_inst = factory
+            .create(&TokenBundle {
+                access_token: "mock".into(),
+                refresh_token: None,
+                expires_at: None,
+                token_type: "Bearer".into(),
+                scope: None,
+            })
+            .await
+            .unwrap();
+        let page = provider_inst.list_videos(None).await.unwrap();
+        assert_eq!(page.subtitles.len(), 1);
+        assert!(page
+            .files
+            .iter()
+            .any(|f| f.kind == FileKind::Subtitle && f.name == "vacation.en.srt"));
     }
 }
