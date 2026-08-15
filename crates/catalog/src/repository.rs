@@ -5,9 +5,9 @@ use uuid::Uuid;
 
 use crate::crypto::{TokenBundle, TokenKey};
 use crate::model::{
-    DiscoveredFile, NewConnection, NewVideo, PlaybackProgress, Provider, ProviderConnection,
-    ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry, VideoDetail, VideoFilter, VideoPage,
-    VideoSource, VideoSummary,
+    DiscoveredFile, FolderNode, NewConnection, NewVideo, PlaybackProgress, Provider,
+    ProviderConnection, ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry, VideoDetail,
+    VideoFilter, VideoPage, VideoSource, VideoSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -787,6 +787,37 @@ impl CatalogRepository {
                 video_count: sqlx::Row::get(r, "video_count"),
             })
             .collect())
+    }
+
+    /// Build the full folder tree over active connections' `videos ∪ files`
+    /// (M9 FR-4). One DB round-trip (two path queries) + O(paths) assembly
+    /// in [`build_folder_tree`]. Video counts are dedup-aware (same
+    /// representative subquery as `fetch_folders`); file counts are raw.
+    pub async fn fetch_folder_tree(&self) -> CatalogResult<Vec<FolderNode>> {
+        let video_paths: Vec<(Option<String>,)> = sqlx::query_as(&format!(
+            "SELECT path FROM videos WHERE id IN ( \
+                 SELECT MIN(id) FROM videos \
+                 WHERE dedup_group IS NOT NULL AND {ACTIVE_CONNECTION_FILTER} \
+                 GROUP BY dedup_group \
+                 UNION ALL \
+                 SELECT id FROM videos \
+                 WHERE dedup_group IS NULL AND {ACTIVE_CONNECTION_FILTER} \
+             )"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+
+        let file_paths: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT path FROM files WHERE connection_id IN \
+             (SELECT id FROM provider_connections WHERE disconnected_at IS NULL)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(build_folder_tree(
+            video_paths.into_iter().map(|(p,)| p),
+            file_paths.into_iter().map(|(p,)| p),
+        ))
     }
 
     /// Returns true if a video row with the given id exists. Used by mutation
@@ -1768,10 +1799,126 @@ fn iso_now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+// ── Folder tree assembly (M9 FR-4) ──────────────────────────────────
+
+/// Synthetic bucket names, shared with `fetch_folders`'s conventions.
+/// Byte order puts `'('` before letters, so they sort first as tree
+/// children for free.
+const ROOT_BUCKET: &str = "(Root)";
+const UNSORTED_BUCKET: &str = "(Unsorted)";
+
+/// Assembly accumulator. `BTreeMap` children keep the output deterministically
+/// name-sorted without a separate sort pass.
+#[derive(Default)]
+struct TreeNode {
+    video_count: i64,
+    file_count: i64,
+    children: std::collections::BTreeMap<String, TreeNode>,
+}
+
+/// Accumulate one path into the tree. Every folder ancestor of the file gets
+/// +1 (cumulative counts); root-level files (`/name.ext`) and NULL paths go
+/// to their synthetic buckets.
+fn accumulate_path(root: &mut TreeNode, path: Option<&str>, is_video: bool) {
+    let Some(path) = path else {
+        bump(bucket_child(root, UNSORTED_BUCKET), is_video);
+        return;
+    };
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        [] => {}
+        [_] => {
+            bump(bucket_child(root, ROOT_BUCKET), is_video);
+        }
+        _ => {
+            let mut node = root;
+            for seg in &segments[..segments.len() - 1] {
+                node = node.children.entry((*seg).to_string()).or_default();
+                bump(node, is_video);
+            }
+        }
+    }
+}
+
+fn bucket_child<'a>(root: &'a mut TreeNode, name: &str) -> &'a mut TreeNode {
+    root.children.entry(name.to_string()).or_default()
+}
+
+fn bump(node: &mut TreeNode, is_video: bool) {
+    if is_video {
+        node.video_count += 1;
+    } else {
+        node.file_count += 1;
+    }
+}
+
+/// Convert an accumulator node into its public shape (single node, children
+/// sorted by name). `path` for the synthetic buckets is mapped by the caller
+/// for root-level buckets and here for nested ones.
+fn tree_node_to_folder_node(node: &TreeNode, name: &str, path: &str) -> FolderNode {
+    let mut children: Vec<FolderNode> = node
+        .children
+        .iter()
+        .map(|(child_name, child)| {
+            let child_path = if path.is_empty() {
+                format!("/{child_name}")
+            } else {
+                format!("{path}/{child_name}")
+            };
+            tree_node_to_folder_node(child, child_name, &child_path)
+        })
+        .collect();
+    children.sort_by_key(|c| c.name.to_lowercase());
+    FolderNode {
+        name: name.to_string(),
+        path: path.to_string(),
+        video_count: node.video_count,
+        file_count: node.file_count,
+        children,
+    }
+}
+
+/// Pure tree assembly over video + file paths (unit-testable without a DB).
+/// NULL paths land in the `"(Unsorted)"` bucket; single-segment paths in
+/// `"(Root)"`. See [`CatalogRepository::fetch_folder_tree`] for the query
+/// side.
+fn build_folder_tree<Iv, If>(video_paths: Iv, file_paths: If) -> Vec<FolderNode>
+where
+    Iv: IntoIterator<Item = Option<String>>,
+    If: IntoIterator<Item = Option<String>>,
+{
+    let mut root = TreeNode::default();
+    for path in video_paths {
+        accumulate_path(&mut root, path.as_deref(), true);
+    }
+    for path in file_paths {
+        accumulate_path(&mut root, path.as_deref(), false);
+    }
+
+    let mut top: Vec<FolderNode> = root
+        .children
+        .iter()
+        .map(|(name, child)| {
+            // Synthetic buckets keep their name as the selector path is
+            // ""/(Unsorted); real top-level folders are "/name".
+            let path = match name.as_str() {
+                ROOT_BUCKET => String::new(),
+                UNSORTED_BUCKET => UNSORTED_BUCKET.to_string(),
+                n => format!("/{n}"),
+            };
+            tree_node_to_folder_node(child, name, &path)
+        })
+        .collect();
+    top.sort_by_key(|n| n.name.to_lowercase());
+    top
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::{TokenBundle, TokenKey};
+    use crate::model::FileKind;
 
     fn test_key() -> TokenKey {
         TokenKey::from_bytes(vec![42u8; 32]).unwrap()
@@ -1804,6 +1951,7 @@ mod tests {
             include_str!("../../storage/migrations/0008_video_codec.sql"),
             include_str!("../../storage/migrations/0009_transcode_cache.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
+            include_str!("../../storage/migrations/0011_files.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -2424,6 +2572,130 @@ mod tests {
         .fetch_one(repo.pool())
         .await
         .unwrap()
+    }
+
+    /// M9 task 006: the folder tree derives from `videos ∪ files` paths —
+    /// nesting, cumulative counts, dedup-aware video counting, and the
+    /// `(Root)`/`(Unsorted)` conventions shared with `fetch_folders`.
+    #[tokio::test]
+    async fn fetch_folder_tree_builds_nested_tree_with_dedup_aware_counts() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        // seed_owner_conn_video placed one video at /Videos. Additional
+        // videos: nested, root-level, NULL path, and a dedup pair.
+        async fn seed_video(repo: &CatalogRepository, conn: &str, id: &str, path: Option<&str>) {
+            repo.upsert_video(
+                conn,
+                Provider::GoogleDrive,
+                &NewVideo {
+                    provider_file_id: id.into(),
+                    name: format!("{id}.mp4"),
+                    path: path.map(str::to_string),
+                    size_bytes: 1,
+                    mime_type: None,
+                    duration_ms: None,
+                    width: None,
+                    height: None,
+                    native_hash: None,
+                    native_hash_algo: None,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        seed_video(&repo, &conn, "f-mkv", Some("/Movies/Sci-fi/b.mkv")).await;
+        seed_video(&repo, &conn, "f-root", Some("/root-vid.mp4")).await;
+        seed_video(&repo, &conn, "f-null", None).await;
+        seed_video(&repo, &conn, "f-dup1", Some("/Movies/dup1.mp4")).await;
+        seed_video(&repo, &conn, "f-dup2", Some("/Movies/dup2.mp4")).await;
+        sqlx::query(
+            "UPDATE videos SET dedup_group = 'g1' \
+             WHERE provider_file_id IN ('f-dup1','f-dup2')",
+        )
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        async fn seed_file(
+            repo: &CatalogRepository,
+            conn: &str,
+            id: &str,
+            path: Option<&str>,
+            kind: FileKind,
+        ) {
+            repo.upsert_file(
+                conn,
+                &DiscoveredFile {
+                    provider_file_id: id.into(),
+                    name: format!("{id}.bin"),
+                    path: path.map(str::to_string),
+                    size_bytes: 1,
+                    mime_type: None,
+                    kind,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        seed_file(
+            &repo,
+            &conn,
+            "x-mp3",
+            Some("/Media/Music/song.mp3"),
+            FileKind::Audio,
+        )
+        .await;
+        seed_file(&repo, &conn, "x-dat", Some("/Misc/x.dat"), FileKind::Other).await;
+        seed_file(&repo, &conn, "x-null", None, FileKind::Image).await;
+
+        let tree = repo.fetch_folder_tree().await.unwrap();
+        let by_name = |n: &str| {
+            tree.iter()
+                .find(|t| t.name == n)
+                .unwrap_or_else(|| panic!("missing top-level node {n}: {tree:?}"))
+        };
+
+        // Synthetic buckets sort first ('(' < letters in byte order).
+        // (Root) holds f-root plus the seed fixture's "/Videos" path — a
+        // single-segment path IS a root-level file (real provider paths
+        // always append the filename).
+        let root = by_name("(Root)");
+        assert_eq!(root.video_count, 2, "root-level videos");
+        assert_eq!(root.file_count, 0);
+        assert_eq!(root.path, "");
+
+        let unsorted = by_name("(Unsorted)");
+        assert_eq!(unsorted.video_count, 1);
+        assert_eq!(unsorted.file_count, 1);
+        assert_eq!(unsorted.path, "(Unsorted)");
+
+        let media = by_name("Media");
+        assert_eq!(media.video_count, 0);
+        assert_eq!(media.file_count, 1, "cumulative: Music's file");
+        assert_eq!(media.path, "/Media");
+        assert_eq!(media.children.len(), 1);
+        assert_eq!(media.children[0].name, "Music");
+        assert_eq!(media.children[0].file_count, 1);
+
+        let movies = by_name("Movies");
+        // Sci-fi's b.mkv + ONE representative from the dedup pair = 2.
+        assert_eq!(movies.video_count, 2, "dedup pair counts once");
+        assert_eq!(movies.file_count, 0);
+        let sci_fi = movies
+            .children
+            .iter()
+            .find(|c| c.name == "Sci-fi")
+            .expect("Sci-fi child");
+        assert_eq!(sci_fi.video_count, 1);
+        assert_eq!(sci_fi.path, "/Movies/Sci-fi");
+
+        assert_eq!(by_name("Misc").file_count, 1);
     }
 
     async fn fetch_rating(repo: &CatalogRepository, owner_id: &str, video_id: &str) -> Option<i32> {

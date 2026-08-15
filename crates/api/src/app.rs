@@ -5,7 +5,7 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
-use crate::routes::{connections, csrf, health, session, setup, videos};
+use crate::routes::{connections, csrf, folders, health, session, setup, videos};
 use crate::spa::spa_handler;
 use crate::state::AppState;
 
@@ -85,6 +85,7 @@ pub fn build_app(state: AppState) -> Router {
             "/api/videos/{id}/download",
             axum::routing::get(videos::get_download),
         )
+        .route("/api/folders/tree", axum::routing::get(folders::tree))
         .route(
             "/api/videos/{id}/subtitles",
             axum::routing::get(videos::list_subtitles),

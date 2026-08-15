@@ -204,6 +204,23 @@ pub struct DiscoveredFile {
     pub provider_modified_at: Option<String>,
 }
 
+/// A node in the folder tree (M9 FR-4). Counts are cumulative — they include
+/// every video/file in the subtree, so the UI can show "Movies · 12" without
+/// client-side summation. Synthetic buckets `"(Root)"` (files directly at the
+/// library root) and `"(Unsorted)"` (rows with a NULL path) match the
+/// conventions of `fetch_folders`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderNode {
+    pub name: String,
+    /// Folder path — `"/Movies/Sci-fi"` for real folders, `""` for
+    /// `"(Root)"`, `"(Unsorted)"` for the NULL-path bucket. Doubles as the
+    /// contents API's `path` selector.
+    pub path: String,
+    pub video_count: i64,
+    pub file_count: i64,
+    pub children: Vec<FolderNode>,
+}
+
 /// A paginated result from `Provider::list_videos`.
 #[derive(Debug, Clone)]
 pub struct ListPage {
