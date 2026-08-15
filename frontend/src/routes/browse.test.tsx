@@ -361,74 +361,6 @@ describe("BrowsePage", () => {
     expect(await screen.findByRole("heading", { name: "Favorites" })).toBeInTheDocument();
   });
 
-  it("renders provider shelves for connected providers", async () => {
-    renderWithProviders(<BrowsePage />, {
-      fetchImplementation: browseFetch({
-        connections: [
-          {
-            id: "c1",
-            provider: "google_drive",
-            provider_account_email: "u@example.com",
-            connected_at: "2026-01-01T00:00:00Z",
-            scan_status: "idle",
-            last_scan_at: null,
-            video_count: 10,
-          },
-        ],
-        providerPages: {
-          google_drive: {
-            videos: [VIDEO_PAGE_ONE.videos[0]],
-            total: 1,
-            page: 1,
-            limit: 20,
-          },
-        },
-      }),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Google Drive" })).toBeInTheDocument();
-  });
-
-  it("hides provider shelf when provider has no videos", async () => {
-    renderWithProviders(<BrowsePage />, {
-      fetchImplementation: browseFetch({
-        connections: [
-          {
-            id: "c1",
-            provider: "dropbox",
-            provider_account_email: "u@example.com",
-            connected_at: "2026-01-01T00:00:00Z",
-            scan_status: "idle",
-            last_scan_at: null,
-            video_count: 0,
-          },
-        ],
-        // providerPages defaults to empty → shelf hidden.
-      }),
-    });
-
-    await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    expect(screen.queryByRole("heading", { name: "Dropbox" })).not.toBeInTheDocument();
-  });
-
-  it("renders folder shelves from folder enumeration", async () => {
-    renderWithProviders(<BrowsePage />, {
-      fetchImplementation: browseFetch({
-        folders: [{ folder: "Movies", video_count: 5 }],
-        folderPages: {
-          Movies: {
-            videos: [VIDEO_PAGE_ONE.videos[0]],
-            total: 1,
-            page: 1,
-            limit: 20,
-          },
-        },
-      }),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Movies" })).toBeInTheDocument();
-  });
-
   // --- View All ---
 
   it("View All on Favorites applies favorites filter to the grid section", async () => {
@@ -722,13 +654,14 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    // Provider chip is always visible inline — no toggle click required.
+    // Provider chips are always visible inline — no toggle click required.
+    // (Both the FilterPanel and the organizer render a chip group.)
     expect(
-      screen.getByRole("group", { name: "Filter by provider" }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("group", { name: "Filter by provider" }).length,
+    ).toBeGreaterThan(0);
     expect(
-      screen.getByRole("button", { name: "Google Drive" }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("button", { name: "Google Drive" }).length,
+    ).toBeGreaterThan(0);
   });
 
   it("applies a filter via the drawer and sends the param in the grid query", async () => {

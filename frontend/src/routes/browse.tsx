@@ -44,14 +44,13 @@ import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import { useConnections } from "../hooks/use-connections";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
-import { useFolders } from "../hooks/use-folders";
 import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
+import { FolderOrganizer } from "../components/folder-organizer";
 import { describeError } from "../lib/format";
 import { useBrowseFilters } from "../lib/filter-state";
 import {
-  PROVIDER_LABELS,
   VIDEO_SORT_LABELS,
   VIDEO_SORT_OPTIONS,
   type ProviderKey,
@@ -129,9 +128,6 @@ export function BrowsePage() {
     new Set((connections.data ?? []).map((c) => c.provider)),
   );
 
-  // Folder shelves data source.
-  const folders = useFolders();
-  const topFolders = (folders.data ?? []).slice(0, 5);
 
   function handleViewAll(filter: ViewAllFilter): void {
     // Clear search input + URL immediately, then clear all filters and apply
@@ -139,8 +135,6 @@ export function BrowsePage() {
     setQuery("");
     filters.setQ("");
     filters.clearAll();
-    if (filter.provider) filters.setProvider(filter.provider);
-    if (filter.folder) filters.setFolder(filter.folder);
     if (filter.favoritesOnly) filters.setFavoritesOnly(true);
     document
       .getElementById("all-videos")
@@ -211,23 +205,11 @@ export function BrowsePage() {
             <FavoritesShelf
               onViewAll={() => handleViewAll({ favoritesOnly: true })}
             />
-
-            {connectedProviders.map((provider) => (
-              <ProviderShelf
-                key={provider}
-                provider={provider}
-                onViewAll={() => handleViewAll({ provider })}
-              />
-            ))}
-
-            {topFolders.map((f) => (
-              <FolderShelf
-                key={f.folder}
-                folder={f.folder}
-                onViewAll={() => handleViewAll({ folder: f.folder })}
-              />
-            ))}
           </div>
+
+          {/* Folder organizer (M9 FR-7.4): tree + contents + provider
+              chips — replaces the old By Provider / By Folder shelves. */}
+          <FolderOrganizer connectedProviders={connectedProviders} />
         </>
       )}
 
@@ -296,8 +278,6 @@ export function BrowsePage() {
 // ---------------------------------------------------------------------------
 
 interface ViewAllFilter {
-  provider?: string;
-  folder?: string;
   favoritesOnly?: boolean;
 }
 
@@ -366,58 +346,6 @@ function FavoritesShelf({ onViewAll }: { onViewAll: () => void }) {
       totalCount={query.data.total}
       onViewAll={onViewAll}
       compact
-    />
-  );
-}
-
-function ProviderShelf({
-  provider,
-  onViewAll,
-}: {
-  provider: ProviderKey;
-  onViewAll: () => void;
-}) {
-  const query = useVideos({
-    page: 1,
-    sort: "date-desc",
-    limit: 20,
-    provider,
-  });
-  if (query.isLoading) return null;
-  if (query.isError) return <ShelfError title={PROVIDER_LABELS[provider]} />;
-  if (!query.data || query.data.videos.length === 0) return null;
-  return (
-    <Shelf
-      title={PROVIDER_LABELS[provider]}
-      videos={query.data.videos}
-      totalCount={query.data.total}
-      onViewAll={onViewAll}
-    />
-  );
-}
-
-function FolderShelf({
-  folder,
-  onViewAll,
-}: {
-  folder: string;
-  onViewAll: () => void;
-}) {
-  const query = useVideos({
-    page: 1,
-    sort: "date-desc",
-    limit: 20,
-    folder,
-  });
-  if (query.isLoading) return null;
-  if (query.isError) return <ShelfError title={folder} />;
-  if (!query.data || query.data.videos.length === 0) return null;
-  return (
-    <Shelf
-      title={folder}
-      videos={query.data.videos}
-      totalCount={query.data.total}
-      onViewAll={onViewAll}
     />
   );
 }
