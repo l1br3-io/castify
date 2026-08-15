@@ -70,6 +70,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 | M7 — Adaptive bitrate | Shipped |
 | M8 — Advanced subtitles | Shipped |
 | Lossless Reconnect | Shipped (corrective) |
+| M9 — Redesign the home page | In progress |
 
 Dependency sequencing for the self-hosted arc: M3.5 → M4 → M5 → M6 (needs M4+M5) →
 {M7, M8} (each needs M6; M7 and M8 are independent of each other).

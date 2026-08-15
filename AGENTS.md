@@ -5,11 +5,11 @@
 Castify is a free, open-source personal media server (Rust workspace + Vite/React SPA).
 Connect cloud providers, unify them into one catalog, browse, and play. See
 [`docs/VISION.md`](docs/VISION.md) for the *why* and [`docs/ROADMAP.md`](docs/ROADMAP.md)
-for direction + the delivery lifecycle. The current effort (M8 — Advanced subtitles)
-lives under [`docs/specs/advanced-subtitles/`](docs/specs/advanced-subtitles/):
-[`spec.md`](docs/specs/advanced-subtitles/spec.md) +
-[`plan.md`](docs/specs/advanced-subtitles/plan.md) +
-[`todo.md`](docs/specs/advanced-subtitles/todo.md).
+for direction + the delivery lifecycle. The current effort (M9 — Redesign the
+home page) lives under
+[`docs/specs/home-redesign/`](docs/specs/home-redesign/):
+[`spec.md`](docs/specs/home-redesign/spec.md) (drafted; `plan.md` +
+`todo.md` land with `/planning`).
 
 ## Commands
 
@@ -46,9 +46,9 @@ One directory per effort, in place forever: each effort lives at
 `docs/specs/<effort-slug>/` with `spec.md` + `plan.md` + `todo.md`. Status lives in the
 spec.md frontmatter (`status: draft | active | shipped`) and the todo.md checkboxes —
 not in a duplicate table elsewhere. Shipped efforts stay put; their spec.md frontmatter
-flips to `status: shipped` (no archive step). Past efforts: M0–M7 under
-[`docs/specs/`](docs/specs/) (each `mN-*` directory); current effort: M8 at
-[`docs/specs/advanced-subtitles/`](docs/specs/advanced-subtitles/).
+flips to `status: shipped` (no archive step). Past efforts: M0–M8 + Lossless
+Reconnect under [`docs/specs/`](docs/specs/); current effort: M9 at
+[`docs/specs/home-redesign/`](docs/specs/home-redesign/).
 
 ## Boundaries
 
