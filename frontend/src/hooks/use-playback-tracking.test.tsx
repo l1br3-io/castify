@@ -83,10 +83,21 @@ function makeEntry(overrides: Partial<ProgressEntry> = {}): ProgressEntry {
   };
 }
 
-/** Wait for the IndexedDB read in the hook's mount effect to settle. */
+/**
+ * Wait for the IndexedDB read in the hook's mount effect to settle AND
+ * commit. The main effect attaches its media listeners only after the
+ * `savedProgress` state update commits, which lags the `getProgress`
+ * call by a promise resolution + render — waiting on the call alone
+ * leaves a scheduler-dependent window where `fireEvent(pause)` & co.
+ * dispatch before the listener exists (flaky "0 times" failures).
+ */
 async function waitForIdbLoad() {
   await waitFor(() => {
     expect(mockGetProgress).toHaveBeenCalled();
+  });
+  const results = mockGetProgress.mock.results;
+  await act(async () => {
+    await results[results.length - 1]?.value;
   });
 }
 
