@@ -23,10 +23,9 @@ use castify_auth::{NewOwner, SessionToken};
 use crate::cookies::build_session_cookie;
 use crate::dto::OwnerDto;
 use crate::error::{ApiError, ApiResult};
+use crate::routes::validate_password;
 use crate::state::AppState;
 
-const MIN_PASSWORD_LEN: usize = 8;
-const MAX_PASSWORD_LEN: usize = 256;
 const MAX_DISPLAY_NAME_LEN: usize = 80;
 
 /// Read-only owner-existence probe used by the SPA's cold-cache router.
@@ -98,21 +97,6 @@ pub async fn setup_password(
     }
     let _ = jar;
     Ok(response)
-}
-
-fn validate_password(password: &str) -> ApiResult<()> {
-    let len = password.chars().count();
-    if len < MIN_PASSWORD_LEN {
-        return Err(ApiError::Validation {
-            detail: format!("password must be at least {MIN_PASSWORD_LEN} characters"),
-        });
-    }
-    if len > MAX_PASSWORD_LEN {
-        return Err(ApiError::Validation {
-            detail: format!("password must be at most {MAX_PASSWORD_LEN} characters"),
-        });
-    }
-    Ok(())
 }
 
 fn validate_display_name(name: Option<&str>) -> ApiResult<()> {

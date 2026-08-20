@@ -150,4 +150,63 @@ impl AuthRepository {
             .await?;
         Ok(())
     }
+
+    /// Revoke every session belonging to the owner. Used by password change
+    /// and the reset-password CLI: once credentials rotate, all previously
+    /// issued sessions — including the one making the request — must die.
+    /// Returns the number of sessions removed.
+    pub async fn delete_all_sessions(&self, owner_id: &Uuid) -> AuthResult<u64> {
+        let result = sqlx::query("DELETE FROM sessions WHERE owner_id = ?")
+            .bind(owner_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::NewOwner;
+
+    async fn fresh_pool() -> SqlitePool {
+        let file = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let path = file.to_path_buf();
+        std::mem::forget(file); // keep file alive for test
+        let pool = castify_storage::connect(&path).await.unwrap();
+        castify_storage::run_migrations(&pool).await.unwrap();
+        pool
+    }
+
+    async fn owner_with_sessions(repo: &AuthRepository, sessions: usize) -> Uuid {
+        let owner = repo.create_owner(&NewOwner::new(None)).await.unwrap();
+        for _ in 0..sessions {
+            repo.create_session(&owner.id, None).await.unwrap();
+        }
+        owner.id
+    }
+
+    async fn session_count(repo: &AuthRepository, owner_id: &Uuid) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE owner_id = ?")
+            .bind(owner_id.to_string())
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap()
+    }
+
+    /// `delete_all_sessions` is owner-scoped: it removes every session for
+    /// the target owner (all devices) and spares other owners' sessions.
+    #[tokio::test]
+    async fn delete_all_sessions_removes_only_target_owners_sessions() {
+        let repo = AuthRepository::new(fresh_pool().await);
+        let a = owner_with_sessions(&repo, 3).await;
+        let b = owner_with_sessions(&repo, 2).await;
+        assert_eq!(session_count(&repo, &a).await, 3);
+        assert_eq!(session_count(&repo, &b).await, 2);
+
+        let removed = repo.delete_all_sessions(&a).await.unwrap();
+        assert_eq!(removed, 3, "every session of the target owner dies");
+        assert_eq!(session_count(&repo, &a).await, 0);
+        assert_eq!(session_count(&repo, &b).await, 2, "other owners untouched");
+    }
 }
