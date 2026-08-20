@@ -7,7 +7,7 @@
 // `['session']` query, navigate to `/`.
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError } from "../api/client";
@@ -26,6 +26,8 @@ export function LoginPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const passwordChanged = searchParams.get("password_changed") === "1";
 
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -60,6 +62,25 @@ export function LoginPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
         <p className="mt-1 text-sm opacity-70">Welcome back.</p>
       </div>
+
+      {passwordChanged && (
+        <div className="flex items-center justify-between gap-3 rounded-[var(--radius-button)] border border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent-subtle)] px-4 py-2.5 text-sm">
+          <span>
+            Password changed — please sign in with your new password.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              searchParams.delete("password_changed");
+              setSearchParams(searchParams, { replace: true });
+            }}
+            className="shrink-0 opacity-60 transition hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <form
         className="space-y-4"
