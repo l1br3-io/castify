@@ -512,6 +512,13 @@ impl CatalogRepository {
     /// probe, or FTS side effects. Identity is `(connection_id,
     /// provider_file_id)`, mirroring `upsert_video`, so rescans refresh
     /// rather than duplicate.
+    ///
+    /// Also demotes: deletes any `videos` row sharing the file's
+    /// `(connection_id, provider_file_id)` — the file was previously
+    /// cataloged as a video under an older classification gate (e.g. a
+    /// `.ts` before the MPEG-TS/TypeScript corroboration). Cascades clean
+    /// up the video's dependents; scans are upsert-only, so without this
+    /// the stale row would survive every rescan.
     pub async fn upsert_file(
         &self,
         connection_id: &str,
@@ -542,6 +549,12 @@ impl CatalogRepository {
         .bind(&now)
         .execute(&self.pool)
         .await?;
+
+        sqlx::query("DELETE FROM videos WHERE connection_id = ? AND provider_file_id = ?")
+            .bind(connection_id)
+            .bind(&file.provider_file_id)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }

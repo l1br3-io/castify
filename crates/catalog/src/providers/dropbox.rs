@@ -897,6 +897,27 @@ mod tests {
         assert!(!is_video_entry(&entry));
     }
 
+    /// `.ts` is ambiguous (MPEG-TS video vs TypeScript source). Dropbox
+    /// listings carry no MIME type, so only Dropbox's own media analysis
+    /// (`media_info` video tag) can corroborate a `.ts` as a video.
+    #[test]
+    fn is_video_entry_requires_media_info_for_ts() {
+        // No media_info → not a video (TypeScript source).
+        let entry_json = r#"{ ".tag": "file", "id": "id:1", "name": "main.ts" }"#;
+        let entry: DropboxEntry = serde_json::from_str(entry_json).unwrap();
+        assert!(!is_video_entry(&entry));
+
+        // media_info video tag → MPEG-TS video.
+        let entry_json = r#"{
+            ".tag": "file",
+            "id": "id:2",
+            "name": "recording.ts",
+            "media_info": { ".tag": "metadata", "metadata": { ".tag": "video" } }
+        }"#;
+        let entry: DropboxEntry = serde_json::from_str(entry_json).unwrap();
+        assert!(is_video_entry(&entry));
+    }
+
     /// M9: non-video, non-sidecar files are emitted as `DiscoveredFile`
     /// rows instead of being dropped; sidecars are dual-represented.
     #[test]

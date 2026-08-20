@@ -7,8 +7,8 @@ use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
-    has_subtitle_extension, has_video_extension, infer_image_mime, response_to_stream, to_hex,
-    TokenResponse,
+    has_subtitle_extension, has_video_extension, infer_image_mime, is_mpeg_ts_name,
+    response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
@@ -273,16 +273,37 @@ struct MeResponse {
 
 // ── Video classification ────────────────────────────────────────────
 
-/// A drive item is a video if it's a file AND either the `video` facet is
-/// present, or the file extension is a known video type.
+/// A drive item is a video if it's a file AND either the `video` facet
+/// carries actual metadata, or the file extension is a known video type.
+///
+/// Graph materializes explicitly `$select`ed facets as empty objects —
+/// `"video": {}` comes back on non-video items (and on videos Graph hasn't
+/// analyzed yet). An empty facet must NOT gate a file into `videos`, or
+/// every file in the drive gets cataloged as a video. Same stance as
+/// Drive's `classify_drive_file`: a known extension (or here, a facet with
+/// at least one populated field) is required before classifying as video.
 fn is_video_item(item: &DriveItem) -> bool {
     if item.file.is_none() {
         return false;
     }
-    if item.video.is_some() {
+    if item
+        .video
+        .as_ref()
+        .is_some_and(|v| v.duration.is_some() || v.width.is_some() || v.height.is_some())
+    {
         return true;
     }
-    has_video_extension(&item.name)
+    if has_video_extension(&item.name) {
+        return true;
+    }
+    // `.ts` is ambiguous (MPEG-TS video vs TypeScript source); the
+    // `video/mp2t` MIME corroborates when Graph hasn't analyzed the file.
+    is_mpeg_ts_name(&item.name)
+        && item
+            .file
+            .as_ref()
+            .and_then(|f| f.mime_type.as_deref())
+            .is_some_and(|m| m.eq_ignore_ascii_case("video/mp2t"))
 }
 
 /// Partition a delta page into (videos, sidecar subtitles, non-media
@@ -910,6 +931,59 @@ mod tests {
         let json = r#"{ "id": "4", "name": "videos.mp4" }"#;
         let item: DriveItem = serde_json::from_str(json).unwrap();
         assert!(!is_video_item(&item));
+    }
+
+    /// Regression: Graph materializes `$select`ed facets as empty objects —
+    /// `"video": {}` appears on non-video files. An empty facet must not
+    /// classify the file as a video (every file in the drive would become
+    /// one).
+    #[test]
+    fn is_video_item_rejects_empty_video_facet() {
+        // Empty facet on a non-video file → not a video.
+        let json = r#"{ "id": "1", "name": "notes.txt",
+            "file": { "mimeType": "text/plain" }, "video": {} }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(!is_video_item(&item));
+
+        // Empty facet + known video extension → still a video.
+        let json = r#"{ "id": "2", "name": "clip.mp4",
+            "file": { "mimeType": "video/mp4" }, "video": {} }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(is_video_item(&item));
+
+        // Populated facet on an unrecognized extension → video (Graph
+        // analyzed it; trust the metadata).
+        let json = r#"{ "id": "3", "name": "clip.m2ts",
+            "file": { "mimeType": "application/octet-stream" },
+            "video": { "duration": 1000, "width": 1920, "height": 1080 } }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(is_video_item(&item));
+    }
+
+    /// `.ts` is ambiguous (MPEG-TS video vs TypeScript source). The
+    /// extension alone must not gate it into `videos`; a populated video
+    /// facet (Graph's analysis) or the `video/mp2t` MIME corroborates.
+    #[test]
+    fn is_video_item_requires_corroboration_for_ts() {
+        // TypeScript source: empty facet + generic MIME → file.
+        let json = r#"{ "id": "1", "name": "main.ts",
+            "file": { "mimeType": "application/octet-stream" }, "video": {} }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(!is_video_item(&item));
+
+        // MPEG-TS corroborated by MIME alone (Graph hasn't analyzed it).
+        let json = r#"{ "id": "2", "name": "recording.ts",
+            "file": { "mimeType": "video/mp2t" }, "video": {} }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(is_video_item(&item));
+
+        // MPEG-TS corroborated by a populated facet (analysis wins even
+        // with an octet-stream MIME).
+        let json = r#"{ "id": "3", "name": "REC.TS",
+            "file": { "mimeType": "application/octet-stream" },
+            "video": { "duration": 1000 } }"#;
+        let item: DriveItem = serde_json::from_str(json).unwrap();
+        assert!(is_video_item(&item));
     }
 
     #[test]

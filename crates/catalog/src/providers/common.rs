@@ -15,7 +15,16 @@ use crate::provider::{ProviderError, ProviderResult, StreamResponse};
 pub(crate) const TOKEN_BUFFER_SECS: i64 = 60;
 
 /// Known video file extensions. Used by providers without a server-side MIME
-/// filter (Dropbox, OneDrive) to classify videos client-side.
+/// filter (Dropbox, OneDrive) to classify videos client-side, and by the
+/// playback helpers (`video_base_name`, `infer_mime_type`) for files already
+/// gated into `videos`.
+///
+/// `.ts` sits in this list for MPEG-TS playback support, but it collides with
+/// TypeScript source files — so the video *gate* ([`has_video_extension`])
+/// excludes it. A `.ts` is only cataloged as a video when the provider
+/// corroborates it with server-side analysis (Drive `videoMediaMetadata` or
+/// `video/mp2t` MIME, OneDrive populated `video` facet or `video/mp2t` MIME,
+/// Dropbox `media_info` video tag); see [`is_mpeg_ts_name`].
 pub(crate) const VIDEO_EXTENSIONS: &[&str] = &[
     ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts", ".wmv", ".flv",
 ];
@@ -173,10 +182,23 @@ fn is_invalid_grant(body: &str) -> bool {
 }
 
 /// Returns true if the filename ends with a known video extension
-/// (case-insensitive).
+/// (case-insensitive) — EXCEPT `.ts`, which is ambiguous (MPEG-TS video vs
+/// TypeScript source) and must be corroborated by the provider before being
+/// cataloged as a video ([`is_mpeg_ts_name`]).
 pub(crate) fn has_video_extension(name: &str) -> bool {
     let lower = name.to_lowercase();
+    if is_mpeg_ts_name(&lower) {
+        return false;
+    }
     VIDEO_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
+/// True when the name's extension is `.ts` (case-insensitive) — the
+/// MPEG-TS/TypeScript collision. Callers combine this with a
+/// provider-specific corroboration signal (provider media analysis or
+/// `video/mp2t` MIME) before cataloging the file as a video.
+pub(crate) fn is_mpeg_ts_name(name: &str) -> bool {
+    name.to_lowercase().ends_with(".ts")
 }
 
 /// Returns true if the filename ends with a known subtitle extension
@@ -478,6 +500,27 @@ mod tests {
         assert!(has_video_extension("a.b.c.mkv"));
         assert!(!has_video_extension("photo.jpg"));
         assert!(!has_video_extension("noext"));
+    }
+
+    #[test]
+    fn has_video_extension_rejects_ambiguous_ts() {
+        // `.ts` collides with TypeScript source — extension alone must not
+        // gate a file into `videos`. Providers corroborate `.ts` against
+        // server-side analysis before classifying it as a video.
+        assert!(!has_video_extension("main.ts"));
+        assert!(!has_video_extension("component.TS"));
+        assert!(!has_video_extension("app.module.ts"));
+        // Look-alikes are not `.ts`.
+        assert!(!has_video_extension("view.tsx"));
+    }
+
+    #[test]
+    fn is_mpeg_ts_name_detects_ts_extension_only() {
+        assert!(is_mpeg_ts_name("recording.ts"));
+        assert!(is_mpeg_ts_name("REC.TS"));
+        assert!(!is_mpeg_ts_name("view.tsx"));
+        assert!(!is_mpeg_ts_name("clip.mp4"));
+        assert!(!is_mpeg_ts_name("notes.txt"));
     }
 
     #[test]

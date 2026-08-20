@@ -692,6 +692,65 @@ mod tests {
         assert_eq!(scan.videos_found, 1);
     }
 
+    /// Reclassification demotion: when a scan now emits a file whose
+    /// `(connection, provider_file_id)` matches a stale `videos` row (e.g.
+    /// a `.ts` cataloged before the MPEG-TS/TypeScript corroboration gate),
+    /// the video row is deleted — the file row replaces it. Without this,
+    /// misclassified rows survive every rescan (upsert-only, no prune).
+    #[tokio::test]
+    async fn scan_demotes_stale_video_rows_reclassified_as_files() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Pre-fix catalog state: main.ts was (mis)classified as a video.
+        let stale = NewVideo::from_discovered(&discovered("f9", "main.ts", 100));
+        repo.upsert_video(&conn_id, Provider::GoogleDrive, &stale)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            1,
+            "precondition: stale video row exists"
+        );
+
+        let factory = MockFactory {
+            pages: vec![ListPage {
+                videos: vec![],
+                subtitles: vec![],
+                files: vec![DiscoveredFile {
+                    provider_file_id: "f9".into(),
+                    name: "main.ts".into(),
+                    path: Some("/dev/src/main.ts".into()),
+                    size_bytes: 100,
+                    mime_type: Some("text/x-typescript".into()),
+                    kind: FileKind::Other,
+                    provider_modified_at: None,
+                }],
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            prefix_hashes: HashMap::new(),
+            fail_prefix: true,
+            refresh_count: Arc::new(AtomicU32::new(0)),
+        };
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(factory),
+        )
+        .await;
+
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            0,
+            "stale video row demoted"
+        );
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn scan_sets_error_on_failure() {
         let pool = fresh_pool().await;

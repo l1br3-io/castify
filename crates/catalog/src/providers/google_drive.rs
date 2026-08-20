@@ -10,8 +10,8 @@ use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
-    has_subtitle_extension, has_video_extension, infer_image_mime, response_to_stream, to_hex,
-    TokenResponse,
+    has_subtitle_extension, has_video_extension, infer_image_mime, is_mpeg_ts_name,
+    response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -982,11 +982,33 @@ enum DriveFileClass {
 fn classify_drive_file(file: &DriveFile) -> DriveFileClass {
     if has_subtitle_extension(&file.name) {
         DriveFileClass::Subtitle
-    } else if has_video_extension(&file.name) {
+    } else if drive_video_corroborated(file) {
         DriveFileClass::Video
     } else {
         DriveFileClass::File(classify_kind(&file.name, Some(&file.mime_type)))
     }
+}
+
+/// The video gate: an unambiguous video extension, OR a `.ts` corroborated
+/// by Drive-side analysis — `videoMediaMetadata` with at least one populated
+/// field, or the `video/mp2t` MIME. A TypeScript `main.ts` carries neither
+/// (generic octet-stream MIME, no media metadata).
+fn drive_video_corroborated(file: &DriveFile) -> bool {
+    if has_video_extension(&file.name) {
+        return true;
+    }
+    if is_mpeg_ts_name(&file.name) {
+        let analyzed = file
+            .video_media_metadata
+            .as_ref()
+            .is_some_and(|m| {
+                m.duration_millis.is_some() || m.width.is_some() || m.height.is_some()
+            });
+        if analyzed || file.mime_type.eq_ignore_ascii_case("video/mp2t") {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -1302,6 +1324,55 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn classify_drive_file_requires_corroboration_for_ts() {
+        fn ts_file(name: &str, mime: &str) -> DriveFile {
+            DriveFile {
+                id: "x".into(),
+                name: name.into(),
+                mime_type: mime.into(),
+                size: None,
+                modified_time: None,
+                md5_checksum: None,
+                sha256_checksum: None,
+                video_media_metadata: None,
+                parents: None,
+            }
+        }
+
+        // TypeScript source: no videoMediaMetadata, generic MIME → file.
+        let ts_source = ts_file("main.ts", "application/octet-stream");
+        assert_eq!(
+            classify_drive_file(&ts_source),
+            DriveFileClass::File(FileKind::Other)
+        );
+
+        // MPEG-TS corroborated by Drive's video analysis → video.
+        let mut analyzed = ts_file("recording.ts", "application/octet-stream");
+        analyzed.video_media_metadata = Some(DriveVideoMetadata {
+            duration_millis: Some("60000".into()),
+            width: Some(1280),
+            height: Some(720),
+        });
+        assert_eq!(classify_drive_file(&analyzed), DriveFileClass::Video);
+
+        // MPEG-TS corroborated by MIME alone (not yet analyzed) → video.
+        let by_mime = ts_file("REC.TS", "video/mp2t");
+        assert_eq!(classify_drive_file(&by_mime), DriveFileClass::Video);
+
+        // An empty videoMediaMetadata object corroborates nothing.
+        let mut empty_metadata = ts_file("empty.ts", "application/octet-stream");
+        empty_metadata.video_media_metadata = Some(DriveVideoMetadata {
+            duration_millis: None,
+            width: None,
+            height: None,
+        });
+        assert_eq!(
+            classify_drive_file(&empty_metadata),
+            DriveFileClass::File(FileKind::Other)
+        );
     }
 
     #[test]
