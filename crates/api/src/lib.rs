@@ -1,5 +1,6 @@
 pub mod app;
 pub mod auth;
+pub mod cli;
 pub mod cookies;
 pub mod dto;
 pub mod error;

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use castify_api::app::build_app;
+use castify_api::cli;
 use castify_api::shutdown::shutdown_signal;
 use castify_api::state::AppState;
 use castify_api::tracing_init::init_tracing;
@@ -15,6 +16,35 @@ async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
 
     let config = Config::from_env().context("failed to load configuration")?;
+
+    // Dispatch is additive: no args / `serve` boots the server exactly as
+    // before; `reset-password` runs the recovery path instead. It is
+    // non-interactive (no TTY prompt) — intended for the host or
+    // `docker exec` next to the database. Tracing is initialized inside
+    // `serve` only, so JSON logs can never bury the one-time password print.
+    match std::env::args().nth(1).as_deref() {
+        None | Some("serve") => serve(config).await,
+        Some("reset-password") => {
+            match cli::reset_password(&config).await {
+                Ok(temp) => {
+                    println!("Temporary password: {temp}");
+                    println!("Change it immediately: sign in, then Settings → Change password.");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("reset-password failed: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(_) => {
+            eprintln!("{}", cli::USAGE);
+            std::process::exit(2);
+        }
+    }
+}
+
+async fn serve(config: Config) -> anyhow::Result<()> {
     init_tracing(&config);
 
     tracing::info!(
