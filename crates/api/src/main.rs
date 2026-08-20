@@ -24,19 +24,17 @@ async fn main() -> anyhow::Result<()> {
     // `serve` only, so JSON logs can never bury the one-time password print.
     match std::env::args().nth(1).as_deref() {
         None | Some("serve") => serve(config).await,
-        Some("reset-password") => {
-            match cli::reset_password(&config).await {
-                Ok(temp) => {
-                    println!("Temporary password: {temp}");
-                    println!("Change it immediately: sign in, then Settings → Change password.");
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("reset-password failed: {e:#}");
-                    std::process::exit(1);
-                }
+        Some("reset-password") => match cli::reset_password(&config).await {
+            Ok(temp) => {
+                println!("Temporary password: {temp}");
+                println!("Change it immediately: sign in, then Settings → Change password.");
+                Ok(())
             }
-        }
+            Err(e) => {
+                eprintln!("reset-password failed: {e:#}");
+                std::process::exit(1);
+            }
+        },
         Some(_) => {
             eprintln!("{}", cli::USAGE);
             std::process::exit(2);

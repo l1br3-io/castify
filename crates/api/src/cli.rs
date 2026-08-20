@@ -3,7 +3,8 @@
 //!
 //! `reset-password` is the locked-out recovery path. It is non-interactive
 //! (no TTY prompt): run it on the host next to the database — in Docker,
-//! `docker exec <container> castify reset-password` — and it prints a
+//! `docker exec <container> /castify reset-password` (absolute path: the
+//! distroless image has no shell and no PATH resolution) — and it prints a
 //! one-time temp password to stdout. The password is never routed through
 //! `tracing` (JSON logs share stdout and would leak/bury it); the single
 //! `println!` in `main.rs` is the only emission.

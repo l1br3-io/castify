@@ -167,7 +167,8 @@ pub async fn change_password(
 
     let phc = hash_password(&req.new_password)?;
     repo.set_password(&owner_id, &phc).await?;
-    repo.delete_all_sessions(&owner_id).await?;
+    let revoked = repo.delete_all_sessions(&owner_id).await?;
+    tracing::info!(owner_id = %owner_id, sessions_revoked = revoked, "password changed; all sessions revoked");
 
     let cookie = clear_session_cookie(state.config());
     let mut response = Response::new(axum::body::Body::empty());

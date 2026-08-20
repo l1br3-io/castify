@@ -154,6 +154,32 @@ async fn try_login(app: axum::Router, password: &str) -> (StatusCode, Value) {
     (status, value)
 }
 
+/// Login via `POST /api/session` and return the `castify_session=<value>`
+/// cookie — a second "device" distinct from the setup session.
+async fn login_session(app: axum::Router, password: &str) -> String {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/session")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from(
+                    serde_json::json!({"password": password}).to_string(),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "login must succeed");
+    let raw = response
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .expect("login sets a cookie")
+        .to_str()
+        .unwrap();
+    raw.split(';').next().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn change_password_returns_204_and_revokes_every_session() {
     let (app, cookie, _guard) = boot_and_setup().await;
@@ -185,6 +211,35 @@ async fn change_password_returns_204_and_revokes_every_session() {
     assert_eq!(status, StatusCode::OK, "new password must log in");
     let (status, _body) = try_login(app, PASSWORD).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "old password must fail");
+}
+
+/// The effort's headline guarantee, observed through the HTTP endpoint:
+/// a change on device A kills device B's session too — every previously
+/// issued cookie 401s afterwards, not just the acting browser's.
+#[tokio::test]
+async fn change_password_revokes_sessions_of_other_devices() {
+    let (app, cookie_a, _guard) = boot_and_setup().await;
+    let cookie_b = login_session(app.clone(), PASSWORD).await;
+    assert_eq!(get_session(app.clone(), &cookie_b).await, StatusCode::OK);
+
+    let csrf = fetch_csrf(app.clone(), &cookie_a).await;
+    let (status, body, _) = put_password(
+        app.clone(),
+        Some(&cookie_a),
+        Some(&csrf),
+        PASSWORD,
+        NEW_PASSWORD,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body = {body}");
+
+    // Device B did not make the request, but its session dies all the same.
+    assert_eq!(
+        get_session(app.clone(), &cookie_b).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // The acting browser (device A) is signed out too.
+    assert_eq!(get_session(app, &cookie_a).await, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

@@ -4,9 +4,10 @@ use rand::rngs::OsRng;
 
 use crate::error::AuthError;
 
-/// Unambiguous alphabet for generated temp passwords: `0O1lI` are excluded
+/// Unambiguous alphabet for generated temp passwords: `0O1lIo` are excluded
+/// (spec requires `0O1lI`; `o` is excluded too so `o`/`0` can't be confused)
 /// so the password survives being read aloud or retyped by a locked-out
-/// owner. 24 upper + 25 lower + 8 digits = 57 characters.
+/// owner. 24 upper + 24 lower + 8 digits = 56 characters.
 const TEMP_PASSWORD_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
 const TEMP_PASSWORD_LEN: usize = 20;
 
@@ -69,7 +70,7 @@ mod tests {
             let p = generate_temp_password();
             assert_eq!(p.chars().count(), 20, "got {p}");
             assert!(p.chars().all(|c| c.is_ascii_alphanumeric()), "got {p}");
-            for ambiguous in ['0', 'O', '1', 'l', 'I'] {
+            for ambiguous in ['0', 'O', '1', 'l', 'I', 'o'] {
                 assert!(!p.contains(ambiguous), "{ambiguous} in {p}");
             }
         }

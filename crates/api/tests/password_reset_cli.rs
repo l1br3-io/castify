@@ -30,7 +30,12 @@ async fn post_json(app: axum::Router, uri: &str, body: Value) -> StatusCode {
 async fn setup_owner(state: &castify_api::state::AppState) {
     let app = build_app(state.clone());
     assert_eq!(
-        post_json(app, "/api/setup", json!({"display_name":"Jane","password":PASSWORD})).await,
+        post_json(
+            app,
+            "/api/setup",
+            json!({"display_name":"Jane","password":PASSWORD})
+        )
+        .await,
         StatusCode::OK,
         "setup must succeed first"
     );
@@ -45,7 +50,12 @@ async fn reset_password_installs_temp_password_and_revokes_all_sessions() {
     setup_owner(&state).await;
     // A second login = a second session to revoke.
     assert_eq!(
-        post_json(build_app(state.clone()), "/api/session", json!({"password":PASSWORD})).await,
+        post_json(
+            build_app(state.clone()),
+            "/api/session",
+            json!({"password":PASSWORD})
+        )
+        .await,
         StatusCode::OK
     );
 
