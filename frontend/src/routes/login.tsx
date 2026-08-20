@@ -117,6 +117,13 @@ export function LoginPage() {
           <p className="text-sm text-red-400">{passwordError}</p>
         )}
       </form>
+
+      <p className="text-xs opacity-60">
+        Locked out? Reset your password from the server shell:{" "}
+        <code className="rounded bg-[var(--color-castify-muted)]/20 px-1.5 py-0.5 font-mono">
+          castify reset-password
+        </code>
+      </p>
     </section>
   );
 }

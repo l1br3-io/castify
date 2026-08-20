@@ -37,6 +37,18 @@ describe("LoginPage", () => {
     });
   });
 
+  it("shows the CLI lockout hint", () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      { initialEntries: ["/login"] },
+    );
+
+    expect(screen.getByText(/Locked out\?/)).toBeInTheDocument();
+    expect(screen.getByText("castify reset-password")).toBeInTheDocument();
+  });
+
   it("shows the password-changed notice when arriving with ?password_changed=1", () => {
     renderWithProviders(
       <Routes>
