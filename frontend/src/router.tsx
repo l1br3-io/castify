@@ -4,6 +4,7 @@ import { ConnectionsPage } from "./routes/connections";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
 import { NotFoundPage } from "./routes/not-found";
+import { SettingsPage } from "./routes/settings";
 import { SetupPage } from "./routes/setup";
 import { WatchPage } from "./routes/watch";
 import { requireSessionLoader, setupLoader } from "./auth/require-session";
@@ -21,6 +22,11 @@ export const router = createBrowserRouter([
       {
         path: "connections",
         element: <ConnectionsPage />,
+        loader: requireSessionLoader,
+      },
+      {
+        path: "settings",
+        element: <SettingsPage />,
         loader: requireSessionLoader,
       },
       {

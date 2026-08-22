@@ -37,6 +37,31 @@ describe("LoginPage", () => {
     });
   });
 
+  it("shows the CLI lockout hint", () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      { initialEntries: ["/login"] },
+    );
+
+    expect(screen.getByText(/Locked out\?/)).toBeInTheDocument();
+    expect(screen.getByText("castify reset-password")).toBeInTheDocument();
+  });
+
+  it("shows the password-changed notice when arriving with ?password_changed=1", () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      { initialEntries: ["/login?password_changed=1"] },
+    );
+
+    expect(
+      screen.getByText("Password changed — please sign in with your new password."),
+    ).toBeInTheDocument();
+  });
+
   it("navigates home on successful password login", async () => {
     const owner = { id: "u1", display_name: "Alex" };
 

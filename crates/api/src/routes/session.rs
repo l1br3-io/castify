@@ -1,9 +1,11 @@
 //! Session lifecycle endpoints for the existing (single-owner) instance.
 //!
-//! Three handlers:
+//! Four handlers:
 //!   * `POST /api/session` — password login, issues a session cookie.
 //!   * `GET  /api/session` — returns the owner for the current session, or 401.
 //!   * `DELETE /api/session` — invalidates the current session and clears the cookie.
+//!   * `PUT  /api/session/password` — rotates the owner password, revoking
+//!     every session (see [`change_password`]).
 //!
 //! Login is single-owner in M0: there's no per-user lookup, only password
 //! verification against the one owner row. `display_name` is accepted for
@@ -17,12 +19,13 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use castify_auth::password::verify_password;
+use castify_auth::password::{hash_password, verify_password};
 use castify_auth::{AuthError, SessionToken};
 
 use crate::cookies::{build_session_cookie, clear_session_cookie, extract_session_id};
 use crate::dto::OwnerDto;
 use crate::error::{ApiError, ApiResult};
+use crate::routes::validate_password;
 use crate::state::AppState;
 
 const MAX_DISPLAY_NAME_LEN: usize = 80;
@@ -120,4 +123,58 @@ fn validate_display_name(name: &str) -> ApiResult<()> {
         });
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Replace the owner's password and revoke every session.
+///
+/// Verifies `current_password` (401 on mismatch with the same generic
+/// `InvalidCredentials` error as login failure — no oracle distinguishing a
+/// wrong password from any other credential problem), validates the new
+/// password with the shared setup rules, then writes the new hash **before**
+/// revoking sessions. Response is `204 No Content` with a cleared session
+/// cookie: the acting browser lands on the login screen alongside every
+/// other device.
+///
+/// GOTCHA: the hash write must precede the session purge. If the purge ran
+/// first and the hash write failed mid-flight, the *old* password would
+/// guard zero live sessions — the owner would be locked out of devices with
+/// no recovery but the old (unknown-at-that-point) credential. With this
+/// ordering, the worst mid-flight failure leaves the new password guarding
+/// still-live sessions, which the owner can simply retry.
+pub async fn change_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<ChangePasswordRequest>,
+) -> ApiResult<Response> {
+    let session_id = extract_session_id(&jar, state.session_secret())
+        .ok_or(ApiError::Auth(AuthError::InvalidSession))?;
+    let repo = state.repository();
+    let owner_id = repo.validate_session(&session_id).await?;
+
+    let stored_phc = repo
+        .fetch_password_hash(&owner_id)
+        .await?
+        .ok_or(ApiError::Auth(AuthError::InvalidCredentials))?;
+    verify_password(&req.current_password, &stored_phc)?;
+
+    validate_password(&req.new_password)?;
+
+    let phc = hash_password(&req.new_password)?;
+    repo.set_password(&owner_id, &phc).await?;
+    let revoked = repo.delete_all_sessions(&owner_id).await?;
+    tracing::info!(owner_id = %owner_id, sessions_revoked = revoked, "password changed; all sessions revoked");
+
+    let cookie = clear_session_cookie(state.config());
+    let mut response = Response::new(axum::body::Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    if let Ok(value) = HeaderValue::from_str(&cookie.to_string()) {
+        response.headers_mut().insert(SET_COOKIE, value);
+    }
+    Ok(response)
 }

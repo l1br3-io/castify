@@ -59,6 +59,9 @@ export function AppLayout() {
                 <NavLink to="/connections" className={NAV_LINK_CLASS}>
                   Connections
                 </NavLink>
+                <NavLink to="/settings" className={NAV_LINK_CLASS}>
+                  Settings
+                </NavLink>
               </nav>
             )}
           </div>

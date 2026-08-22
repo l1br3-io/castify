@@ -25,6 +25,10 @@ pub fn build_app(state: AppState) -> Router {
                 .get(session::get_session)
                 .delete(session::logout),
         )
+        .route(
+            "/api/session/password",
+            axum::routing::put(session::change_password),
+        )
         .route("/api/connections", axum::routing::get(connections::list))
         .route(
             "/api/connections/available",

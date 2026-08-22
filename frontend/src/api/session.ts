@@ -47,6 +47,25 @@ export async function loginPassword(input: LoginPasswordInput): Promise<OwnerDto
   return body.owner;
 }
 
+export interface ChangePasswordInput {
+  current_password: string;
+  new_password: string;
+}
+
+/**
+ * Rotate the owner password via `PUT /api/session/password`. On success the
+ * server revokes every session (including the caller's) and clears the
+ * session cookie — resolves void on 204. A wrong `current_password` throws
+ * `ApiError` with status 401 (same generic message as login). The CSRF
+ * header is injected by `apiFetch` from the cached token.
+ */
+export async function changePassword(input: ChangePasswordInput): Promise<void> {
+  await apiFetch<void>("/api/session/password", {
+    method: "PUT",
+    body: input,
+  });
+}
+
 /**
  * Log out via `DELETE /api/session`. The CSRF header is injected by
  * `apiFetch` from the cached token. Always resolves on success; throws
