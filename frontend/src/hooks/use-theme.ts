@@ -1,15 +1,16 @@
-// Theme toggle — light/dark with persistence.
+// Theme toggle — dark-first light/dark with persistence.
 //
 // The inline script in index.html applies the persisted theme before first
 // paint to avoid FOUC. This hook is the React-side counterpart: it tracks
 // the current theme in state, keeps <html data-theme="…"> in sync, and
 // writes the user's choice to localStorage.
 //
-// When the user has never picked explicitly (no localStorage entry), the
-// hook reports the value the media query resolved to so the toggle UI can
-// show the right glyph. Setting a theme always writes localStorage, which
-// opts the document out of the `:root:not([data-theme="light"])` rule and
-// pins the choice.
+// Castify is dark-first: amber-on-graphite is the identity (media app, TV
+// room), so with no explicit choice anywhere the hook reports dark and the
+// CSS serves the dark block. Only an explicit system-light preference —
+// or a user choice — brings the porcelain theme. Setting a theme always
+// writes localStorage, which pins the choice and opts the document out of
+// the `@media (prefers-color-scheme: light)` override in index.css.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -17,19 +18,29 @@ export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "castify-theme";
 
+function readStoredTheme(): Theme | null {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY);
+    return value === "light" || value === "dark" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function readInitialTheme(): Theme {
-  if (typeof document === "undefined") return "light";
+  if (typeof document === "undefined") return "dark";
   const explicit = document.documentElement.getAttribute("data-theme");
   if (explicit === "light" || explicit === "dark") return explicit;
-  // No explicit choice — defer to prefers-color-scheme.
+  // No explicit choice — light only when the system asks for it; dark is
+  // the default (dark-first), covering system-dark and no-preference.
   if (
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
+    window.matchMedia("(prefers-color-scheme: light)").matches
   ) {
-    return "dark";
+    return "light";
   }
-  return "light";
+  return "dark";
 }
 
 export function useTheme() {
@@ -50,6 +61,8 @@ export function useTheme() {
   }, [theme, setTheme]);
 
   // Follow system changes only when the user hasn't picked explicitly.
+  // The pin is re-checked per event — a choice made after mount must stop
+  // the system from overwriting it.
   useEffect(() => {
     if (
       typeof window === "undefined" ||
@@ -57,11 +70,11 @@ export function useTheme() {
     ) {
       return;
     }
-    const explicit = localStorage.getItem(STORAGE_KEY);
-    if (explicit === "light" || explicit === "dark") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (readStoredTheme() !== null) return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
     const handler = (e: MediaQueryListEvent) => {
-      const next: Theme = e.matches ? "dark" : "light";
+      if (readStoredTheme() !== null) return;
+      const next: Theme = e.matches ? "light" : "dark";
       setThemeState(next);
       // Do not write localStorage — let the choice stay implicit.
       document.documentElement.removeAttribute("data-theme");

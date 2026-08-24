@@ -3,9 +3,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
 
-import "@fontsource-variable/inter";
-import "@fontsource-variable/inter-tight";
-import "@fontsource-variable/jetbrains-mono";
+import "@fontsource-variable/spline-sans";
+import "@fontsource-variable/spline-sans-mono";
 
 import { router } from "./router";
 import { queryClient } from "./query-client";
