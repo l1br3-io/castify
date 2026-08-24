@@ -169,13 +169,13 @@ mod tests {
     use super::*;
     use crate::NewOwner;
 
-    async fn fresh_pool() -> SqlitePool {
-        let file = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-        let path = file.to_path_buf();
-        std::mem::forget(file); // keep file alive for test
-        let pool = castify_storage::connect(&path).await.unwrap();
+    /// Returns `(pool, guard)` — the guard keeps the temp SQLite file alive
+    /// for the test's lifetime (dropping it deletes the file under the pool).
+    async fn fresh_pool() -> (SqlitePool, tempfile::TempPath) {
+        let guard = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        let pool = castify_storage::connect(guard.to_path_buf()).await.unwrap();
         castify_storage::run_migrations(&pool).await.unwrap();
-        pool
+        (pool, guard)
     }
 
     async fn owner_with_sessions(repo: &AuthRepository, sessions: usize) -> Uuid {
@@ -198,7 +198,8 @@ mod tests {
     /// the target owner (all devices) and spares other owners' sessions.
     #[tokio::test]
     async fn delete_all_sessions_removes_only_target_owners_sessions() {
-        let repo = AuthRepository::new(fresh_pool().await);
+        let (pool, _guard) = fresh_pool().await;
+        let repo = AuthRepository::new(pool);
         let a = owner_with_sessions(&repo, 3).await;
         let b = owner_with_sessions(&repo, 2).await;
         assert_eq!(session_count(&repo, &a).await, 3);

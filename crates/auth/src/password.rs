@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn temp_passwords_differ_between_draws() {
-        // Collision odds across a 57-char alphabet at length 20 are
+        // Collision odds across a 56-char alphabet at length 20 are
         // astronomically small; a single differing pair proves randomness
         // is actually wired in (vs a constant).
         let a = generate_temp_password();
