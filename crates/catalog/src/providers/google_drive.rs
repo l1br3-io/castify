@@ -998,12 +998,9 @@ fn drive_video_corroborated(file: &DriveFile) -> bool {
         return true;
     }
     if is_mpeg_ts_name(&file.name) {
-        let analyzed = file
-            .video_media_metadata
-            .as_ref()
-            .is_some_and(|m| {
-                m.duration_millis.is_some() || m.width.is_some() || m.height.is_some()
-            });
+        let analyzed = file.video_media_metadata.as_ref().is_some_and(|m| {
+            m.duration_millis.is_some() || m.width.is_some() || m.height.is_some()
+        });
         if analyzed || file.mime_type.eq_ignore_ascii_case("video/mp2t") {
             return true;
         }
