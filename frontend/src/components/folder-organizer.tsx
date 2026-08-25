@@ -15,6 +15,14 @@
 //
 // File/kind filters (FR-5.2's `kind`) are wired through the hook params;
 // no UI yet — the chips row is provider-scoped v1.
+//
+// Identity pass (task 004): a mono full-path line sits above the contents
+// heading — deliberately duplicating the heading's leaf name. The heading
+// names (large, sans: "what is this"), the path line orients (mono, muted:
+// "where am I in the tree"). Deep paths need both at a glance; the heading
+// alone loses ancestors, the path alone reads as chaff at poster scale.
+// Chips (provider filters, breadcrumbs) wear the `.keycap` primitive; the
+// name filter speaks the mono data voice.
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -111,6 +119,10 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
 
   const folderName = dir === "" ? "(Root)" : dir === "(Unsorted)" ? "(Unsorted)" : dir.split("/").filter(Boolean).pop() ?? dir;
 
+  // Full-dir path line (identity FR-5): root renders "/", "(Unsorted)"
+  // as-is. Sanctioned new visible text — everything else is copy-frozen.
+  const fullPath = dir === "" ? "/" : dir;
+
   // Breadcrumb segments (responsive, FR-10.1): under lg the sidebar is
   // hidden and the path itself becomes the navigation — root + each real
   // folder is a chip; the deepest segment is the current location (plain).
@@ -177,10 +189,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
           <button
             type="button"
             onClick={() => handleSelect("")}
-            className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
-              dir === ""
-                ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
-                : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+            className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+              dir === "" ? "keycap-active" : "keycap-inactive"
             }`}
           >
             All folders
@@ -194,14 +204,14 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 <button
                   type="button"
                   onClick={() => handleSelect(segment.path)}
-                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-3 py-1 text-xs font-medium text-[var(--color-castify-muted)] transition hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                  className="keycap keycap-inactive transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
                 >
                   {segment.name}
                 </button>
               ) : (
                 <span
                   aria-current="page"
-                  className="rounded-[var(--radius-pill)] border border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] px-3 py-1 text-xs font-semibold text-[var(--color-castify-accent)]"
+                  className="keycap keycap-active"
                 >
                   {segment.name}
                 </span>
@@ -210,6 +220,15 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
           ))}
         </nav>
 
+        {/* Orientation vs naming: the path line carries full depth, the
+            heading below carries the leaf (see file header). */}
+        <p
+          data-testid="contents-full-path"
+          title={fullPath}
+          className="truncate font-mono text-xs text-[var(--color-castify-muted)]"
+        >
+          {fullPath}
+        </p>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2
             className="text-xl font-semibold tracking-tight"
@@ -225,10 +244,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 type="button"
                 aria-pressed={providerFilter === undefined}
                 onClick={() => handleChip(undefined)}
-                className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
-                  providerFilter === undefined
-                    ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
-                    : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+                  providerFilter === undefined ? "keycap-active" : "keycap-inactive"
                 }`}
               >
                 All
@@ -239,10 +256,8 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                   type="button"
                   aria-pressed={providerFilter === provider}
                   onClick={() => handleChip(provider)}
-                  className={`rounded-[var(--radius-pill)] border px-3 py-1 text-xs font-medium transition ${
-                    providerFilter === provider
-                      ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
-                      : "border-[var(--color-castify-rule)] text-[var(--color-castify-muted)] hover:border-[var(--color-castify-accent)]/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                  className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+                    providerFilter === provider ? "keycap-active" : "keycap-inactive"
                   }`}
                 >
                   {PROVIDER_LABELS[provider]}
@@ -259,7 +274,7 @@ export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
                 setNameQuery(e.target.value);
                 setPage(1);
               }}
-              className="w-44 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              className="w-44 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 font-mono text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
             />
           </div>
         </div>

@@ -8,7 +8,10 @@
 //     click target's purpose obvious (the overlay itself is `pointer-events-
 //     none` and `aria-hidden`; clicks still go to the link).
 //   * Body shows a year + provider line (year derived from `created_at`).
-//   * Hover now lifts the card 2px and shifts the border toward the accent.
+//   * Hover discipline (identity pass task 005): no lift — the border
+//     shifts toward the accent and the video name underlines instead,
+//     per the effort's motion budget ("hovers shift borders/underlines
+//     only — no lifts").
 //
 // Layout:
 //   ┌──────────────────────────────────┐
@@ -77,12 +80,9 @@ export function PosterCard({
         border-[var(--color-castify-rule)]
         bg-[var(--color-castify-surface)] p-2
         transition duration-150 ease-out
-        hover:-translate-y-0.5 hover:border-[var(--color-castify-accent)]/40
-        focus-within:-translate-y-0.5
+        hover:border-[var(--color-castify-accent)]/40
         focus-within:border-[var(--color-castify-accent)]/40
         motion-reduce:transition-none
-        motion-reduce:hover:translate-y-0
-        motion-reduce:focus-within:translate-y-0
       `}
     >
       {href && (
@@ -120,7 +120,7 @@ export function PosterCard({
       />
       <div className="flex flex-col gap-1 px-1 pb-1">
         <h3
-          className="line-clamp-2 text-sm font-medium leading-tight"
+          className="line-clamp-2 text-sm font-medium leading-tight group-hover:underline group-focus-within:underline"
           title={video.name}
         >
           {video.name}

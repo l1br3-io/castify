@@ -4,12 +4,29 @@ import { Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "./app-layout";
 import { setCsrfToken } from "../api/client";
+import type { ConnectionDto, ScanStatus } from "../api/types";
 import {
   jsonError,
   jsonResponse,
   renderWithProviders,
   type FetchHandler,
 } from "../test/utils";
+
+function connectionFixture(scan_status: ScanStatus): ConnectionDto {
+  return {
+    id: "c1",
+    provider: "google_drive",
+    provider_account_email: null,
+    connected_at: "2026-01-01T00:00:00Z",
+    scan_status,
+    last_scan_at: null,
+    video_count: 0,
+  };
+}
+
+function fetchedUrls(fetchSpy: { mock: { calls: unknown[][] } }): string[] {
+  return fetchSpy.mock.calls.map(([url]) => String(url));
+}
 
 function renderLayout(fetchImpl: FetchHandler) {
   return renderWithProviders(
@@ -88,5 +105,44 @@ describe("AppLayout", () => {
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Connections")).not.toBeInTheDocument();
+  });
+
+  describe("scan LED", () => {
+    it("announces scanning while any connection has scan_status scanning", async () => {
+      const { fetchSpy } = renderLayout((input) => {
+        if (String(input) === "/api/connections")
+          return jsonResponse([connectionFixture("scanning")]);
+        return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
+      });
+
+      const status = await screen.findByRole("status");
+      expect(status).toHaveTextContent("Scanning your cloud");
+      expect(fetchedUrls(fetchSpy)).toContain("/api/connections");
+    });
+
+    it("stays quiet when every connection is idle", async () => {
+      const { fetchSpy } = renderLayout((input) => {
+        if (String(input) === "/api/connections")
+          return jsonResponse([connectionFixture("idle")]);
+        return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
+      });
+
+      await waitFor(() => {
+        expect(fetchedUrls(fetchSpy)).toContain("/api/connections");
+      });
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    });
+
+    it("does not render or fetch connections without a session", async () => {
+      const { fetchSpy } = renderLayout(() =>
+        jsonError(401, "unauthorized"),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Castify")).toBeInTheDocument();
+      });
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(fetchedUrls(fetchSpy)).not.toContain("/api/connections");
+    });
   });
 });

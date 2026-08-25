@@ -168,6 +168,60 @@ describe("BrowsePage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("styles the stats line as the mono instrument strip via .eyebrow (copy frozen)", async () => {
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    const h1 = await screen.findByRole("heading", {
+      level: 1,
+      name: /Your library/,
+    });
+    expect(h1).toHaveClass("eyebrow");
+    // DOM text byte-identical — uppercasing is CSS-only (spec § Copy freeze).
+    expect(h1).toHaveTextContent("Your library · 60 videos · 0 clouds");
+  });
+
+  it("staggers the four top-level sections with ~60ms offsets on mount", async () => {
+    const { container } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: browseFetch(),
+    });
+
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+
+    const staggered = Array.from(container.querySelectorAll(".animate-stagger-in"));
+    // header → rails → organizer → grid.
+    expect(staggered).toHaveLength(4);
+    expect(staggered[0]).toHaveClass("sticky", "top-0");
+    expect(staggered[3]).toHaveAttribute("id", "all-videos");
+    const delays = staggered.map(
+      (el) => el.className.match(/animation-delay:(\d+)ms/)?.[1] ?? "0",
+    );
+    expect(delays).toEqual(["0", "60", "120", "180"]);
+  });
+
+  it("does not replay the stagger when search clears — animated containers stay mounted", async () => {
+    const { container } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
+    });
+
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+    // The rails stagger wrapper (2nd animated section).
+    const railsWrapper = container.querySelectorAll(".animate-stagger-in")[1];
+
+    // Enter search mode — rails unmount their children, wrapper stays.
+    fireEvent.change(screen.getByLabelText("Search videos"), {
+      target: { value: "concert" },
+    });
+    expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
+
+    // Clear search — rails reappear inside the same wrapper node.
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    await screen.findByRole("heading", { name: "Recently Added" });
+
+    // Same DOM node survived the round-trip: the mount-time animation was
+    // never canceled by unmounting, so it cannot replay.
+    expect(container.contains(railsWrapper)).toBe(true);
+  });
+
   it("renders skeleton header on initial load before data resolves", () => {
     renderWithProviders(<BrowsePage />, {
       fetchImplementation: () => new Promise<Response>(() => {}),
@@ -1014,6 +1068,17 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
       cwHeading.compareDocumentPosition(recentlyAddedHeading) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
+  });
+
+  it("styles the Continue Watching heading with the eyebrow treatment", async () => {
+    mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    const heading = await screen.findByRole("heading", {
+      name: "Continue Watching",
+    });
+    expect(heading).toHaveClass("eyebrow");
+    expect(heading).toHaveTextContent("Continue Watching");
   });
 
   it("hides the Continue Watching shelf during active search (T9 focused-results mode)", async () => {

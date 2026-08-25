@@ -15,7 +15,8 @@ export const CONNECTIONS_QUERY_KEY = ["connections"] as const;
 
 const SCAN_POLL_MS = 4000;
 
-function hasScanning(connections: ConnectionDto[] | undefined): boolean {
+/** True when any connection is mid-scan. Shared with the header ScanLed. */
+export function hasScanning(connections: ConnectionDto[] | undefined): boolean {
   return Array.isArray(connections) && connections.some((c) => c.scan_status === "scanning");
 }
 

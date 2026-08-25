@@ -69,6 +69,28 @@ describe("Shelf", () => {
     expect(screen.queryByRole("button", { name: "View All" })).not.toBeInTheDocument();
   });
 
+  it("styles the title and count as eyebrow mono with tabular numerals (DOM text unchanged)", () => {
+    renderWithProviders(
+      <Shelf title="Recently Added" videos={VIDEOS} totalCount={47} />,
+    );
+
+    const heading = screen.getByRole("heading", { name: "Recently Added" });
+    expect(heading).toHaveClass("eyebrow");
+    // Copy freeze: uppercasing is CSS-only — the DOM text stays byte-identical.
+    expect(heading).toHaveTextContent("Recently Added");
+
+    const count = screen.getByText("· 47");
+    expect(count).toHaveClass("eyebrow", "tabular-nums");
+  });
+
+  it("keeps the View All accent affordance with a visible focus ring", () => {
+    renderWithProviders(<Shelf title="T" videos={VIDEOS} onViewAll={() => {}} />);
+
+    const button = screen.getByRole("button", { name: "View All" });
+    expect(button).toHaveClass("text-[var(--color-castify-accent)]");
+    expect(button).toHaveClass("focus-visible:ring-2");
+  });
+
   it("renders nothing when the videos array is empty", () => {
     const { container } = renderWithProviders(
       <Shelf title="Empty Shelf" videos={[]} />,

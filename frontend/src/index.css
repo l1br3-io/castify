@@ -1,69 +1,140 @@
 @import "tailwindcss";
 
 @theme {
-  /* Type — Fontsource variable packages imported in main.tsx. */
-  --font-sans: "Inter Variable", system-ui, sans-serif;
-  --font-display: "Inter Tight Variable", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  /* Type — Fontsource variable packages imported in main.tsx. Spline Sans
+     is the humanist voice (names, prose); Spline Sans Mono is the data
+     voice (paths, counts, instrument strip). */
+  --font-sans: "Spline Sans Variable", system-ui, sans-serif;
+  --font-display: "Spline Sans Variable", system-ui, sans-serif;
+  --font-mono: "Spline Sans Mono Variable", ui-monospace, monospace;
 
-  /* Accent — shared across light and dark themes. Magenta on warm cream
-     reads as contemporary editorial rather than the cream+terracotta
-     default. */
-  --color-castify-accent: oklch(70% 0.18 320);
-  --color-castify-accent-dim: oklch(55% 0.16 320);
-  --color-castify-accent-subtle: oklch(70% 0.18 320 / 14%);
+  /* Signal — drive-LED amber; ochre in light so it holds contrast on
+     porcelain. Shared hue family across themes. */
+  --color-castify-accent: oklch(78% 0.15 75);
+  --color-castify-accent-dim: oklch(88% 0.12 80);
+  --color-castify-accent-subtle: oklch(78% 0.15 75 / 14%);
 
-  /* Radius tokens — bumped from the old rounded-md/lg toward friendlier
-     rounding. */
-  --radius-card: 0.875rem;
-  --radius-button: 0.5rem;
-  --radius-pill: 9999px;
-  --radius-drawer: 1rem;
+  /* Geometry — tight, instrument-panel radii. */
+  --radius-card: 6px;
+  --radius-button: 4px;
+  --radius-pill: 4px;
+  --radius-drawer: 8px;
 
-  /* Themeable surface tokens — defaults match the light theme. The dark
-     values live in the dark-theme blocks below and override these via
-     the cascade. */
-  --color-castify-canvas: oklch(96% 0.012 75);
-  --color-castify-surface: oklch(99% 0.005 75);
-  --color-castify-surface-raised: oklch(100% 0 0);
-  --color-castify-text: oklch(25% 0.02 50);
-  --color-castify-muted: oklch(50% 0.02 50);
-  --color-castify-rule: oklch(20% 0.02 50 / 8%);
+  /* Themeable surface tokens — defaults match the dark theme, which is
+     the no-preference default (dark-first). Light values live in the
+     light blocks below and override these via the cascade. */
+  --color-castify-canvas: oklch(18% 0.008 75);
+  --color-castify-surface: oklch(21.5% 0.009 75);
+  --color-castify-surface-raised: oklch(25% 0.01 75);
+  --color-castify-text: oklch(93% 0.008 80);
+  --color-castify-muted: oklch(70% 0.015 80);
+  --color-castify-rule: oklch(93% 0.008 80 / 14%);
+
+  /* Kind taxonomy — small-area hues (kind tabs, glyphs) at chroma ≤ 0.13,
+     never large fills. Video keeps the accent; `other` is muted by
+     design. Defaults are dark-theme values; the light blocks lift
+     luminance per kind where porcelain demands AA. */
+  --color-kind-audio: oklch(76% 0.13 300);
+  --color-kind-image: oklch(78% 0.1 190);
+  --color-kind-document: oklch(76% 0.04 250);
+  --color-kind-archive: oklch(78% 0.11 50);
+  --color-kind-subtitle: oklch(78% 0.12 150);
+  --color-kind-other: oklch(70% 0.015 80);
+
+  /* Sanctioned motion — exactly two effects (spec § Motion): the
+     page-load stagger and the scan pulse. Both collapse under the global
+     reduced-motion override at the bottom of this file. */
+  --animate-stagger-in: stagger-in 240ms ease-out both;
+  --animate-scan-pulse: scan-pulse 2s ease-in-out infinite;
+
+  @keyframes stagger-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes scan-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
 }
 
-/* Light theme — also the default when no data-theme is set. */
+/* Dark theme — warm graphite. This is both the explicit dark choice and
+   the no-preference default: dark-first, the identity theme. */
 :root,
-:root[data-theme="light"] {
-  --color-castify-canvas: oklch(96% 0.012 75);
-  --color-castify-surface: oklch(99% 0.005 75);
-  --color-castify-surface-raised: oklch(100% 0 0);
-  --color-castify-text: oklch(25% 0.02 50);
-  --color-castify-muted: oklch(50% 0.02 50);
-  --color-castify-rule: oklch(20% 0.02 50 / 8%);
-  color-scheme: light;
-}
-
-/* Dark theme — explicit opt-in. */
 :root[data-theme="dark"] {
-  --color-castify-canvas: oklch(20% 0.02 280);
-  --color-castify-surface: oklch(24% 0.02 280);
-  --color-castify-surface-raised: oklch(28% 0.02 280);
-  --color-castify-text: oklch(96% 0.01 280);
-  --color-castify-muted: oklch(70% 0.02 280);
-  --color-castify-rule: oklch(96% 0.01 280 / 14%);
+  --color-castify-accent: oklch(78% 0.15 75);
+  --color-castify-accent-dim: oklch(88% 0.12 80);
+  --color-castify-accent-subtle: oklch(78% 0.15 75 / 14%);
+  --color-castify-canvas: oklch(18% 0.008 75);
+  --color-castify-surface: oklch(21.5% 0.009 75);
+  --color-castify-surface-raised: oklch(25% 0.01 75);
+  --color-castify-text: oklch(93% 0.008 80);
+  --color-castify-muted: oklch(70% 0.015 80);
+  --color-castify-rule: oklch(93% 0.008 80 / 14%);
+  --color-kind-audio: oklch(76% 0.13 300);
+  --color-kind-image: oklch(78% 0.1 190);
+  --color-kind-document: oklch(76% 0.04 250);
+  --color-kind-archive: oklch(78% 0.11 50);
+  --color-kind-subtitle: oklch(78% 0.12 150);
+  --color-kind-other: oklch(70% 0.015 80);
   color-scheme: dark;
 }
 
-/* System dark-mode preference wins when the user hasn't picked explicitly. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --color-castify-canvas: oklch(20% 0.02 280);
-    --color-castify-surface: oklch(24% 0.02 280);
-    --color-castify-surface-raised: oklch(28% 0.02 280);
-    --color-castify-text: oklch(96% 0.01 280);
-    --color-castify-muted: oklch(70% 0.02 280);
-    --color-castify-rule: oklch(96% 0.01 280 / 14%);
-    color-scheme: dark;
+/* Light theme — cool porcelain, the quiet reading room. Explicit opt-in
+   via data-theme="light". */
+:root[data-theme="light"] {
+  --color-castify-accent: oklch(58% 0.14 65);
+  --color-castify-accent-dim: oklch(48% 0.14 65);
+  --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
+  --color-castify-canvas: oklch(96.5% 0.005 230);
+  --color-castify-surface: oklch(98.5% 0.004 230);
+  --color-castify-surface-raised: oklch(100% 0 0);
+  --color-castify-text: oklch(28% 0.015 250);
+  --color-castify-muted: oklch(51% 0.02 240);
+  --color-castify-rule: oklch(28% 0.015 250 / 10%);
+  --color-kind-audio: oklch(48% 0.13 300);
+  --color-kind-image: oklch(45% 0.09 200);
+  --color-kind-document: oklch(48% 0.05 250);
+  --color-kind-archive: oklch(52% 0.12 45);
+  --color-kind-subtitle: oklch(45% 0.11 150);
+  --color-kind-other: oklch(51% 0.02 240);
+  color-scheme: light;
+}
+
+/* System light-mode preference wins when the user hasn't picked
+   explicitly. NOTE: light — not dark — is the override here. The default
+   (:root above) is already dark, so the cascade only needs to flip users
+   whose system says light; an explicit data-theme="dark" must still win,
+   hence the :not() guard. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-castify-accent: oklch(58% 0.14 65);
+    --color-castify-accent-dim: oklch(48% 0.14 65);
+    --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
+    --color-castify-canvas: oklch(96.5% 0.005 230);
+    --color-castify-surface: oklch(98.5% 0.004 230);
+    --color-castify-surface-raised: oklch(100% 0 0);
+    --color-castify-text: oklch(28% 0.015 250);
+    --color-castify-muted: oklch(51% 0.02 240);
+    --color-castify-rule: oklch(28% 0.015 250 / 10%);
+    --color-kind-audio: oklch(48% 0.13 300);
+    --color-kind-image: oklch(45% 0.09 200);
+    --color-kind-document: oklch(48% 0.05 250);
+    --color-kind-archive: oklch(52% 0.12 45);
+    --color-kind-subtitle: oklch(45% 0.11 150);
+    --color-kind-other: oklch(51% 0.02 240);
+    color-scheme: light;
   }
 }
 
@@ -84,7 +155,9 @@ body {
 }
 
 /* Honor reduced-motion globally. Components should still gate heavier
-   effects (shimmer, slide-overs, etc.) individually via the same query. */
+   effects (shimmer, slide-overs, etc.) individually via the same query.
+   The stagger and scan-pulse keyframes above collapse here too: infinite
+   iteration is clamped to 1 and durations to ~0. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -114,6 +187,50 @@ video::cue {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Keycap — chip primitive for provider/filter segments, breadcrumbs,
+   and other monospaced metadata (organizer). Mono, hairline rule, 4px
+   radius: reads like a keycap on an instrument panel. Interactive
+   variants layer their own hover/active states on top. */
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-castify-rule);
+  border-radius: var(--radius-pill);
+  color: var(--color-castify-muted);
+}
+
+/* Interactive keycap variants — chips layer these on .keycap (provider
+   filters, breadcrumbs). Defined here, not as Tailwind utilities, because
+   unlayered .keycap declarations outrank the utilities layer in the
+   cascade; only sibling rules can override the primitive. Hover shifts
+   the border only (spec § Motion: no lifts). */
+.keycap-active {
+  border-color: var(--color-castify-accent);
+  background-color: var(--color-castify-accent-subtle);
+  color: var(--color-castify-accent);
+}
+
+.keycap-inactive:hover {
+  border-color: color-mix(in oklab, var(--color-castify-accent) 40%, transparent);
+}
+
+/* Eyebrow — mono uppercase tracked label for shelf titles, stat strips,
+   section markers. Uppercasing is CSS-only so DOM text stays
+   byte-identical (spec § Copy freeze). */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-castify-muted);
 }
 
 /* Toast entrance — slide-in (8px) + opacity over 200ms. Reduced-motion is
