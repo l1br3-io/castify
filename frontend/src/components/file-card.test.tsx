@@ -58,6 +58,58 @@ describe("FileCard", () => {
   });
 });
 
+// --- identity pass task 005: kind taxonomy tabs ---
+//
+// The affordance matrix becomes visible: every entry wears its kind hue
+// as a 4px tab + a tinted glyph. Hue wiring is asserted via the
+// `--color-kind-*` token class strings (jsdom cannot resolve CSS vars,
+// so class presence is the observable).
+
+describe("kind taxonomy tabs (identity pass 005)", () => {
+  it("FileCard wears a 4px kind-hue tab on the icon tile and tints the glyph", () => {
+    for (const kind of kinds) {
+      const { container, unmount } = render(
+        <FileCard file={entry({ kind, name: `thing.${kind}` })} />,
+      );
+      const tab = container.querySelector(
+        `[class*="bg-[var(--color-kind-${kind})]"]`,
+      );
+      expect(tab).not.toBeNull();
+      expect(tab).toHaveClass("h-1");
+      const icon = container.querySelector(
+        `svg[class*="text-[var(--color-kind-${kind})]"]`,
+      );
+      expect(icon).not.toBeNull();
+      unmount();
+    }
+  });
+
+  it("FileRow wears a kind-hue left tab and tints the glyph", () => {
+    for (const kind of kinds) {
+      const { container, unmount } = render(
+        <FileRow file={entry({ kind, name: `thing.${kind}` })} />,
+      );
+      const tab = container.querySelector(
+        `[class*="bg-[var(--color-kind-${kind})]"]`,
+      );
+      expect(tab).not.toBeNull();
+      expect(tab).toHaveClass("w-1");
+      const icon = container.querySelector(
+        `svg[class*="text-[var(--color-kind-${kind})]"]`,
+      );
+      expect(icon).not.toBeNull();
+      unmount();
+    }
+  });
+
+  it("hovers shift borders only — no lift (motion budget)", () => {
+    render(<FileCard file={entry()} />);
+    const card = screen.getByLabelText("Audio file song.mp3");
+    expect(card).toHaveClass("hover:border-[var(--color-castify-accent)]/40");
+    expect(card.className).not.toContain("-translate-y-0.5");
+  });
+});
+
 describe("FileRow", () => {
   it("renders name, size, and a trailing download action", () => {
     render(

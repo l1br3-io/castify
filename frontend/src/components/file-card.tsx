@@ -5,6 +5,14 @@
 // no "Play …" aria-label, no hover overlay. Play is the video contract
 // (`PosterCard`); these components are deliberately incapable of it.
 //
+// The matrix is also *visible* (identity pass task 005): every entry wears
+// its kind taxonomy — a 4px hue tab (top edge of the card's icon tile,
+// left edge of the row) plus a glyph tinted the same hue, both fed by the
+// `--color-kind-*` tokens (Task 001). Kind color appears only as icon tint
+// + 4px bar — never as a large fill — so the taxonomy reads at a glance
+// without shouting. Per the effort's motion budget, hovers shift borders
+// only; no lifts.
+//
 // Two presentations:
 //   * FileCard — tile for grid neighbors (sits beside PosterCards in the
 //     contents pane; used for audio + image): kind icon on a quiet surface,
@@ -28,20 +36,33 @@ import {
   SubtitleIcon,
 } from "./icons";
 
+// Kind → hue utilities. Static literal strings (one per kind) so the
+// Tailwind scanner emits every arbitrary value; per-theme resolution comes
+// free from the `--color-kind-*` token cascade (dark/light, Task 001).
+const KIND_HUES: Record<FileKindKey, { icon: string; tab: string }> = {
+  audio: { icon: "text-[var(--color-kind-audio)]", tab: "bg-[var(--color-kind-audio)]" },
+  image: { icon: "text-[var(--color-kind-image)]", tab: "bg-[var(--color-kind-image)]" },
+  subtitle: { icon: "text-[var(--color-kind-subtitle)]", tab: "bg-[var(--color-kind-subtitle)]" },
+  document: { icon: "text-[var(--color-kind-document)]", tab: "bg-[var(--color-kind-document)]" },
+  archive: { icon: "text-[var(--color-kind-archive)]", tab: "bg-[var(--color-kind-archive)]" },
+  other: { icon: "text-[var(--color-kind-other)]", tab: "bg-[var(--color-kind-other)]" },
+};
+
 function KindIcon({ kind, className }: { kind: FileKindKey; className: string }) {
+  const classes = `${KIND_HUES[kind].icon} ${className}`;
   switch (kind) {
     case "audio":
-      return <AudioIcon className={className} />;
+      return <AudioIcon className={classes} />;
     case "image":
-      return <ImageIcon className={className} />;
+      return <ImageIcon className={classes} />;
     case "subtitle":
-      return <SubtitleIcon className={className} />;
+      return <SubtitleIcon className={classes} />;
     case "document":
-      return <DocIcon className={className} />;
+      return <DocIcon className={classes} />;
     case "archive":
-      return <ArchiveIcon className={className} />;
+      return <ArchiveIcon className={classes} />;
     default:
-      return <FileIcon className={className} />;
+      return <FileIcon className={classes} />;
   }
 }
 
@@ -58,10 +79,15 @@ function formatModifiedDate(iso: string | null): string {
 export function FileCard({ file }: { file: FileEntryDto }) {
   return (
     <article
-      className="group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:-translate-y-0.5 hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+      className="group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none"
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}
     >
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-card)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-muted)]">
+      <div className="relative flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-card)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-muted)]">
+        {/* 4px kind-hue tab across the top edge of the icon tile. */}
+        <span
+          aria-hidden
+          className={`absolute inset-x-0 top-0 h-1 rounded-t-[var(--radius-card)] ${KIND_HUES[file.kind].tab}`}
+        />
         <KindIcon kind={file.kind} className="h-10 w-10" />
         <span className="text-xs font-medium uppercase tracking-wide">
           {FILE_KIND_LABELS[file.kind]}
@@ -91,10 +117,16 @@ export function FileRow({ file }: { file: FileEntryDto }) {
   const modified = formatModifiedDate(file.modified_at);
   return (
     <div
-      className="flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40"
+      className="relative flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40"
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}
     >
-      <KindIcon kind={file.kind} className="h-5 w-5 flex-shrink-0 text-[var(--color-castify-muted)]" />
+      {/* 4px kind-hue tab down the left edge — the row's take on the
+          card's top tab, same hue language. */}
+      <span
+        aria-hidden
+        className={`absolute inset-y-0 left-0 w-1 rounded-l-[var(--radius-card)] ${KIND_HUES[file.kind].tab}`}
+      />
+      <KindIcon kind={file.kind} className="h-5 w-5 flex-shrink-0" />
       <span className="min-w-0 flex-1 truncate text-sm font-medium" title={file.name}>
         {file.name}
       </span>

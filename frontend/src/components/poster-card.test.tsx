@@ -176,6 +176,19 @@ describe("PosterCard", () => {
     );
   }
 
+  it("hovers shift border + name underline only — no lift (identity pass 005)", () => {
+    renderWithProviders(<PosterCard video={VIDEO} href="/watch/v1" />);
+    const card = screen.getByRole("article");
+    // Border-accent shift kept on both hover and focus.
+    expect(card).toHaveClass("hover:border-[var(--color-castify-accent)]/40");
+    expect(card).toHaveClass("focus-within:border-[var(--color-castify-accent)]/40");
+    // Lift discipline: no translate on the card at all.
+    expect(card.className).not.toContain("-translate-y");
+    // The video name underlines instead.
+    const name = screen.getByText("cat.mp4");
+    expect(name).toHaveClass("group-hover:underline", "group-focus-within:underline");
+  });
+
   it("passes `queue` via router state when provided (M3 T7)", () => {
     renderWithProviders(
       <Routes>
