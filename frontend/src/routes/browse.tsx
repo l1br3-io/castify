@@ -177,45 +177,64 @@ export function BrowsePage() {
     <div className="space-y-8">
       {/* Compact library header (M9 FR-7.2): stats + search in one sticky
           row. This replaces the old 40vh featured-video hero — an organizer,
-          not a premiere. */}
-      <div className="sticky top-0 z-20 -mx-4 bg-[var(--color-castify-canvas)]/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-castify-canvas)]/80">
+          not a premiere. Identity pass: the stats line is the mono
+          instrument strip (`.eyebrow`, CSS-only uppercase — DOM text frozen)
+          and carries stagger step 1. */}
+      <div className="sticky top-0 z-20 -mx-4 animate-stagger-in bg-[var(--color-castify-canvas)]/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-castify-canvas)]/80 motion-reduce:animate-none">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <h1 className="text-lg font-semibold tracking-tight">{libraryStats}</h1>
+          <h1 className="eyebrow">{libraryStats}</h1>
           <div className="md:w-96">
             <SearchBar ref={searchRef} value={query} onChange={setQuery} />
           </div>
         </div>
       </div>
 
-      {/* Rails + shelves — hidden during active search (focused results mode) */}
-      {!isSearching && (
-        <>
-          {/* T13: continue-watching rail (IndexedDB-backed) */}
-          <ContinueWatchingShelf />
+      {/* Stagger steps 2 + 3 (identity-pass task 003): the page-load
+          stagger plays once down header → rails → organizer → grid at
+          ~60ms offsets. Search hide/show would unmount + remount these
+          sections and replay the 240ms animation on every search-clear.
+          Chosen fix: the animated containers are these always-mounted
+          wrappers — only their *children* swap on isSearching, so the
+          animation runs once at mount and is never canceled. (The
+          alternative — hiding via `display:none` on the animated node —
+          cancels a finished CSS animation and replays it on re-display, so
+          it was rejected; the wrapper restructure is thin, not invasive.) */}
+      <div className="animate-stagger-in space-y-8 [animation-delay:60ms] motion-reduce:animate-none">
+        {/* Rails + shelves — children hidden during active search (focused
+            results mode); the wrapper above stays mounted. */}
+        {!isSearching && (
+          <>
+            {/* T13: continue-watching rail (IndexedDB-backed) */}
+            <ContinueWatchingShelf />
 
-          {/* Rails */}
-          <div className="space-y-6">
-            <Shelf
-              title="Recently Added"
-              videos={recentlyAdded.data.videos}
-              totalCount={recentlyAdded.data.total}
-              onViewAll={() => handleViewAll({})}
-              compact
-            />
+            {/* Rails */}
+            <div className="space-y-6">
+              <Shelf
+                title="Recently Added"
+                videos={recentlyAdded.data.videos}
+                totalCount={recentlyAdded.data.total}
+                onViewAll={() => handleViewAll({})}
+                compact
+              />
 
-            <FavoritesShelf
-              onViewAll={() => handleViewAll({ favoritesOnly: true })}
-            />
-          </div>
+              <FavoritesShelf
+                onViewAll={() => handleViewAll({ favoritesOnly: true })}
+              />
+            </div>
+          </>
+        )}
+      </div>
 
-          {/* Folder organizer (M9 FR-7.4): tree + contents + provider
-              chips — replaces the old By Provider / By Folder shelves. */}
-          <FolderOrganizer connectedProviders={connectedProviders} />
-        </>
-      )}
+      <div className="animate-stagger-in [animation-delay:120ms] motion-reduce:animate-none">
+        {/* Folder organizer (M9 FR-7.4): tree + contents + provider
+            chips — replaces the old By Provider / By Folder shelves.
+            Child of the stagger wrapper above; hidden during search the
+            same way (wrapper stays mounted). */}
+        {!isSearching && <FolderOrganizer connectedProviders={connectedProviders} />}
+      </div>
 
-      {/* Grid section — "View All" scroll target */}
-      <div id="all-videos" className="space-y-4 pt-2">
+      {/* Stagger step 4. */}
+      <div id="all-videos" className="animate-stagger-in space-y-4 pt-2 [animation-delay:180ms] motion-reduce:animate-none">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             {isSearching ? (
@@ -306,9 +325,7 @@ function ContinueWatchingShelf() {
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-xl font-semibold tracking-tight">
-          Continue Watching
-        </h2>
+        <h2 className="eyebrow">Continue Watching</h2>
       </div>
       <div
         className="no-scrollbar flex gap-4 overflow-x-auto pb-2 pr-4"

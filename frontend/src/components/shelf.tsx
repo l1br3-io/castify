@@ -43,16 +43,14 @@ export function Shelf({ title, videos, onViewAll, totalCount, compact }: ShelfPr
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-baseline gap-2">
-          <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-          <span className="text-sm text-[var(--color-castify-muted)]">
-            · {count}
-          </span>
+          <h2 className="eyebrow">{title}</h2>
+          <span className="eyebrow tabular-nums">· {count}</span>
         </div>
         {onViewAll && (
           <button
             type="button"
             onClick={onViewAll}
-            className="text-sm text-[var(--color-castify-accent)] transition hover:opacity-80"
+            className="-my-1 rounded-[var(--radius-button)] px-2 py-1 text-sm text-[var(--color-castify-accent)] transition hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
           >
             View All
           </button>
