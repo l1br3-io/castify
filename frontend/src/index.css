@@ -206,6 +206,21 @@ video::cue {
   color: var(--color-castify-muted);
 }
 
+/* Interactive keycap variants — chips layer these on .keycap (provider
+   filters, breadcrumbs). Defined here, not as Tailwind utilities, because
+   unlayered .keycap declarations outrank the utilities layer in the
+   cascade; only sibling rules can override the primitive. Hover shifts
+   the border only (spec § Motion: no lifts). */
+.keycap-active {
+  border-color: var(--color-castify-accent);
+  background-color: var(--color-castify-accent-subtle);
+  color: var(--color-castify-accent);
+}
+
+.keycap-inactive:hover {
+  border-color: color-mix(in oklab, var(--color-castify-accent) 40%, transparent);
+}
+
 /* Eyebrow — mono uppercase tracked label for shelf titles, stat strips,
    section markers. Uppercasing is CSS-only so DOM text stays
    byte-identical (spec § Copy freeze). */

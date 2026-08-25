@@ -261,6 +261,81 @@ describe("FolderOrganizer", () => {
   });
 });
 
+// --- Identity-pass task 004: full-path line, keycap chips, mono filter ---
+
+describe("FolderOrganizer identity styling", () => {
+  it("renders the full-dir mono path line above the contents heading", async () => {
+    renderOrganizer({}, [`/?dir=${encodeURIComponent("/Media/Movies")}`]);
+    await screen.findByText("Zeta.mp4");
+
+    const pathLine = screen.getByTestId("contents-full-path");
+    expect(pathLine).toHaveTextContent("/Media/Movies");
+    expect(pathLine).toHaveClass(
+      "font-mono",
+      "truncate",
+      "text-[var(--color-castify-muted)]",
+    );
+    expect(pathLine).toHaveAttribute("title", "/Media/Movies");
+
+    // Sits above the leaf-name heading in DOM order.
+    const heading = screen.getByTestId("contents-path");
+    expect(
+      heading.compareDocumentPosition(pathLine) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+  });
+
+  it("renders the path line as / at root", async () => {
+    renderOrganizer();
+    await screen.findByText("Zeta.mp4");
+    expect(screen.getByTestId("contents-full-path")).toHaveTextContent("/");
+  });
+
+  it("renders the path line for (Unsorted) as-is", async () => {
+    renderOrganizer(
+      {
+        tree: [
+          ...TREE,
+          { name: "(Unsorted)", path: "(Unsorted)", video_count: 0, file_count: 0, children: [] },
+        ],
+      },
+      [`/?dir=${encodeURIComponent("(Unsorted)")}`],
+    );
+    await screen.findByText("Zeta.mp4");
+    expect(screen.getByTestId("contents-full-path")).toHaveTextContent("(Unsorted)");
+  });
+
+  it("styles provider chips as keycaps (aria-pressed contract unchanged)", async () => {
+    renderOrganizer({ connectedProviders: ["google_drive", "dropbox"] });
+    await screen.findByText("Zeta.mp4");
+
+    const all = screen.getByRole("button", { name: "All" });
+    expect(all).toHaveClass("keycap");
+    expect(all).toHaveAttribute("aria-pressed", "true");
+
+    const dropbox = screen.getByRole("button", { name: "Dropbox" });
+    expect(dropbox).toHaveClass("keycap");
+    expect(dropbox).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("styles breadcrumb chips as keycaps (aria-current behavior unchanged)", async () => {
+    renderOrganizer({}, [`/?dir=${encodeURIComponent("/Media/Movies")}`]);
+    await screen.findByText("Zeta.mp4");
+
+    expect(screen.getByRole("button", { name: "All folders" })).toHaveClass("keycap");
+    expect(screen.getByRole("button", { name: "Media" })).toHaveClass("keycap");
+    expect(
+      screen.getByText("Movies", { selector: "span[aria-current='page']" }),
+    ).toHaveClass("keycap");
+  });
+
+  it("styles the name filter in the mono data voice", async () => {
+    renderOrganizer();
+    await screen.findByText("Zeta.mp4");
+
+    expect(screen.getByLabelText("Filter by name")).toHaveClass("font-mono");
+  });
+});
+
 // --- Responsive: breadcrumb chips replace the sidebar under lg (task 014) ---
 
 describe("FolderOrganizer breadcrumbs", () => {

@@ -195,13 +195,13 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
                 aria-current={isSelected ? "true" : undefined}
                 className={`flex min-w-0 flex-1 items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
                   isSelected
-                    ? "bg-[var(--color-castify-accent-subtle)] font-semibold text-[var(--color-castify-accent)]"
+                    ? "bg-[var(--color-castify-accent-subtle)] font-semibold text-[var(--color-castify-accent)] shadow-[inset_3px_0_0_var(--color-castify-accent)]"
                     : "hover:bg-[var(--color-castify-accent-subtle)]"
                 }`}
               >
                 <span className="truncate">{node.name}</span>
                 {counts && (
-                  <span className="flex-shrink-0 text-xs text-[var(--color-castify-muted)]">
+                  <span className="flex-shrink-0 font-mono text-xs tabular-nums text-[var(--color-castify-muted)]">
                     {counts}
                   </span>
                 )}

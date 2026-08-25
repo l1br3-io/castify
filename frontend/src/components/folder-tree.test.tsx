@@ -233,6 +233,27 @@ describe("FolderTree", () => {
   });
 });
 
+// --- Identity-pass task 004: index-tab selection, mono tabular counts ---
+
+describe("FolderTree identity styling", () => {
+  it("marks the selected node with the 3px amber index-tab bar + subtle fill", () => {
+    renderTree(["/?dir=/Media"]);
+
+    const selected = document.querySelector<HTMLElement>(
+      "[data-tree-path='/Media'][aria-current]",
+    )!;
+    expect(selected).toHaveClass("shadow-[inset_3px_0_0_var(--color-castify-accent)]");
+    expect(selected).toHaveClass("bg-[var(--color-castify-accent-subtle)]");
+  });
+
+  it("renders counts right-aligned in mono tabular-nums", () => {
+    renderTree();
+
+    const counts = screen.getByText(/3 videos/);
+    expect(counts).toHaveClass("font-mono", "tabular-nums");
+  });
+});
+
 describe("useFolderDir", () => {
   it("reads the dir param and defaults to root", () => {
     let observed: string | undefined;
