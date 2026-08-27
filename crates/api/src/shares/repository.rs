@@ -139,6 +139,24 @@ impl ShareRepository {
         Ok(result.rows_affected())
     }
 
+    /// Owner-scoped revoke (the route-layer variant). Same terminal update
+    /// as [`ShareRepository::revoke`], but a share owned by someone else
+    /// counts as not-found — the migration's `owner_id` column exists to
+    /// keep listing *and revocation* scoped to the creating owner. Callers
+    /// treat 0 rows as success (idempotent 204), so this never leaks
+    /// whether a foreign share id exists.
+    pub async fn revoke_owned(&self, owner_id: &str, share_id: &str) -> ShareResult<u64> {
+        let result = sqlx::query(
+            "UPDATE shares SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+        )
+        .bind(iso_now())
+        .bind(share_id)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Membership guard — every mirror route's authorization check
     /// reduces to this plus share liveness.
     pub async fn is_member(&self, share_id: &str, video_id: &str) -> ShareResult<bool> {

@@ -1,0 +1,375 @@
+//! Owner-facing shares REST — create, list, revoke (docs/specs/sharing).
+//!
+//!   * `POST   /api/shares`     — create a share (see [`create`])
+//!   * `GET    /api/shares`     — management list (see [`list`])
+//!   * `DELETE /api/shares/{id}` — revoke (see [`revoke`])
+//!
+//! All three are session-gated by the standard middleware (nothing here is
+//! pre-auth; the recipient-facing mirrors live elsewhere) and mutations go
+//! through the double-submit CSRF check like every other owner write.
+//!
+//! Security invariants this module is responsible for:
+//!   * The raw token is returned by `POST` **exactly once** and is stored
+//!     nowhere — only its SHA-256 enters the database. A list response can
+//!     never reconstruct a link, so a stolen `GET /api/shares` body is not
+//!     a stolen share.
+//!   * Passwords are hashed with argon2id before persistence (reuse of
+//!     `castify_auth::password`, same as the owner credential) — plaintext
+//!     never reaches storage or logs.
+//!   * `share_url` is deliberately relative (`/share/<token>`): the SPA
+//!     resolves it against the current origin, so it stays correct behind
+//!     reverse proxies and when `CASTIFY_APP_BASE_URL` is unset.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
+use axum_extra::extract::CookieJar;
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use uuid::Uuid;
+
+use castify_auth::password::hash_password;
+
+use crate::auth::resolve_owner_id;
+use crate::error::{ApiError, ApiResult};
+use crate::routes::validate_password;
+use crate::shares::token::{generate_share_token, hash_share_token};
+use crate::shares::NewShare;
+use crate::state::AppState;
+
+/// Fills the NOT NULL `title` column when the owner didn't name the share.
+const DEFAULT_TITLE: &str = "Shared items";
+const MAX_TITLE_LEN: usize = 200;
+
+#[derive(Debug, Deserialize)]
+pub struct CreateShareRequest {
+    /// 1..N existing catalog video ids, in curation order.
+    pub video_ids: Vec<String>,
+    pub title: Option<String>,
+    /// Optional share password (8..=256 chars, same policy as the owner
+    /// credential). Hashed with argon2id before storage.
+    pub password: Option<String>,
+    /// Optional RFC3339 expiry; must be strictly in the future.
+    pub expires_at: Option<String>,
+}
+
+/// Response of `POST /api/shares`. `token` and `share_url` appear here and
+/// here only — there is no later endpoint to recover them.
+#[derive(Debug, Serialize)]
+pub struct CreatedShareResponse {
+    pub id: String,
+    pub title: String,
+    pub token: String,
+    pub share_url: String,
+}
+
+/// Management list entry. Deliberately excludes every piece of token and
+/// password material — `token_hash` and `password_hash` stay server-side.
+#[derive(Debug, Serialize)]
+pub struct ShareDto {
+    pub id: String,
+    pub title: String,
+    pub item_count: i64,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub status: &'static str,
+}
+
+/// Derived, point-in-time share state for the management list.
+///
+/// Revocation beats expiry (both are terminal, but "revoked" is the action
+/// the owner took and the one they can map to a list row). An unparseable
+/// `expires_at` fails **closed** to `Expired`: a corrupt row must never
+/// present as a live share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareStatus {
+    Active,
+    Expired,
+    Revoked,
+}
+
+impl ShareStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShareStatus::Active => "active",
+            ShareStatus::Expired => "expired",
+            ShareStatus::Revoked => "revoked",
+        }
+    }
+}
+
+fn derive_status(
+    revoked_at: Option<&str>,
+    expires_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> ShareStatus {
+    if revoked_at.is_some() {
+        return ShareStatus::Revoked;
+    }
+    match expires_at.map(DateTime::parse_from_rfc3339) {
+        Some(Ok(expires_at)) => {
+            // Valid through the instant of expiry — same boundary as the
+            // unlock-cookie check (`shares::token::VerifiedUnlock`).
+            if now > expires_at.with_timezone(&Utc) {
+                ShareStatus::Expired
+            } else {
+                ShareStatus::Active
+            }
+        }
+        // Missing expiry = never expires; a present-but-corrupt one is
+        // treated as expired (fail closed, see doc comment).
+        Some(Err(_)) => ShareStatus::Expired,
+        None => ShareStatus::Active,
+    }
+}
+
+/// Validate a caller-supplied title, returning the effective one. `None`
+/// and whitespace-only fall back to [`DEFAULT_TITLE`]; the trim keeps
+/// storage and list rendering predictable.
+fn validate_title(raw: Option<&str>) -> ApiResult<&str> {
+    let trimmed = raw.map(str::trim).unwrap_or_default();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_TITLE);
+    }
+    let len = trimmed.chars().count();
+    if len > MAX_TITLE_LEN {
+        return Err(ApiError::Validation {
+            detail: format!("title must be at most {MAX_TITLE_LEN} characters"),
+        });
+    }
+    Ok(trimmed)
+}
+
+/// Parse + validate `expires_at`: RFC3339 (with timezone) and strictly in
+/// the future. Returns the normalized storage form (UTC, whole seconds,
+/// `Z` suffix) matching the timestamps the rest of the module writes.
+/// `now` is injected so the boundary is unit-testable.
+fn parse_expiry(raw: &str, now: DateTime<Utc>) -> ApiResult<String> {
+    let parsed = DateTime::parse_from_rfc3339(raw).map_err(|_| ApiError::Validation {
+        detail: "expires_at must be an RFC3339 timestamp with timezone (e.g. 2027-01-01T00:00:00Z)"
+            .to_string(),
+    })?;
+    let utc = parsed.with_timezone(&Utc);
+    if utc <= now {
+        return Err(ApiError::Validation {
+            detail: "expires_at must be in the future".to_string(),
+        });
+    }
+    Ok(utc.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+/// `POST /api/shares` — create a share.
+///
+/// Validation is fully ordered before any expensive or persisting work:
+/// cheap request-shape checks first, then catalog existence checks, and
+/// only then the argon2id hash — a request doomed to 400 must not burn
+/// CPU or write anything. The raw token is minted last and exists only in
+/// this handler's response; the database row is written with its SHA-256.
+pub async fn create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<CreateShareRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let owner_id: Uuid = resolve_owner_id(&state, &jar).await?;
+
+    let title = validate_title(req.title.as_deref())?;
+
+    if req.video_ids.is_empty() {
+        return Err(ApiError::Validation {
+            detail: "video_ids must contain at least 1 item".to_string(),
+        });
+    }
+    let unique: HashSet<&String> = req.video_ids.iter().collect();
+    if unique.len() != req.video_ids.len() {
+        return Err(ApiError::Validation {
+            detail: "video_ids contains duplicates".to_string(),
+        });
+    }
+    if let Some(password) = req.password.as_deref() {
+        validate_password(password)?;
+    }
+    let expires_at = match req.expires_at.as_deref() {
+        Some(raw) => Some(parse_expiry(raw, Utc::now())?),
+        None => None,
+    };
+    for video_id in &req.video_ids {
+        if !state.catalog_repository().video_exists(video_id).await? {
+            return Err(ApiError::Validation {
+                detail: format!("video {video_id} does not exist in the catalog"),
+            });
+        }
+    }
+
+    let password_hash = match req.password.as_deref() {
+        // Only reached after validation: hashing a checked password.
+        Some(password) => Some(hash_password(password)?),
+        None => None,
+    };
+
+    let token = generate_share_token();
+    let token_hash = hash_share_token(&token);
+    let row = state
+        .share_repository()
+        .create_share(&NewShare {
+            owner_id: &owner_id,
+            token_hash: &token_hash,
+            password_hash: password_hash.as_deref(),
+            title,
+            expires_at: expires_at.as_deref(),
+            video_ids: &req.video_ids,
+        })
+        .await?;
+    tracing::info!(
+        share_id = %row.id,
+        item_count = req.video_ids.len(),
+        "share created"
+    );
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedShareResponse {
+            id: row.id,
+            title: row.title,
+            share_url: format!("/share/{token}"),
+            token,
+        }),
+    ))
+}
+
+/// `GET /api/shares` — the owner's management list, newest first.
+///
+/// Item counts are fetched per share (`list_items().len()`): N+1 reads on
+/// a personal-server scale (single owner, dozens of shares) in exchange
+/// for zero extra repository surface. Revisit with a JOIN if share counts
+/// ever grow.
+pub async fn list(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<Vec<ShareDto>>> {
+    let owner_id = resolve_owner_id(&state, &jar).await?;
+    let repo = state.share_repository();
+    let rows = repo.list_by_owner(&owner_id.to_string()).await?;
+
+    let now = Utc::now();
+    let mut dtos = Vec::with_capacity(rows.len());
+    for row in rows {
+        let item_count = repo.list_items(&row.id).await?.len() as i64;
+        dtos.push(ShareDto {
+            status: derive_status(row.revoked_at.as_deref(), row.expires_at.as_deref(), now)
+                .as_str(),
+            id: row.id,
+            title: row.title,
+            item_count,
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+            revoked_at: row.revoked_at,
+        });
+    }
+    Ok(Json(dtos))
+}
+
+/// `DELETE /api/shares/{id}` — revoke a share (soft delete).
+///
+/// Sets `revoked_at`; the row is never deleted, so the action is auditable
+/// and reversible only by creating a new share (by design). Idempotent by
+/// contract: revoking a revoked, foreign, or unknown share still returns
+/// 204 — the terminal state the caller asked for is the one that holds.
+/// Scoping by `owner_id` keeps the multi-owner seam honest even though
+/// this instance has exactly one.
+pub async fn revoke(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let owner_id = resolve_owner_id(&state, &jar).await?;
+    state
+        .share_repository()
+        .revoke_owned(&owner_id.to_string(), &id)
+        .await?;
+    tracing::info!(share_id = %id, "share revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn now() -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    #[test]
+    fn derive_status_prefers_revocation_over_expiry() {
+        let n = now();
+        let past = "2000-01-01T00:00:00Z";
+        assert_eq!(
+            derive_status(Some(past), Some(past), n),
+            ShareStatus::Revoked,
+            "revoked is the terminal word even when also expired"
+        );
+    }
+
+    #[test]
+    fn derive_status_marks_past_expiry_expired_and_future_active() {
+        let n = now();
+        assert_eq!(
+            derive_status(None, Some("2000-01-01T00:00:00Z"), n),
+            ShareStatus::Expired
+        );
+        assert_eq!(
+            derive_status(None, Some("2099-01-01T00:00:00Z"), n),
+            ShareStatus::Active
+        );
+        assert_eq!(derive_status(None, None, n), ShareStatus::Active);
+    }
+
+    #[test]
+    fn derive_status_is_valid_at_the_exact_expiry_instant() {
+        // Boundary mirrors VerifiedUnlock::is_current (`now <= expires_at`).
+        // Storage timestamps are whole seconds, so pin the instant to one.
+        let expiry = DateTime::from_timestamp((now() + Duration::hours(1)).timestamp(), 0)
+            .expect("valid whole-second instant");
+        let raw = expiry.to_rfc3339_opts(SecondsFormat::Secs, true);
+        assert_eq!(derive_status(None, Some(&raw), expiry), ShareStatus::Active);
+        assert_eq!(
+            derive_status(None, Some(&raw), expiry + Duration::seconds(1)),
+            ShareStatus::Expired
+        );
+    }
+
+    #[test]
+    fn derive_status_fails_closed_on_corrupt_expiry() {
+        assert_eq!(
+            derive_status(None, Some("not-a-timestamp"), now()),
+            ShareStatus::Expired,
+            "a corrupt row must never present as a live share"
+        );
+    }
+
+    #[test]
+    fn validate_title_defaults_and_bounds() {
+        assert_eq!(validate_title(None).unwrap(), DEFAULT_TITLE);
+        assert_eq!(validate_title(Some("   ")).unwrap(), DEFAULT_TITLE);
+        assert_eq!(validate_title(Some("  Trip  ")).unwrap(), "Trip");
+        assert!(validate_title(Some(&"x".repeat(MAX_TITLE_LEN))).is_ok());
+        assert!(validate_title(Some(&"x".repeat(MAX_TITLE_LEN + 1))).is_err());
+    }
+
+    #[test]
+    fn parse_expiry_normalizes_to_utc_z_and_rejects_bad_input() {
+        let n = now();
+        let normalized = parse_expiry("2030-06-15T12:00:00+08:00", n).unwrap();
+        assert_eq!(normalized, "2030-06-15T04:00:00Z");
+
+        assert!(parse_expiry("2000-01-01T00:00:00Z", n).is_err(), "past");
+        // Exactly now is not the future.
+        let stamp = n.to_rfc3339_opts(SecondsFormat::Secs, true);
+        assert!(parse_expiry(&stamp, n).is_err(), "now is not future");
+        assert!(
+            parse_expiry("2030-06-15T12:00:00", n).is_err(),
+            "no timezone"
+        );
+        assert!(parse_expiry("garbage", n).is_err());
+    }
+}

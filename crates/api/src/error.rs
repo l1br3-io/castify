@@ -23,6 +23,8 @@ pub enum ApiError {
     Auth(#[from] castify_auth::AuthError),
     #[error("catalog error: {0}")]
     Catalog(#[from] castify_catalog::CatalogError),
+    #[error("share error: {0}")]
+    Shares(#[from] crate::shares::ShareError),
     #[error("provider error: {0}")]
     Provider(#[from] castify_catalog::ProviderError),
     /// The provider's refresh token has expired or been revoked
@@ -110,6 +112,19 @@ impl IntoResponse for ApiError {
                     err.to_string()
                 };
                 (status, message, None, None, None)
+            }
+            ApiError::Shares(err) => {
+                // Route-level validation happens before any repository
+                // call, so an error surfacing from the share subsystem is
+                // infrastructure (DB, crypto) — opaque 500.
+                tracing::error!(error = ?err, "share subsystem error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                    None,
+                    None,
+                    None,
+                )
             }
             ApiError::Provider(err) => {
                 tracing::error!(error = ?err, "provider error");

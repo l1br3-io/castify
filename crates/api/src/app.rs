@@ -7,7 +7,7 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
-use crate::routes::{connections, csrf, files, folders, health, session, setup, videos};
+use crate::routes::{connections, csrf, files, folders, health, session, setup, shares, videos};
 use crate::spa::spa_handler;
 use crate::state::AppState;
 
@@ -147,7 +147,12 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/videos/{id}/transcode",
             axum::routing::delete(videos::cancel_transcode),
-        );
+        )
+        .route(
+            "/api/shares",
+            axum::routing::post(shares::create).get(shares::list),
+        )
+        .route("/api/shares/{id}", axum::routing::delete(shares::revoke));
 
     #[cfg(feature = "e2e")]
     let router = router
