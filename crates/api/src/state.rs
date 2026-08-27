@@ -12,6 +12,8 @@ use castify_catalog::{
 use castify_core::Config;
 use sqlx::SqlitePool;
 
+use crate::shares::ShareRepository;
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -23,6 +25,7 @@ struct AppStateInner {
     pool: SqlitePool,
     repository: AuthRepository,
     catalog_repository: CatalogRepository,
+    share_repository: ShareRepository,
     oauth_store: OAuthStateStore,
     session_secret: SessionSecret,
     provider_registry: ProviderRegistry,
@@ -45,6 +48,7 @@ impl AppState {
     ) -> Self {
         let repository = AuthRepository::new(pool.clone());
         let catalog_repository = CatalogRepository::new(pool.clone(), token_key);
+        let share_repository = ShareRepository::new(pool.clone());
         let oauth_store = OAuthStateStore::new();
         let provider_registry = ProviderRegistry::new(
             config.google_oauth.as_ref().map(|o| GoogleDriveConfig {
@@ -70,6 +74,7 @@ impl AppState {
                 pool,
                 repository,
                 catalog_repository,
+                share_repository,
                 oauth_store,
                 session_secret,
                 provider_registry,
@@ -118,6 +123,11 @@ impl AppState {
 
     pub fn catalog_repository(&self) -> &CatalogRepository {
         &self.inner.catalog_repository
+    }
+
+    /// Shares persistence + membership checks (docs/specs/sharing).
+    pub fn share_repository(&self) -> &ShareRepository {
+        &self.inner.share_repository
     }
 
     pub fn oauth_store(&self) -> &OAuthStateStore {

@@ -7,6 +7,7 @@ pub mod error;
 pub mod local_source;
 pub mod middleware;
 pub mod routes;
+pub mod shares;
 pub mod shutdown;
 pub mod spa;
 pub mod state;

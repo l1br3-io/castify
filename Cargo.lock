@@ -285,6 +285,7 @@ dependencies = [
  "castify-catalog",
  "castify-core",
  "castify-storage",
+ "chrono",
  "cookie",
  "dotenvy",
  "futures",
@@ -294,6 +295,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "thiserror",
@@ -303,6 +305,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
