@@ -37,6 +37,10 @@ struct AppStateInner {
     /// When `Some`, the `/stream` handler tee's response bytes to disk and
     /// `get_stream_url` returns `Cached` strategy for cache hits.
     video_cache: Option<Arc<DiskCache>>,
+    /// In-memory per-share failure counters for the unlock endpoint
+    /// (docs/specs/sharing, task 004). Deliberately never persisted — a
+    /// restart clears all lockouts.
+    unlock_rate_limiter: crate::shares::ratelimit::UnlockRateLimiter,
 }
 
 impl AppState {
@@ -101,6 +105,7 @@ impl AppState {
                 } else {
                     None
                 },
+                unlock_rate_limiter: crate::shares::ratelimit::UnlockRateLimiter::new(),
             }),
         }
     }
@@ -149,6 +154,12 @@ impl AppState {
     /// (`CASTIFY_VIDEO_CACHE_ENABLED=false`).
     pub fn video_cache(&self) -> Option<&Arc<DiskCache>> {
         self.inner.video_cache.as_ref()
+    }
+
+    /// In-memory unlock rate limiting (docs/specs/sharing). Per-share
+    /// failure counters with a 15-minute cool-off; never persisted.
+    pub fn unlock_rate_limiter(&self) -> &crate::shares::ratelimit::UnlockRateLimiter {
+        &self.inner.unlock_rate_limiter
     }
 
     /// Per-video coordination map for local source resolution (M8 Task 005).

@@ -28,6 +28,7 @@
 //! storage crate is rebuilt — `cargo build` may not notice the new file
 //! on its own. `touch crates/storage/src/lib.rs` forces the re-snapshot.
 
+pub mod ratelimit;
 pub mod repository;
 pub mod status;
 pub mod token;

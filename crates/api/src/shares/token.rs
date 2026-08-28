@@ -214,15 +214,19 @@ mod tests {
     }
 
     /// Raw tokens and passwords must never reach `tracing`. Source-level
-    /// lint: no `tracing::` macro call in this module (or the repository)
-    /// may mention token material. If you legitimately need a log line
-    /// here, log the share *id* or a hash prefix — never the raw token.
+    /// lint: no `tracing::` macro call in this module (or the repository,
+    /// rate limiter, recipient routes, or cookie plumbing) may mention
+    /// token material. If you legitimately need a log line here, log the
+    /// share *id* or a hash prefix — never the raw token.
     #[test]
     fn no_tracing_macro_references_token_material() {
         for file in [
             include_str!("token.rs"),
             include_str!("repository.rs"),
+            include_str!("ratelimit.rs"),
             include_str!("mod.rs"),
+            include_str!("../routes/share.rs"),
+            include_str!("../cookies.rs"),
         ] {
             for line in file.lines() {
                 let trimmed = line.trim_start();

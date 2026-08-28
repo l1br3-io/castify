@@ -26,6 +26,11 @@ pub enum ApiError {
     /// so the SPA shows the share's password gate, not a login redirect.
     #[error("this share requires a password")]
     ShareLocked,
+    /// Too many consecutive failed unlock attempts for one share token
+    /// (docs/specs/sharing). HTTP 429 with `code: "rate_limited"` — the
+    /// cool-off window is 15 minutes (see `shares::ratelimit::COOL_OFF`).
+    #[error("too many unlock attempts; wait a bit and try again")]
+    RateLimited,
     #[error("csrf token missing or mismatched")]
     ForbiddenCsrf,
     #[error("service unavailable: {0}")]
@@ -94,6 +99,13 @@ impl IntoResponse for ApiError {
                 StatusCode::UNAUTHORIZED,
                 self.to_string(),
                 Some("share_locked"),
+                None,
+                None,
+            ),
+            ApiError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                self.to_string(),
+                Some("rate_limited"),
                 None,
                 None,
             ),

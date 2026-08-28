@@ -156,7 +156,11 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/api/shares/{id}", axum::routing::delete(shares::revoke))
         .route("/api/share/{token}", axum::routing::get(share::resolve))
-        .route("/api/share/{token}/items", axum::routing::get(share::items));
+        .route("/api/share/{token}/items", axum::routing::get(share::items))
+        .route(
+            "/api/share/{token}/unlock",
+            axum::routing::post(share::unlock),
+        );
 
     #[cfg(feature = "e2e")]
     let router = router
