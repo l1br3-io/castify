@@ -294,16 +294,24 @@ pub async fn get_thumbnail(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
+    serve_thumbnail(&state, &id).await
+}
+
+/// Thumbnail-serving core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 005): authorization is the caller's job, this
+/// resolves the bytes — disk-cached fast path first, provider fetch with a
+/// single token refresh otherwise, caching what it fetches.
+pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Response> {
     let repo = state.catalog_repository();
 
     let info = repo
-        .fetch_video_thumbnail_info(&id)
+        .fetch_video_thumbnail_info(id)
         .await?
         .ok_or(ApiError::NotFound)?;
 
     // Fast paths that skip the provider entirely.
     if info.thumbnail_status == "cached" {
-        let path = thumbnail_cache_path(&state, &id);
+        let path = thumbnail_cache_path(state, id);
         match tokio::fs::read(&path).await {
             Ok(bytes) => {
                 let mime = detect_image_mime(&bytes);
@@ -343,7 +351,7 @@ pub async fn get_thumbnail(
             } else {
                 "failed"
             };
-            let _ = repo.update_thumbnail_status(&id, status).await;
+            let _ = repo.update_thumbnail_status(id, status).await;
             return Err(if is_not_found {
                 ApiError::NotFound
             } else {
@@ -357,13 +365,13 @@ pub async fn get_thumbnail(
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
-    let path = dir.join(&id);
+    let path = dir.join(id);
     tokio::fs::write(&path, &thumbnail.bytes)
         .await
         .map_err(|e| ApiError::Internal(e.into()))?;
 
     // Update status (best-effort — bytes are already served even if this fails).
-    let _ = repo.update_thumbnail_status(&id, "cached").await;
+    let _ = repo.update_thumbnail_status(id, "cached").await;
 
     Ok(image_response(thumbnail.bytes, &thumbnail.mime_type))
 }
@@ -440,26 +448,38 @@ pub async fn get_stream(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    serve_video_stream(&state, &id, &headers).await
+}
+
+/// Stream-serving core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 005): resolve → open (with token refresh) →
+/// tee to the hot-video cache → instrument. Authorization is the caller's
+/// job; the body behavior is identical for owner and recipient requests.
+pub(crate) async fn serve_video_stream(
+    state: &AppState,
+    id: &str,
+    headers: &HeaderMap,
+) -> ApiResult<Response> {
     let start = Instant::now();
-    let stream_info = resolve_stream_info(&state, &id).await?;
+    let stream_info = resolve_stream_info(state, id).await?;
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    let stream_response = open_stream_with_refresh(&state, &stream_info, range.as_deref()).await?;
+    let stream_response = open_stream_with_refresh(state, &stream_info, range.as_deref()).await?;
     // Tee to disk cache before instrumentation so the cache captures raw
     // provider bytes (instrumentation would see post-tee bytes, which is
     // fine semantically but it's cleaner to separate concerns).
     let teed = maybe_tee_stream_response(
-        &state,
+        state,
         stream_response,
-        &id,
+        id,
         &stream_info.connection_id,
         &stream_info.provider_file_id,
     )
     .await;
-    let instrumented = instrument_stream_response(teed, &id, range.as_deref(), start);
+    let instrumented = instrument_stream_response(teed, id, range.as_deref(), start);
     Ok(stream_to_response(instrumented, None))
 }
 
@@ -630,24 +650,42 @@ pub async fn get_stream_url(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<StreamUrlResponse>> {
+    Ok(Json(serve_stream_url(&state, &id, "/api").await?))
+}
+
+/// Stream-URL-resolution core shared by the owner route and the share
+/// mirror (docs/specs/sharing task 005). `scope_base` roots every
+/// Castify-served URL the response can carry:
+///
+/// // GOTCHA: this base-path parameter is the only path-rewriting the share
+/// // mirrors need. Media playlists reference `{variant}/playlist.m3u8`
+/// // relatively, so HLS sub-resources resolve against whatever scope
+/// // served the master playlist — only `stream-url` hands out absolute
+/// // Castify paths that must be re-rooted. Browser-direct CDN URLs pass
+/// // through untouched either way.
+pub(crate) async fn serve_stream_url(
+    state: &AppState,
+    id: &str,
+    scope_base: &str,
+) -> ApiResult<StreamUrlResponse> {
     let start = Instant::now();
-    let stream_info = resolve_stream_info(&state, &id).await?;
+    let stream_info = resolve_stream_info(state, id).await?;
     let repo = state.catalog_repository();
 
     // Check cache first (M4). If we have a valid cache entry (correct
     // provider_file_id + file exists on disk), return Cached strategy.
-    if let Some(entry) = repo.fetch_video_cache_entry(&id).await? {
+    if let Some(entry) = repo.fetch_video_cache_entry(id).await? {
         if entry.provider_file_id == stream_info.provider_file_id {
             // Verify file still exists on disk.
             let cache_hit = if let Some(cache) = state.video_cache() {
-                cache.exists(&id).await.unwrap_or(false)
+                cache.exists(id).await.unwrap_or(false)
             } else {
                 false
             };
             if cache_hit {
-                repo.touch_video_cache_entry(&id).await?;
+                repo.touch_video_cache_entry(id).await?;
                 let response = StreamUrlResponse {
-                    url: format!("/api/videos/{id}/cached-stream"),
+                    url: format!("{scope_base}/videos/{id}/cached-stream"),
                     strategy: "cached".into(),
                     expires_at: None,
                 };
@@ -657,29 +695,29 @@ pub async fn get_stream_url(
                     resolve_ms = start.elapsed().as_millis() as u64,
                     "stream-url resolved"
                 );
-                return Ok(Json(response));
+                return Ok(response);
             } else {
                 // File missing on disk but manifest says cached — clean up.
                 tracing::info!(video_id = %id, "cache file missing; evicting manifest row");
-                repo.delete_video_cache_entry(&id).await?;
+                repo.delete_video_cache_entry(id).await?;
             }
         } else {
             // Stale cache (provider replaced the file). Evict.
             tracing::info!(video_id = %id, "cache entry stale; evicting");
-            repo.delete_video_cache_entry(&id).await?;
+            repo.delete_video_cache_entry(id).await?;
             if let Some(cache) = state.video_cache() {
-                let _ = cache.delete(&id).await;
+                let _ = cache.delete(id).await;
             }
         }
     }
 
-    let stream_url = resolve_stream_url_with_refresh(&state, &stream_info).await?;
-    let response = StreamUrlResponse::from_stream_url(&stream_url, &stream_info.id);
+    let stream_url = resolve_stream_url_with_refresh(state, &stream_info).await?;
+    let response = StreamUrlResponse::from_stream_url(&stream_url, &stream_info.id, scope_base);
 
     // M6: codec-based transcode trigger. If the video's codec is known
     // (via M5 probe) and is browser-incompatible, override to transcode
     // strategy regardless of what the provider returned.
-    let response = maybe_override_to_transcode(&state, &id, response).await;
+    let response = maybe_override_to_transcode(state, id, response, scope_base).await;
 
     tracing::info!(
         video_id = %id,
@@ -692,9 +730,9 @@ pub async fn get_stream_url(
     // probed yet. The probe downloads 1 MB via the provider's open_stream,
     // shells out to ffprobe, and updates the codec columns. Failures are
     // logged and don't affect playback.
-    spawn_lazy_probe(&state, &stream_info);
+    spawn_lazy_probe(state, &stream_info);
 
-    Ok(Json(response))
+    Ok(response)
 }
 
 /// Check if the video's codec requires transcoding (M6). If the codec is
@@ -704,6 +742,7 @@ async fn maybe_override_to_transcode(
     state: &AppState,
     video_id: &str,
     mut response: StreamUrlResponse,
+    scope_base: &str,
 ) -> StreamUrlResponse {
     use sqlx::Row;
 
@@ -741,7 +780,7 @@ async fn maybe_override_to_transcode(
             "codec incompatible; overriding to transcode strategy"
         );
         response = StreamUrlResponse {
-            url: format!("/api/videos/{video_id}/transcode/master.m3u8"),
+            url: format!("{scope_base}/videos/{video_id}/transcode/master.m3u8"),
             strategy: "transcode".into(),
             expires_at: None,
         };
@@ -917,17 +956,17 @@ pub struct StreamUrlResponse {
 }
 
 impl StreamUrlResponse {
-    fn from_stream_url(stream_url: &StreamUrl, video_id: &str) -> Self {
+    fn from_stream_url(stream_url: &StreamUrl, video_id: &str, scope_base: &str) -> Self {
         match stream_url {
             StreamUrl::Direct { url, expires_at } => Self {
                 url: url.clone(),
                 strategy: "direct".into(),
                 expires_at: expires_at.clone(),
             },
-            // For the proxy path, point the browser at the existing /stream
+            // For the proxy path, point the browser at the /stream
             // endpoint. The proxy handles token refresh and Range internally.
             StreamUrl::Proxied => Self {
-                url: format!("/api/videos/{video_id}/stream"),
+                url: format!("{scope_base}/videos/{video_id}/stream"),
                 strategy: "proxy".into(),
                 expires_at: None,
             },

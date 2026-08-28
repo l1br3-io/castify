@@ -6,6 +6,10 @@
 //!     order, only once unlocked (see [`items`])
 //!   * `POST /api/share/{token}/unlock` — password gate: rate-limited
 //!     argon2id verification, then the signed unlock cookie (see [`unlock`])
+//!   * `GET /api/share/{token}/videos/{id}/{stream,stream-url,thumbnail}`
+//!     — media mirrors (task 005): the shared guard, then byte-identical
+//!     delegation to the owner handlers' cores (see [`stream`],
+//!     [`stream_url`], [`thumbnail`])
 //!
 //! Pre-auth by the `/api/share/` prefix rule in [`crate::middleware`]:
 //! recipients hold no session. Validation is per-request against the
@@ -13,18 +17,23 @@
 //! [`crate::shares::status::require_accessible_share`], which resolves the
 //! token hash (404), runs the status machine (revoked/expired → 410
 //! `share_unavailable`, locked without a current unlock → 401
-//! `share_locked`), and hands back the row. The unlock cookie is a hint,
-//! never authority: revocation and expiry are re-checked on every request.
+//! `share_locked`), and hands back the row. The media mirrors add the
+//! membership check via [`crate::shares::status::authorize_share_item`] —
+//! a non-member video id is a 404 even on a live share. The unlock cookie
+//! is a hint, never authority: revocation and expiry are re-checked on
+//! every request.
 //!
 //! Reads only — recipient traffic performs zero server writes (spec
 //! success criterion #7). The unlock POST is the sanctioned exception:
-//! its only write is the response cookie.
+//! its only write is the response cookie. (Cache materialization through
+//! the shared streaming/thumbnail cores — tee writes, thumbnail disk
+//! cache, lazy probe — is owner-cache side effect, not recipient data.)
 
 use std::time::Instant;
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
-use axum::response::IntoResponse;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
@@ -34,8 +43,13 @@ use castify_catalog::VideoSummary;
 
 use crate::cookies::build_share_unlock_cookie;
 use crate::error::{ApiError, ApiResult};
+use crate::routes::videos::{
+    serve_stream_url, serve_thumbnail, serve_video_stream, StreamUrlResponse,
+};
 use crate::shares::ratelimit::RateVerdict;
-use crate::shares::status::{lookup_share_state, require_accessible_share, ShareState};
+use crate::shares::status::{
+    authorize_share_item, lookup_share_state, require_accessible_share, ShareState,
+};
 use crate::shares::token::issue_unlock_value;
 use crate::state::AppState;
 
@@ -70,11 +84,7 @@ pub async fn resolve(
 ) -> ApiResult<Json<ShareResolveResponse>> {
     let (row, verdict) = lookup_share_state(&state, &jar, &token).await?;
     verdict.ensure_not_terminal()?;
-    let item_count = state
-        .share_repository()
-        .list_items(&row.id)
-        .await?
-        .len() as i64;
+    let item_count = state.share_repository().list_items(&row.id).await?.len() as i64;
 
     Ok(Json(ShareResolveResponse {
         title: row.title,
@@ -149,7 +159,10 @@ pub async fn unlock(
 
     let verified = verify_password(&body.password, &password_hash).is_ok();
     if !verified {
-        if state.unlock_rate_limiter().record_failure(&row.id, Instant::now()) {
+        if state
+            .unlock_rate_limiter()
+            .record_failure(&row.id, Instant::now())
+        {
             tracing::warn!(share_id = %row.id, "share unlock lockout engaged");
         }
         return Err(ApiError::ShareLocked);
@@ -164,4 +177,49 @@ pub async fn unlock(
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     Ok(response)
+}
+
+// ------------------------------------------------- media mirrors (task 005)
+
+/// `GET /api/share/{token}/videos/{id}/stream` — recipient streaming.
+///
+/// [`authorize_share_item`] (status machine + membership), then the exact
+/// core the owner route runs: Range passthrough, single token refresh,
+/// hot-cache tee, instrumentation. Body behavior is identical — mirrors
+/// add a path to the same bytes, they don't change them.
+pub async fn stream(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_video_stream(&state, &id, &headers).await
+}
+
+/// `GET /api/share/{token}/videos/{id}/stream-url` — strategy resolution
+/// for the share watch page. Same strategies as the owner route, but every
+/// Castify-served URL is rooted at `/api/share/{token}/videos/{id}/...`
+/// so the recipient's browser never needs (or can use) an owner route.
+/// Browser-direct CDN URLs pass through unchanged.
+pub async fn stream_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+) -> ApiResult<Json<StreamUrlResponse>> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    let scope_base = format!("/api/share/{token}");
+    Ok(Json(serve_stream_url(&state, &id, &scope_base).await?))
+}
+
+/// `GET /api/share/{token}/videos/{id}/thumbnail` — the landing/list
+/// pages' poster images. Guard, then the owner thumbnail core (disk-cache
+/// fast path, provider fetch with refresh on first miss).
+pub async fn thumbnail(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_thumbnail(&state, &id).await
 }

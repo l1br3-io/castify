@@ -178,10 +178,7 @@ mod tests {
 
     #[test]
     fn pre_auth_covers_only_the_unlock_post_on_shares() {
-        assert!(is_pre_auth(
-            &Method::POST,
-            "/api/share/abc123/unlock"
-        ));
+        assert!(is_pre_auth(&Method::POST, "/api/share/abc123/unlock"));
         // Any other recipient POST stays gated...
         assert!(!is_pre_auth(&Method::POST, "/api/share/abc123/items"));
         assert!(!is_pre_auth(&Method::POST, "/api/share/abc123"));

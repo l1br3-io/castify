@@ -13,6 +13,15 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Returns the state and the TempPath keeping the db file alive (caller must
 /// hold both for the test's lifetime).
 pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
+    fresh_state_with(|_| {}).await
+}
+
+/// [`fresh_state`] with config tweaks applied before the `AppState` is
+/// constructed (e.g. enabling transcode for a share-mirror test that needs
+/// the codec-override branch of `/stream-url`).
+pub async fn fresh_state_with(
+    configure: impl FnOnce(&mut Config),
+) -> (AppState, TempPath, PathBuf) {
     let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
     let path: PathBuf = named.to_path_buf();
     let pool: SqlitePool = connect(&path).await.unwrap();
@@ -28,7 +37,7 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&data_dir).ok();
-    let config = Config {
+    let mut config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         log_level: "warn".to_string(),
         data_dir: data_dir.clone(),
@@ -50,6 +59,7 @@ pub async fn fresh_state() -> (AppState, TempPath, PathBuf) {
         },
         abr: castify_core::AbrConfig::default(),
     };
+    configure(&mut config);
     let state = AppState::new(config, pool, secret, token_key);
     (state, named, path)
 }

@@ -160,6 +160,18 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/share/{token}/unlock",
             axum::routing::post(share::unlock),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/stream",
+            axum::routing::get(share::stream),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/stream-url",
+            axum::routing::get(share::stream_url),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/thumbnail",
+            axum::routing::get(share::thumbnail),
         );
 
     #[cfg(feature = "e2e")]

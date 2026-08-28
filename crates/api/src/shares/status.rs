@@ -2,11 +2,12 @@
 //! recipient may do with a share (docs/specs/sharing, task 003).
 //!
 //! Every recipient-facing handler (resolve, items, the unlock + mirror
-//! routes that follow) funnels through [`resolve_share_state`]: the matrix
+//! routes that follow) funnels through [`lookup_share_state`]: the matrix
 //! (unknown → 404, revoked/expired → 410, locked without a valid unlock →
 //! 401, else active) lives here and nowhere else. Handlers contain no
-//! ad-hoc status logic — they call [`require_accessible_share`] and act on
-//! the returned row.
+//! ad-hoc status logic — they call [`require_accessible_share`] (or, for
+//! the per-item media mirrors, [`authorize_share_item`], which layers the
+//! membership check on top) and act on the returned row.
 //!
 //! Security model: the unlock cookie is a *hint*, never authority. State is
 //! re-derived on every request from the database row (`revoked_at`,
@@ -164,6 +165,29 @@ pub async fn require_accessible_share(
     Ok(row)
 }
 
+/// The single guard every media mirror calls: share liveness (the full
+/// status machine via [`require_accessible_share`]) **plus** item
+/// membership. A video outside the share is a 404 — indistinguishable
+/// from an unknown video id, so a valid token probes nothing about the
+/// catalog it doesn't contain. Returns the live share row for handlers
+/// that need it, or the exact protocol error.
+pub async fn authorize_share_item(
+    state: &AppState,
+    jar: &CookieJar,
+    token: &str,
+    video_id: &str,
+) -> ApiResult<ShareRow> {
+    let row = require_accessible_share(state, jar, token).await?;
+    let member = state
+        .share_repository()
+        .is_member(&row.id, video_id)
+        .await?;
+    if !member {
+        return Err(ApiError::NotFound);
+    }
+    Ok(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,12 +294,18 @@ mod tests {
 
         // Right secret, wrong share.
         let foreign = unlock_for(&secret, "someone-elses-share");
-        assert_eq!(resolve_share_state(&locked, Some(&foreign), n), ShareState::Locked);
+        assert_eq!(
+            resolve_share_state(&locked, Some(&foreign), n),
+            ShareState::Locked
+        );
 
         // Right share, stale cookie (beyond 24h rolling TTL).
         let mut stale = unlock.clone();
         stale.issued_at = n - Duration::hours(25);
-        assert_eq!(resolve_share_state(&locked, Some(&stale), n), ShareState::Locked);
+        assert_eq!(
+            resolve_share_state(&locked, Some(&stale), n),
+            ShareState::Locked
+        );
     }
 
     #[test]
