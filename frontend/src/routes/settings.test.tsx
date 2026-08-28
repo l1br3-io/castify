@@ -102,7 +102,9 @@ describe("SettingsPage", () => {
 
     const login = await screen.findByTestId("login");
     expect(login).toHaveTextContent("password_changed");
-    expect(login).toHaveTextContent("signed-out");
+    // The probe's session query starts in flight (`undefined` renders as
+    // "session"), so wait for the 401→null resolution instead of racing it.
+    await waitFor(() => expect(login).toHaveTextContent("signed-out"));
 
     const putCall = fetchSpy.mock.calls.find(([input, init]) => {
       const url = String(input);

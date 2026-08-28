@@ -55,6 +55,20 @@ describe("PosterCard", () => {
     expect(img).not.toBeNull();
   });
 
+  it("re-roots the thumbnail through the share mirror when given a share scope", () => {
+    const { container } = renderWithProviders(
+      <PosterCard video={VIDEO} scope={{ kind: "share", token: "tok_abc" }} />,
+    );
+
+    // Recipient thumbnails must not touch the session-gated owner route.
+    expect(
+      container.querySelector('img[src="/api/videos/v1/thumbnail"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('img[src="/api/share/tok_abc/videos/v1/thumbnail"]'),
+    ).not.toBeNull();
+  });
+
   it("shows duration and resolution badges after the image loads", () => {
     const { container } = renderWithProviders(<PosterCard video={VIDEO} />);
     // Before load: metadata badges hidden (state === "loading").

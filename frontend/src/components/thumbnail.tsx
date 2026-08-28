@@ -36,6 +36,13 @@ export type ThumbnailVideo = {
 
 export type ThumbnailProps = {
   video: ThumbnailVideo;
+  /**
+   * Override for the thumbnail image URL. Defaults to the owner route
+   * (`/api/videos/{id}/thumbnail`); share pages pass the share-mirror URL
+   * (via `thumbnailUrl(videoId, scope)`) so recipients — who hold no owner
+   * session — get images through the pre-auth share route.
+   */
+  src?: string;
   /** Top-right corner slot — T11 FavoriteToggle (unused by CW cards). */
   topRightSlot?: ReactNode;
   /**
@@ -56,6 +63,7 @@ type ThumbState = "loading" | "loaded" | "error";
 
 export function Thumbnail({
   video,
+  src,
   topRightSlot,
   bottomOverlaySlot,
   bottomBarSlot,
@@ -93,7 +101,7 @@ export function Thumbnail({
 
       {state !== "error" && (
         <img
-          src={`/api/videos/${encodeURIComponent(video.id)}/thumbnail`}
+          src={src ?? `/api/videos/${encodeURIComponent(video.id)}/thumbnail`}
           alt=""
           loading="lazy"
           decoding="async"

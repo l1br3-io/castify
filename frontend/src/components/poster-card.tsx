@@ -33,6 +33,7 @@
 import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
+import { thumbnailUrl, type AccessScope } from "../api/videos";
 import type { VideoSummaryDto } from "../api/types";
 import { otherProviders } from "../lib/video";
 import { DedupBadge, ProviderBadge } from "./badges";
@@ -58,6 +59,12 @@ type PosterCardProps = {
   /** Bottom-overlay slot — T11 RatingStars. Renders on top of the duration/
    *  resolution badges; the slot itself controls its hover visibility. */
   bottomOverlaySlot?: ReactNode;
+  /**
+   * Access scope for media URLs. Defaults to owner routes; share pages pass
+   * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
+   * share mirror instead of the session-gated owner route.
+   */
+  scope?: AccessScope;
 };
 
 export function PosterCard({
@@ -66,6 +73,7 @@ export function PosterCard({
   queue,
   topRightSlot,
   bottomOverlaySlot,
+  scope,
 }: PosterCardProps) {
   // Providers from `sources` excluding the representative's own. Used to
   // decide whether to render a DedupBadge. Shared helper (lib/video.ts).
@@ -115,6 +123,7 @@ export function PosterCard({
       )}
       <Thumbnail
         video={video}
+        src={scope ? thumbnailUrl(video.id, scope) : undefined}
         topRightSlot={topRightSlot}
         bottomOverlaySlot={bottomOverlaySlot}
       />
