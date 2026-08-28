@@ -22,9 +22,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError } from "../api/client";
 import { fetchStreamUrl } from "../api/videos";
+import type { AccessScope } from "../api/videos";
 import type { StreamUrlDto } from "../api/types";
 
 export const REAUTH_REQUIRED_CODE = "reauth_required" as const;
+
+/** Owner default shared by the hook and the query-key builder. */
+const OWNER_SCOPE: AccessScope = { kind: "owner" };
 
 /**
  * Stale-time tuning for `/stream-url` responses. The previous static 60s
@@ -58,7 +62,13 @@ function computeStaleTime(data: StreamUrlDto | undefined): number {
   return DEFAULT_STALE_MS;
 }
 
-export function streamUrlQueryKey(id: string) {
+export function streamUrlQueryKey(id: string, scope: AccessScope = OWNER_SCOPE) {
+  // Share entries live under a token-namespaced root so the same video id
+  // resolved through a share never collides with (or invalidates) the
+  // owner's cached strategy.
+  if (scope.kind === "share") {
+    return ["share", scope.token, "videos", id, "stream-url"] as const;
+  }
   return ["videos", id, "stream-url"] as const;
 }
 
@@ -112,10 +122,20 @@ export function isReauthLikelyError(err: unknown): err is ApiError {
   return REAUTH_LIKELY_PATTERNS.some((p) => msg.includes(p));
 }
 
-export function useStreamUrl(id: string | undefined) {
+/**
+ * Resolve the stream strategy for a video. Pass `{ kind: "share", token }`
+ * to resolve through the share mirror — the response then carries
+ * share-rooted Castify URLs (stream/proxy/cached/transcode master) so the
+ * recipient's player never touches an owner route. The share watch page
+ * (sharing task 010) is the intended scoped caller; the owner watch page
+ * keeps the no-argument default.
+ */
+export function useStreamUrl(id: string | undefined, scope: AccessScope = OWNER_SCOPE) {
   const query = useQuery<StreamUrlDto, ApiError>({
-    queryKey: id ? streamUrlQueryKey(id) : ["videos", undefined, "stream-url"],
-    queryFn: () => fetchStreamUrl(id!),
+    queryKey: id
+      ? streamUrlQueryKey(id, scope)
+      : [...streamUrlQueryKey("", scope)],
+    queryFn: () => fetchStreamUrl(id!, scope),
     enabled: !!id,
     // Dynamic staleTime — derived from the response's `expires_at`. See
     // `computeStaleTime` above for the rationale and edge cases.
@@ -142,12 +162,13 @@ export function useStreamUrl(id: string | undefined) {
  * re-fetch from the backend. Called when the `<video>` element emits an
  * `error` event during direct-CDN playback — typically because the URL has
  * expired mid-session. The player then re-reads `useStreamUrl(id).data.url`
- * and swaps the `<video src>` to the fresh CDN URL.
+ * and swaps the `<video src>` to the fresh CDN URL. Pass the same scope the
+ * query was created with; share entries are keyed by token.
  */
 export function useInvalidateStreamUrl() {
   const queryClient = useQueryClient();
-  return (id: string) =>
-    queryClient.invalidateQueries({ queryKey: streamUrlQueryKey(id) });
+  return (id: string, scope: AccessScope = OWNER_SCOPE) =>
+    queryClient.invalidateQueries({ queryKey: streamUrlQueryKey(id, scope) });
 }
 
 // Re-export so callers can branch on the structured error without reaching

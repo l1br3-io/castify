@@ -1,42 +1,4 @@
 import { createBrowserRouter } from "react-router-dom";
-import { AppLayout } from "./layouts/app-layout";
-import { ConnectionsPage } from "./routes/connections";
-import { HomePage } from "./routes/home";
-import { LoginPage } from "./routes/login";
-import { NotFoundPage } from "./routes/not-found";
-import { SettingsPage } from "./routes/settings";
-import { SetupPage } from "./routes/setup";
-import { WatchPage } from "./routes/watch";
-import { requireSessionLoader, setupLoader } from "./auth/require-session";
+import { routeTree } from "./route-tree";
 
-export const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <AppLayout />,
-    children: [
-      {
-        index: true,
-        element: <HomePage />,
-        loader: requireSessionLoader,
-      },
-      {
-        path: "connections",
-        element: <ConnectionsPage />,
-        loader: requireSessionLoader,
-      },
-      {
-        path: "settings",
-        element: <SettingsPage />,
-        loader: requireSessionLoader,
-      },
-      {
-        path: "watch/:id",
-        element: <WatchPage />,
-        loader: requireSessionLoader,
-      },
-      { path: "setup", element: <SetupPage />, loader: setupLoader },
-      { path: "login", element: <LoginPage /> },
-      { path: "*", element: <NotFoundPage /> },
-    ],
-  },
-]);
+export const router = createBrowserRouter(routeTree);

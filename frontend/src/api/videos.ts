@@ -150,51 +150,98 @@ export function saveProgress(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Sharing — access scope seam (docs/specs/sharing task 008).
+// ---------------------------------------------------------------------------
+
 /**
- * `GET /api/videos/{id}/subtitles` — list of detected sidecar subtitle tracks
- * (FR-6.1). Returns an empty array when no subtitles were detected.
+ * Which surface a URL/fetch targets. Owner pages use the default (no scope
+ * argument) and keep hitting `/api/videos/...`; recipient pages pass
+ * `{ kind: "share", token }` so every builder below re-roots under
+ * `/api/share/{token}/videos/{id}/...` — the pre-auth mirrors. Transcode
+ * URLs need no builder: the `stream-url` response carries them pre-rooted
+ * for whichever scope resolved it.
  */
-export function fetchSubtitles(videoId: string): Promise<SubtitleTrackDto[]> {
-  return apiFetch<SubtitleTrackDto[]>(
-    `/api/videos/${encodeURIComponent(videoId)}/subtitles`,
-  );
+export type AccessScope =
+  | { kind: "owner" }
+  | { kind: "share"; token: string };
+
+/** Shared default so every builder's no-arg call stays byte-identical. */
+const OWNER_SCOPE: AccessScope = { kind: "owner" };
+
+function videoBase(videoId: string, scope: AccessScope): string {
+  const id = encodeURIComponent(videoId);
+  return scope.kind === "share"
+    ? `/api/share/${encodeURIComponent(scope.token)}/videos/${id}`
+    : `/api/videos/${id}`;
+}
+
+/**
+ * `GET /api/videos/{id}/subtitles` (or its share mirror) — list of detected
+ * sidecar subtitle tracks (FR-6.1). Returns an empty array when no subtitles
+ * were detected.
+ */
+export function fetchSubtitles(
+  videoId: string,
+  scope: AccessScope = OWNER_SCOPE,
+): Promise<SubtitleTrackDto[]> {
+  return apiFetch<SubtitleTrackDto[]>(`${videoBase(videoId, scope)}/subtitles`);
 }
 
 /**
  * Same-origin stream URL for a video's `<video src>` (FR-1.1). Not wrapped
- * in `apiFetch` — the browser attaches the session cookie automatically and
- * the response body is a byte stream, not JSON.
+ * in `apiFetch` — the browser attaches the session (or share-unlock) cookie
+ * automatically and the response body is a byte stream, not JSON.
  */
-export function streamUrl(videoId: string): string {
-  return `/api/videos/${encodeURIComponent(videoId)}/stream`;
+export function streamUrl(videoId: string, scope: AccessScope = OWNER_SCOPE): string {
+  return `${videoBase(videoId, scope)}/stream`;
 }
 
 /**
- * `GET /api/videos/{id}/stream-url` — resolve where the browser should fetch
- * video bytes from (T12 — direct CDN streaming). For OneDrive + Dropbox,
- * returns a short-lived preauthenticated CDN URL the browser hits directly
- * (no backend proxying of bytes). For Google Drive, returns the existing
- * `/stream` endpoint as a fallback. The player sets `<video src={url}>` from
- * this response and re-fetches on CDN URL expiry (T12.2).
+ * `GET /api/videos/{id}/stream-url` (or its share mirror) — resolve where
+ * the browser should fetch video bytes from (T12 — direct CDN streaming).
+ * For OneDrive + Dropbox, returns a short-lived preauthenticated CDN URL the
+ * browser hits directly (no backend proxying of bytes). For Google Drive,
+ * returns the existing `/stream` endpoint as a fallback. Castify-served URLs
+ * come back rooted at the resolving scope's base (owner or share). The
+ * player sets `<video src={url}>` from this response and re-fetches on CDN
+ * URL expiry (T12.2).
  */
-export function fetchStreamUrl(videoId: string): Promise<StreamUrlDto> {
-  return apiFetch<StreamUrlDto>(
-    `/api/videos/${encodeURIComponent(videoId)}/stream-url`,
-  );
+export function fetchStreamUrl(
+  videoId: string,
+  scope: AccessScope = OWNER_SCOPE,
+): Promise<StreamUrlDto> {
+  return apiFetch<StreamUrlDto>(`${videoBase(videoId, scope)}/stream-url`);
 }
 
 /**
  * Same-origin download URL with `Content-Disposition: attachment` (FR-1.8).
- * Used by the unsupported-format fallback card.
+ * Used by the unsupported-format fallback card. Owner-only on the server —
+ * there is no share mirror, so the share watch page hides the affordance
+ * rather than calling this with a share scope.
  */
-export function downloadUrl(videoId: string): string {
-  return `/api/videos/${encodeURIComponent(videoId)}/download`;
+export function downloadUrl(videoId: string, scope: AccessScope = OWNER_SCOPE): string {
+  return `${videoBase(videoId, scope)}/download`;
+}
+
+/**
+ * Same-origin poster URL for `<img src>` / `<video poster>`. Mirrored for
+ * shares (task 005) so recipient grids can reuse the same thumbnail
+ * pipeline; owner call sites keep their inline `/api/videos/...` paths and
+ * can migrate to this builder opportunistically.
+ */
+export function thumbnailUrl(videoId: string, scope: AccessScope = OWNER_SCOPE): string {
+  return `${videoBase(videoId, scope)}/thumbnail`;
 }
 
 /**
  * Same-origin subtitle track URL for `<track src>` (FR-6.2). The endpoint
  * serves `text/vtt` with on-the-fly `.srt` → `.vtt` conversion.
  */
-export function subtitleTrackUrl(videoId: string, trackId: string): string {
-  return `/api/videos/${encodeURIComponent(videoId)}/subtitles/${encodeURIComponent(trackId)}`;
+export function subtitleTrackUrl(
+  videoId: string,
+  trackId: string,
+  scope: AccessScope = OWNER_SCOPE,
+): string {
+  return `${videoBase(videoId, scope)}/subtitles/${encodeURIComponent(trackId)}`;
 }
