@@ -25,7 +25,15 @@ use tower::ServiceExt;
 /// Boot a fresh app with first-run setup done (an owner row must exist for
 /// shares to reference). Recipient requests never use the session cookie.
 async fn boot() -> (axum::Router, AppState, tempfile::TempPath) {
-    let (state, guard, _path) = common::fresh_state().await;
+    boot_with(|_| {}).await
+}
+
+/// [`boot`] with config tweaks applied before the `AppState` is built —
+/// the transcode/cached-stream mirror tests need those features enabled.
+async fn boot_with(
+    configure: impl FnOnce(&mut castify_core::Config),
+) -> (axum::Router, AppState, tempfile::TempPath) {
+    let (state, guard, _path) = common::fresh_state_with(configure).await;
     let app = castify_api::app::build_app(state.clone());
     let response = app
         .clone()
@@ -1134,4 +1142,292 @@ async fn mirror_stream_url_transcode_override_is_share_scoped() {
         ),
         "transcode master URL must be share-scoped"
     );
+}
+
+// ------------------------- transcode + cached-stream mirrors (task 007)
+
+#[tokio::test]
+async fn mirror_transcode_master_denial_matrix() {
+    assert_mirror_denial_matrix("transcode/master.m3u8").await;
+}
+
+#[tokio::test]
+async fn mirror_transcode_playlist_denial_matrix() {
+    assert_mirror_denial_matrix("transcode/720p/playlist.m3u8").await;
+}
+
+#[tokio::test]
+async fn mirror_transcode_segment_denial_matrix() {
+    assert_mirror_denial_matrix("transcode/720p/segment_00000.ts").await;
+}
+
+#[tokio::test]
+async fn mirror_cached_stream_denial_matrix() {
+    assert_mirror_denial_matrix("cached-stream").await;
+}
+
+/// Seed a completed transcode variant the way the owner transcode tests
+/// do: a fake segment + playlist on disk plus a `completed` manifest row.
+/// The on-disk segments make `ensure_transcode_started` short-circuit (it
+/// never calls the provider or spawns ffmpeg), so the whole share chain
+/// runs without either.
+async fn seed_completed_variant(state: &AppState, video_id: &str, variant: &str) {
+    use castify_catalog::NewTranscodeEntry;
+
+    let profile = castify_api::transcode::DEFAULT_PROFILE;
+    let dir = state
+        .config()
+        .transcode
+        .dir
+        .join(video_id)
+        .join(variant)
+        .join(profile);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("segment_00000.ts"), b"fake-segment-bytes").unwrap();
+    std::fs::write(
+        dir.join("playlist.m3u8"),
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXTINF:10.0,\nsegment_00000.ts\n#EXT-X-ENDLIST\n",
+    )
+    .unwrap();
+    state
+        .catalog_repository()
+        .insert_pending_transcode(&NewTranscodeEntry {
+            video_id,
+            variant,
+            profile,
+            output_dir: &dir.to_string_lossy(),
+            segment_duration_secs: 10,
+            bitrate: Some(3_000_000),
+            width: Some(1280),
+            height: Some(720),
+        })
+        .await
+        .unwrap();
+    state
+        .catalog_repository()
+        .mark_transcode_completed(video_id, variant, profile, 1)
+        .await
+        .unwrap();
+}
+
+/// Boot with transcode enabled, one member video (1080p source so the
+/// pre-compute pick is 720p), an open share over it, and a completed 720p
+/// variant. Returns everything the chain tests need.
+struct TranscodeFixture {
+    app: axum::Router,
+    state: AppState,
+    token: String,
+    video: String,
+    #[allow(dead_code)]
+    guard: tempfile::TempPath,
+}
+
+async fn transcode_fixture() -> TranscodeFixture {
+    // `transcode.dir` must be pinned inside the per-test data_dir — the
+    // config default is a RELATIVE path, which would litter the checkout
+    // with transcode-cache artifacts.
+    let (app, state, guard) = boot_with(|cfg| {
+        cfg.transcode.enabled = true;
+        cfg.transcode.dir = cfg.data_dir.join("transcode-cache");
+    })
+    .await;
+    let videos = seed_videos(state.pool(), &["vacation.mkv"]).await;
+    sqlx::query("UPDATE videos SET height = 1080 WHERE id = ?")
+        .bind(&videos[0])
+        .execute(state.pool())
+        .await
+        .unwrap();
+    let share = seed_share(&state, None, None, &videos).await;
+    seed_completed_variant(&state, &videos[0], "720p").await;
+    TranscodeFixture {
+        app,
+        state,
+        token: share.token,
+        video: videos[0].clone(),
+        guard,
+    }
+}
+
+#[tokio::test]
+async fn mirror_transcode_chain_follows_master_playlist_segment_via_share_urls() {
+    let f = transcode_fixture().await;
+    let base = format!("/api/share/{}/videos/{}/transcode", f.token, f.video);
+
+    // 1. Master playlist: 200, HLS content type, exactly one variant with
+    //    a RELATIVE URI — it must resolve against the share scope, never
+    //    embed an owner path the recipient can't reach.
+    let (status, headers, bytes) =
+        get_raw(f.app.clone(), &format!("{base}/master.m3u8"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("application/vnd.apple.mpegurl")
+    );
+    let master = String::from_utf8(bytes.to_vec()).unwrap();
+    assert_eq!(
+        master.matches("EXT-X-STREAM-INF").count(),
+        1,
+        "master must list the variant: {master}"
+    );
+    let variant_uri = master
+        .lines()
+        .find(|l| l.ends_with("/playlist.m3u8"))
+        .expect("variant URI line");
+    assert!(
+        !variant_uri.starts_with('/') && !variant_uri.contains("/api/"),
+        "variant URI must stay relative (resolves under the share path): {variant_uri}"
+    );
+
+    // 2. Variant playlist via the share-scoped URL the master implies.
+    let (status, _, bytes) =
+        get_raw(f.app.clone(), &format!("{base}/{variant_uri}"), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let playlist = String::from_utf8(bytes.to_vec()).unwrap();
+    let segment_uri = playlist
+        .lines()
+        .find(|l| l.ends_with(".ts"))
+        .expect("segment URI line");
+    assert!(!segment_uri.contains('/'), "segment URI is a bare filename");
+
+    // 3. Segment bytes via the share-scoped URL the playlist implies.
+    let (status, headers, bytes) = get_raw(
+        f.app.clone(),
+        &format!("{base}/720p/{segment_uri}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, b"fake-segment-bytes".to_vec());
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("video/mp2t")
+    );
+}
+
+#[tokio::test]
+async fn share_master_reuses_owner_transcode_cache_no_duplicate_rows() {
+    // Resolved fairness model (spec decision #3): share sessions share the
+    // global transcode pipeline — one manifest, one output dir, one worker
+    // registry — so the existing concurrent-transcode cap governs owner and
+    // recipient traffic together (no separate share limit). The observable
+    // proxy without ffmpeg: a share-driven master request reuses the
+    // owner-seeded variant and leaves the manifest at exactly one row — no
+    // share-scoped duplicate transcode was started.
+    let f = transcode_fixture().await;
+    let uri = format!(
+        "/api/share/{}/videos/{}/transcode/master.m3u8",
+        f.token, f.video
+    );
+
+    for i in 0..2 {
+        let (status, _, _) = get_raw(f.app.clone(), &uri, None, None).await;
+        assert_eq!(status, StatusCode::OK, "share master attempt {i}");
+    }
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM transcode_cache_entries WHERE video_id = ?")
+            .bind(&f.video)
+            .fetch_one(f.state.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 1, "share traffic must reuse, not duplicate, the row");
+}
+
+#[tokio::test]
+async fn share_token_cannot_cancel_transcodes() {
+    // `cancel_transcode` (DELETE) stays owner-only: no DELETE mirror
+    // exists under /api/share/, and the auth middleware pre-auths only
+    // GETs (plus the unlock POST) there — so a recipient's DELETE is
+    // rejected before any handler runs.
+    let f = transcode_fixture().await;
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/share/{}/videos/{}/transcode",
+                    f.token, f.video
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "a recipient holds no session; the DELETE must not be pre-auth"
+    );
+
+    // The denial left the variant row completed, not failed — nothing was
+    // cancelled. (The owner route remains the only cancel path; its
+    // contract is covered by the owner transcode tests.)
+    let entry = f
+        .state
+        .catalog_repository()
+        .fetch_transcode_entry(&f.video, "720p", castify_api::transcode::DEFAULT_PROFILE)
+        .await
+        .unwrap()
+        .expect("variant row present");
+    assert_eq!(entry.status, "completed");
+}
+
+#[tokio::test]
+async fn mirror_cached_stream_serves_hot_cache_hit_for_member() {
+    let (app, state, _guard) = boot_with(|cfg| cfg.video_cache.enabled = true).await;
+    let videos = seed_videos(state.pool(), &["hot.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+
+    // Seed the hot cache the way a finished tee leaves it: bytes on disk
+    // plus a manifest row whose provider_file_id matches the video.
+    let body_bytes = b"cached-video-bytes";
+    state
+        .video_cache()
+        .expect("cache enabled")
+        .put_bytes(&videos[0], body_bytes)
+        .await
+        .unwrap();
+    state
+        .catalog_repository()
+        .upsert_video_cache_entry(&videos[0], "c1", "hot.mp4", body_bytes.len() as u64)
+        .await
+        .unwrap();
+
+    // Full content: 200, video/mp4 (NULL mime falls back), exact bytes.
+    let (status, headers, bytes) = get_raw(
+        app.clone(),
+        &mirror_uri(&share.token, &videos[0], "cached-stream"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, body_bytes.to_vec());
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("video/mp4")
+    );
+    assert_eq!(
+        header_value(&headers, "accept-ranges").as_deref(),
+        Some("bytes")
+    );
+
+    // Range: 206 + Content-Range — same shape as the owner cached-stream.
+    let (status, headers, bytes) = get_raw(
+        app,
+        &mirror_uri(&share.token, &videos[0], "cached-stream"),
+        None,
+        Some("bytes=0-4"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    let content_range = header_value(&headers, "content-range").expect("content-range on 206");
+    assert!(
+        content_range.starts_with("bytes 0-4/"),
+        "content-range: {content_range}"
+    );
+    assert_eq!(bytes.len(), 5);
 }

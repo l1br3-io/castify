@@ -180,6 +180,22 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/share/{token}/videos/{id}/subtitles/{subtitle_id}",
             axum::routing::get(share::subtitle_track),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/transcode/master.m3u8",
+            axum::routing::get(share::transcode_master),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/transcode/{variant}/playlist.m3u8",
+            axum::routing::get(share::transcode_playlist),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/transcode/{variant}/{segment}",
+            axum::routing::get(share::transcode_segment),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/cached-stream",
+            axum::routing::get(share::cached_stream),
         );
 
     #[cfg(feature = "e2e")]

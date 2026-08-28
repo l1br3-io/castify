@@ -15,6 +15,16 @@
 //!     cores — list in the existing DTO shape, track text with the
 //!     track↔video binding check intact (see [`subtitles`],
 //!     [`subtitle_track`])
+//!   * `GET /api/share/{token}/videos/{id}/transcode/master.m3u8`,
+//!     `.../transcode/{variant}/playlist.m3u8`,
+//!     `.../transcode/{variant}/{segment}`, `.../cached-stream` — HLS +
+//!     hot-cache mirrors (task 007): same guard, then the owner cores.
+//!     Playlist/segment URIs stay relative so hls.js resolves them under
+//!     the share scope; share sessions share the global transcode
+//!     registry (and thus the concurrent-transcode cap). `cancel_transcode`
+//!     (DELETE) deliberately has **no** mirror — it stays owner-only (see
+//!     [`transcode_master`], [`transcode_playlist`], [`transcode_segment`],
+//!     [`cached_stream`])
 //!
 //! Pre-auth by the `/api/share/` prefix rule in [`crate::middleware`]:
 //! recipients hold no session. Validation is per-request against the
@@ -36,7 +46,7 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -49,8 +59,9 @@ use castify_catalog::{SubtitleTrack, VideoSummary};
 use crate::cookies::build_share_unlock_cookie;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::videos::{
-    serve_stream_url, serve_subtitle_list, serve_subtitle_track, serve_thumbnail,
-    serve_video_stream, StreamUrlResponse,
+    serve_cached_stream, serve_stream_url, serve_subtitle_list, serve_subtitle_track,
+    serve_thumbnail, serve_transcode_master, serve_transcode_playlist, serve_transcode_segment,
+    serve_video_stream, BurnSubtitlesQuery, StreamUrlResponse,
 };
 use crate::shares::ratelimit::RateVerdict;
 use crate::shares::status::{
@@ -257,4 +268,68 @@ pub async fn subtitle_track(
 ) -> ApiResult<Response> {
     authorize_share_item(&state, &jar, &token, &id).await?;
     serve_subtitle_track(&state, &id, &subtitle_id).await
+}
+
+// ------------------------------- transcode + cached-stream mirrors (task 007)
+
+/// `GET /api/share/{token}/videos/{id}/transcode/master.m3u8` — HLS master
+/// playlist for recipients. Guard, then the exact core the owner route
+/// runs: variant selection, `ensure_transcode_started` (the shared global
+/// registry — share sessions ride the same concurrent-transcode cap as
+/// owner sessions; spec decision #3 resolved "shared cap, no separate
+/// limit"), and the master build. Variant URIs stay relative, so hls.js
+/// resolves them against the share scope — mirrors add a path to the same
+/// bytes, they don't rewrite them.
+pub async fn transcode_master(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+    Query(burn): Query<BurnSubtitlesQuery>,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_transcode_master(&state, &id, &burn).await
+}
+
+/// `GET /api/share/{token}/videos/{id}/transcode/{variant}/playlist.m3u8`
+/// — variant playlist for recipients. Guard, then the owner core
+/// (on-demand start via the shared registry, playlist read from the
+/// shared output dir). Segment URIs are bare filenames and resolve under
+/// the share path.
+pub async fn transcode_playlist(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id, variant)): Path<(String, String, String)>,
+    Query(burn): Query<BurnSubtitlesQuery>,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_transcode_playlist(&state, &id, &variant, &burn).await
+}
+
+/// `GET /api/share/{token}/videos/{id}/transcode/{variant}/{segment}` —
+/// MPEG-TS segment bytes for recipients. Guard, then the owner core
+/// (filename validation, disk read, LRU touch). Reads only the shared
+/// transcode cache — no recipient-triggered writes beyond the touches the
+/// owner path already performs.
+pub async fn transcode_segment(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id, variant, segment)): Path<(String, String, String, String)>,
+    Query(burn): Query<BurnSubtitlesQuery>,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_transcode_segment(&state, &id, &variant, &segment, &burn).await
+}
+
+/// `GET /api/share/{token}/videos/{id}/cached-stream` — hot-cache bytes
+/// for recipients. Guard, then the owner core: local-disk read with Range
+/// support. Note there is deliberately **no** share mirror for
+/// `DELETE /transcode` (cancel) — cancellation stays owner-only.
+pub async fn cached_stream(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_cached_stream(&state, &id, &headers).await
 }

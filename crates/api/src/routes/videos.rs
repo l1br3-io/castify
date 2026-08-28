@@ -1239,14 +1239,28 @@ pub async fn get_cached_stream(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    serve_cached_stream(&state, &id, &headers).await
+}
+
+/// Cached-stream core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 007). Authorization is the caller's job.
+///
+/// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
+/// // and the share mirror delegate here and must stay behavior-identical
+/// // (status/Content-Range/Accept-Ranges shape included).
+pub(crate) async fn serve_cached_stream(
+    state: &AppState,
+    id: &str,
+    headers: &HeaderMap,
+) -> ApiResult<Response> {
     let cache = state.video_cache().ok_or(ApiError::NotFound)?.clone();
 
-    let stream_info = resolve_stream_info(&state, &id).await?;
+    let stream_info = resolve_stream_info(state, id).await?;
 
     // Verify cache entry exists and is current.
     let entry = state
         .catalog_repository()
-        .fetch_video_cache_entry(&id)
+        .fetch_video_cache_entry(id)
         .await?
         .ok_or(ApiError::NotFound)?;
 
@@ -1257,16 +1271,13 @@ pub async fn get_cached_stream(
 
     // Open file from disk.
     let file = cache
-        .open(&id)
+        .open(id)
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!(e)))?
         .ok_or(ApiError::NotFound)?;
 
     // Touch on read (cheap).
-    let _ = state
-        .catalog_repository()
-        .touch_video_cache_entry(&id)
-        .await;
+    let _ = state.catalog_repository().touch_video_cache_entry(id).await;
 
     // Get file size from metadata.
     let metadata = file.metadata().await.map_err(|e| {
@@ -2040,11 +2051,28 @@ pub async fn get_transcode_master(
     Path(id): Path<String>,
     Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
+    serve_transcode_master(&state, &id, &burn).await
+}
+
+/// Master-playlist core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 007). Authorization is the caller's job.
+///
+/// // GOTCHA: the owner handler and the share mirror must stay
+/// // behavior-identical — both delegate here, so any divergence between
+/// // them is a bug in one of the two call sites (e.g. a guard reordered
+/// // past the enabled-check). The playlist this builds references
+/// // `{variant}/playlist.m3u8` RELATIVELY; keep it that way so the URIs
+/// // resolve under whichever scope served the master (owner or share).
+pub(crate) async fn serve_transcode_master(
+    state: &AppState,
+    id: &str,
+    burn: &BurnSubtitlesQuery,
+) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
     }
 
-    let stream_info = resolve_stream_info(&state, &id).await?;
+    let stream_info = resolve_stream_info(state, id).await?;
 
     // M8 Task 009: resolve the burn dimension. When `?burn_subtitles=<id>`
     // is present, validate the track exists and is image-family — only
@@ -2055,7 +2083,7 @@ pub async fn get_transcode_master(
     if let Some(track_id) = subtitle_track_id {
         let track = state
             .catalog_repository()
-            .fetch_embedded_subtitle_track(&id, track_id)
+            .fetch_embedded_subtitle_track(id, track_id)
             .await?
             .ok_or(ApiError::NotFound)?;
         if track.format_family != "image" {
@@ -2070,7 +2098,7 @@ pub async fn get_transcode_master(
     }
 
     // Pick the pre-compute variant: best rung ≤ min(source_height, cap).
-    let source_height = fetch_video_height(&state, &id).await;
+    let source_height = fetch_video_height(state, id).await;
     let precompute = castify_core::select_precompute_variant(
         source_height,
         &state.config().abr.ladder,
@@ -2080,14 +2108,7 @@ pub async fn get_transcode_master(
     // Ensure a transcode worker is running for the pre-compute variant.
     // The burn dimension is threaded through so the burned profile
     // (`DEFAULT_PROFILE+subs-{id}`) routes to its own worker + output dir.
-    ensure_transcode_started(
-        &state,
-        &id,
-        &stream_info,
-        precompute.name,
-        subtitle_track_id,
-    )
-    .await?;
+    ensure_transcode_started(state, id, &stream_info, precompute.name, subtitle_track_id).await?;
 
     // Derive the profile for the current path. Burned and unburned variants
     // coexist in `transcode_cache_entries` (FR-7.3); filtering by profile
@@ -2101,7 +2122,7 @@ pub async fn get_transcode_master(
     // current profile.
     let entries = state
         .catalog_repository()
-        .fetch_transcodes_for_video(&id)
+        .fetch_transcodes_for_video(id)
         .await?;
     let entries: Vec<_> = entries
         .into_iter()
@@ -2115,7 +2136,7 @@ pub async fn get_transcode_master(
         tracing::warn!(video_id = %id, "no manifest rows; falling back to default-variant master");
         let fallback_rung = castify_core::lookup_rung(precompute.name);
         crate::transcode::build_master_playlist(&[castify_catalog::TranscodeCacheEntry {
-            video_id: id.clone(),
+            video_id: id.to_string(),
             variant: precompute.name.into(),
             profile,
             output_dir: String::new(),
@@ -2123,7 +2144,7 @@ pub async fn get_transcode_master(
             completed_segments: 0,
             segment_duration_secs: state.config().transcode.segment_duration_secs as i64,
             bitrate: fallback_rung.map(|r| (r.target_bitrate_kbps as i64) * 1000),
-            width: fallback_rung.map(|r| (r.target_height as i64) * 16 / 9),
+            width: fallback_rung.map(|r| r.target_height as i64 * 16 / 9),
             height: fallback_rung.map(|r| r.target_height as i64),
             status: "pending".into(),
             last_error: None,
@@ -2208,6 +2229,22 @@ pub async fn get_transcode_playlist(
     Path((id, variant)): Path<(String, String)>,
     Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
+    serve_transcode_playlist(&state, &id, &variant, &burn).await
+}
+
+/// Variant-playlist core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 007). Authorization is the caller's job.
+///
+/// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
+/// // and the share mirror delegate here and must stay behavior-identical.
+/// // Segment URIs in the served playlist are bare filenames; keep them
+/// // relative so they resolve under the requesting scope's path.
+pub(crate) async fn serve_transcode_playlist(
+    state: &AppState,
+    id: &str,
+    variant: &str,
+    burn: &BurnSubtitlesQuery,
+) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
     }
@@ -2217,7 +2254,7 @@ pub async fn get_transcode_playlist(
         crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
 
     let repo = state.catalog_repository();
-    let entry = repo.fetch_transcode_entry(&id, &variant, &profile).await?;
+    let entry = repo.fetch_transcode_entry(id, variant, &profile).await?;
 
     // Failed variant → 503 with the last error.
     if let Some(e) = entry.as_ref() {
@@ -2236,11 +2273,11 @@ pub async fn get_transcode_playlist(
         // No manifest row → on-demand generation. Kick off the transcode
         // (no-op if already running) and fall through to the playlist read.
         // If the playlist file isn't there yet, we'll return 404 below.
-        let stream_info = resolve_stream_info(&state, &id).await?;
-        ensure_transcode_started(&state, &id, &stream_info, &variant, subtitle_track_id).await?;
+        let stream_info = resolve_stream_info(state, id).await?;
+        ensure_transcode_started(state, id, &stream_info, variant, subtitle_track_id).await?;
     }
 
-    let dir = transcode_output_dir(&state, &id, &variant, &profile);
+    let dir = transcode_output_dir(state, id, variant, &profile);
     if let Some(playlist_content) = crate::transcode::read_playlist(&dir).await {
         let mut resp = Response::new(Body::from(playlist_content));
         *resp.status_mut() = StatusCode::OK;
@@ -2275,6 +2312,22 @@ pub async fn get_transcode_segment(
     Path((id, variant, segment)): Path<(String, String, String)>,
     Query(burn): Query<BurnSubtitlesQuery>,
 ) -> ApiResult<Response> {
+    serve_transcode_segment(&state, &id, &variant, &segment, &burn).await
+}
+
+/// Segment-serving core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 007). Authorization is the caller's job.
+///
+/// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
+/// // and the share mirror delegate here and must stay behavior-identical,
+/// // including the segment-filename validation (path-traversal guard).
+pub(crate) async fn serve_transcode_segment(
+    state: &AppState,
+    id: &str,
+    variant: &str,
+    segment: &str,
+    burn: &BurnSubtitlesQuery,
+) -> ApiResult<Response> {
     if !state.config().transcode.enabled {
         return Err(ApiError::NotFound);
     }
@@ -2288,8 +2341,8 @@ pub async fn get_transcode_segment(
     let profile =
         crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
 
-    let dir = transcode_output_dir(&state, &id, &variant, &profile);
-    let segment_path = dir.join(&segment);
+    let dir = transcode_output_dir(state, id, variant, &profile);
+    let segment_path = dir.join(segment);
 
     match tokio::fs::read(&segment_path).await {
         Ok(bytes) => {
@@ -2298,7 +2351,7 @@ pub async fn get_transcode_segment(
             // already in hand.
             let _ = state
                 .catalog_repository()
-                .touch_transcode(&id, &variant, &profile)
+                .touch_transcode(id, variant, &profile)
                 .await;
 
             let mut resp = Response::new(Body::from(bytes));
