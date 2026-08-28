@@ -30,9 +30,19 @@ use crate::state::AppState;
 /// Order doesn't matter; this is consulted by both middlewares so they agree
 /// on which routes are exempt. Non-`/api/` paths are also exempt — they're
 /// served by the SPA fallback and have nothing to do with auth.
+///
+/// Recipient share routes (docs/specs/sharing) are pre-auth by prefix:
+/// every GET under `/api/share/` plus the unlock POST. Share handlers do
+/// their own per-request validation (token hash, expiry, revocation,
+/// unlock) — the prefix rule only decides *session* gating. Note the
+/// prefix is `/api/share/` with the trailing slash, so the owner-facing
+/// `/api/shares` routes stay session-gated.
 pub fn is_pre_auth(method: &Method, path: &str) -> bool {
     if !path.starts_with("/api/") {
         return true;
+    }
+    if path.starts_with("/api/share/") {
+        return matches!(method, &Method::GET) || is_share_unlock_post(method, path);
     }
     matches!(
         (method, path),
@@ -41,6 +51,20 @@ pub fn is_pre_auth(method: &Method, path: &str) -> bool {
             | (&Method::POST, "/api/setup")
             | (&Method::POST, "/api/session")
     )
+}
+
+/// `POST /api/share/{token}/unlock` — the one recipient mutation. Exempt
+/// like the `/api/session` login POST: it is itself the credential check
+/// (argon2id + rate limit in the handler) and a pre-login CSRF token is
+/// unobtainable for a recipient with no session. Any other POST under
+/// `/api/share/` fails the predicate and keeps CSRF protection.
+fn is_share_unlock_post(method: &Method, path: &str) -> bool {
+    matches!(method, &Method::POST)
+        && path.starts_with("/api/share/")
+        && path.ends_with("/unlock")
+        // "/api/share//unlock" would match the prefix/suffix pair with an
+        // empty token; a real token is always non-empty (22 chars).
+        && path.len() > "/api/share//unlock".len()
 }
 
 fn is_mutation(method: &Method) -> bool {
@@ -138,5 +162,38 @@ mod tests {
     fn pre_auth_passes_non_api_paths() {
         assert!(is_pre_auth(&Method::GET, "/"));
         assert!(is_pre_auth(&Method::GET, "/login"));
+    }
+
+    #[test]
+    fn pre_auth_covers_recipient_share_gets_by_prefix() {
+        // Resolve/items/mirrors (and any deeper GET under the prefix, like
+        // transcode segments) are reachable without a session.
+        assert!(is_pre_auth(&Method::GET, "/api/share/abc123"));
+        assert!(is_pre_auth(&Method::GET, "/api/share/abc123/items"));
+        assert!(is_pre_auth(
+            &Method::GET,
+            "/api/share/abc123/transcode/720p/segment1.ts"
+        ));
+    }
+
+    #[test]
+    fn pre_auth_covers_only_the_unlock_post_on_shares() {
+        assert!(is_pre_auth(
+            &Method::POST,
+            "/api/share/abc123/unlock"
+        ));
+        // Any other recipient POST stays gated...
+        assert!(!is_pre_auth(&Method::POST, "/api/share/abc123/items"));
+        assert!(!is_pre_auth(&Method::POST, "/api/share/abc123"));
+        // ...including the degenerate empty-token form.
+        assert!(!is_pre_auth(&Method::POST, "/api/share//unlock"));
+    }
+
+    #[test]
+    fn pre_auth_keeps_owner_shares_routes_session_gated() {
+        // `/api/share/` (trailing slash) must not swallow `/api/shares`.
+        assert!(!is_pre_auth(&Method::GET, "/api/shares"));
+        assert!(!is_pre_auth(&Method::POST, "/api/shares"));
+        assert!(!is_pre_auth(&Method::DELETE, "/api/shares/42"));
     }
 }

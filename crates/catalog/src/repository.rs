@@ -800,6 +800,90 @@ impl CatalogRepository {
         })
     }
 
+    /// Fetch [`VideoSummary`] rows for an explicit set of video ids,
+    /// preserving **caller order** (share curation order, docs/specs/sharing).
+    ///
+    /// This is the recipient-facing read: there is no owner context, so the
+    /// personalization columns are neutral by construction (`is_favorite`
+    /// false, `my_rating`/`position_seconds` `None`, `completed` false) —
+    /// the owner's favorites, ratings, and watch progress never leak to
+    /// share recipients. Ids with no row (deleted video, disconnected
+    /// connection via `ACTIVE_CONNECTION_FILTER`) are skipped, not an
+    /// error: a share is a read-only snapshot and its members can vanish
+    /// independently.
+    pub async fn fetch_video_summaries_by_ids(
+        &self,
+        video_ids: &[String],
+    ) -> CatalogResult<Vec<VideoSummary>> {
+        if video_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; video_ids.len()].join(", ");
+        let sql = format!(
+            "SELECT id, name, provider, size_bytes, mime_type, duration_ms, width, height, \
+                    dedup_group, connection_id, provider_file_id, created_at, path, thumbnail_status \
+             FROM videos WHERE id IN ({placeholders}) AND {ACTIVE_CONNECTION_FILTER}"
+        );
+        let mut query = sqlx::query(&sql);
+        for id in video_ids {
+            query = query.bind(id);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let dedup_groups: Vec<String> = rows
+            .iter()
+            .filter_map(|r| sqlx::Row::get::<Option<String>, _>(r, "dedup_group"))
+            .collect();
+        let sources_by_group = if dedup_groups.is_empty() {
+            HashMap::new()
+        } else {
+            self.fetch_sources_by_groups(&dedup_groups).await?
+        };
+
+        let summary_by_id: HashMap<String, VideoSummary> = rows
+            .iter()
+            .map(|row| {
+                let dedup_group: Option<String> = sqlx::Row::get(row, "dedup_group");
+                let own_source = VideoSource {
+                    connection_id: sqlx::Row::get(row, "connection_id"),
+                    provider: sqlx::Row::get::<String, _>(row, "provider"),
+                    provider_file_id: sqlx::Row::get(row, "provider_file_id"),
+                };
+                let sources = match &dedup_group {
+                    Some(group) => sources_by_group
+                        .get(group)
+                        .cloned()
+                        .unwrap_or_else(|| vec![own_source.clone()]),
+                    None => vec![own_source],
+                };
+                let summary = VideoSummary {
+                    id: sqlx::Row::get(row, "id"),
+                    name: sqlx::Row::get(row, "name"),
+                    provider: sqlx::Row::get(row, "provider"),
+                    size_bytes: sqlx::Row::get(row, "size_bytes"),
+                    mime_type: sqlx::Row::get(row, "mime_type"),
+                    duration_ms: sqlx::Row::get(row, "duration_ms"),
+                    width: sqlx::Row::get(row, "width"),
+                    height: sqlx::Row::get(row, "height"),
+                    sources,
+                    created_at: sqlx::Row::get(row, "created_at"),
+                    path: sqlx::Row::get(row, "path"),
+                    is_favorite: false,
+                    my_rating: None,
+                    thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
+                    position_seconds: None,
+                    completed: false,
+                };
+                (summary.id.clone(), summary)
+            })
+            .collect();
+
+        Ok(video_ids
+            .iter()
+            .filter_map(|id| summary_by_id.get(id).cloned())
+            .collect())
+    }
+
     /// Enumerate top-level folder paths with dedup-aware video counts
     /// (PRD FR-7). Videos with a `NULL` path are grouped under `"(Unsorted)"`;
     /// root-level files (`/filename.ext`, no directory) under `"(Root)"`.
@@ -2743,6 +2827,87 @@ mod tests {
         assert_eq!(page.total, 1, "two copies should deduplicate to one entry");
         assert_eq!(page.videos.len(), 1);
         assert_eq!(page.videos[0].sources.len(), 2, "should have two sources");
+    }
+
+    /// Sharing (task 003): by-ids lookup preserves caller order, skips
+    /// missing ids, stays neutral on personalization, and honors the
+    /// active-connection filter.
+    #[tokio::test]
+    async fn fetch_video_summaries_by_ids_preserves_input_order_and_skips_missing() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                token_bundle: sample_bundle(),
+                provider_account_id: Some("a1".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        let mut ids = Vec::new();
+        for file_id in ["file-a", "file-b", "file-c"] {
+            repo.upsert_video(
+                &conn.id,
+                Provider::GoogleDrive,
+                &NewVideo {
+                    provider_file_id: file_id.into(),
+                    name: format!("{file_id}.mp4"),
+                    path: Some("/Videos".into()),
+                    size_bytes: 1000,
+                    mime_type: Some("video/mp4".into()),
+                    duration_ms: Some(60000),
+                    width: Some(1920),
+                    height: Some(1080),
+                    native_hash: None,
+                    native_hash_algo: None,
+                    provider_modified_at: None,
+                },
+            )
+            .await
+            .unwrap();
+            let id: String = sqlx::query_scalar(
+                "SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = ?",
+            )
+            .bind(&conn.id)
+            .bind(file_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+
+        // Curated order is the caller's business (share curation): c, a —
+        // and one id that does not exist must be skipped, not error.
+        let wanted = vec![ids[2].clone(), "not-a-video".into(), ids[0].clone()];
+        let summaries = repo.fetch_video_summaries_by_ids(&wanted).await.unwrap();
+
+        assert_eq!(
+            summaries.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec![ids[2].as_str(), ids[0].as_str()],
+            "input order, missing ids skipped"
+        );
+        assert_eq!(summaries[0].name, "file-c.mp4");
+        assert_eq!(summaries[0].duration_ms, Some(60000));
+        assert_eq!(summaries[0].sources.len(), 1);
+        assert!(
+            summaries[0].path.as_deref() == Some("/Videos"),
+            "path is catalog metadata, safe for recipients"
+        );
+
+        // Neutral personalization regardless of any owner's state.
+        assert!(!summaries[0].is_favorite);
+        assert_eq!(summaries[0].my_rating, None);
+        assert_eq!(summaries[0].position_seconds, None);
+        assert!(!summaries[0].completed);
+
+        // A disconnected connection's copy drops out (FR-3.1 parity with
+        // fetch_video_page).
+        repo.disconnect(&conn.id).await.unwrap();
+        let after = repo.fetch_video_summaries_by_ids(&wanted).await.unwrap();
+        assert!(after.is_empty());
     }
 
     #[tokio::test]

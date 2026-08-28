@@ -5,6 +5,7 @@ pub mod folders;
 pub mod health;
 pub mod session;
 pub mod setup;
+pub mod share;
 pub mod shares;
 pub mod videos;
 

@@ -15,6 +15,17 @@ pub enum ApiError {
     Conflict(String),
     #[error("unauthorized")]
     Unauthorized,
+    /// A share link that was once live but is now revoked or expired.
+    /// Terminal: HTTP 410 with `code: "share_unavailable"` so the SPA can
+    /// show the recipient a permanent "no longer available" state instead
+    /// of retrying (docs/specs/sharing).
+    #[error("this share is no longer available")]
+    ShareUnavailable,
+    /// A password-protected share accessed without a current unlock.
+    /// HTTP 401 with `code: "share_locked"` — distinct from a session 401
+    /// so the SPA shows the share's password gate, not a login redirect.
+    #[error("this share requires a password")]
+    ShareLocked,
     #[error("csrf token missing or mismatched")]
     ForbiddenCsrf,
     #[error("service unavailable: {0}")]
@@ -72,6 +83,20 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => {
                 (StatusCode::UNAUTHORIZED, self.to_string(), None, None, None)
             }
+            ApiError::ShareUnavailable => (
+                StatusCode::GONE,
+                self.to_string(),
+                Some("share_unavailable"),
+                None,
+                None,
+            ),
+            ApiError::ShareLocked => (
+                StatusCode::UNAUTHORIZED,
+                self.to_string(),
+                Some("share_locked"),
+                None,
+                None,
+            ),
             ApiError::ForbiddenCsrf => (StatusCode::FORBIDDEN, self.to_string(), None, None, None),
             ApiError::ServiceUnavailable(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,

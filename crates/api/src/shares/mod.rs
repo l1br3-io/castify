@@ -29,6 +29,7 @@
 //! on its own. `touch crates/storage/src/lib.rs` forces the re-snapshot.
 
 pub mod repository;
+pub mod status;
 pub mod token;
 
 pub use repository::{NewShare, ShareItemRow, ShareRepository, ShareRow};

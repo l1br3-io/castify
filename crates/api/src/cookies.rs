@@ -13,6 +13,10 @@ use castify_auth::{SessionId, SessionSecret, SessionToken};
 pub const SESSION_COOKIE_NAME: &str = "castify_session";
 pub const CSRF_COOKIE_NAME: &str = "castify_csrf";
 pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
+/// Share unlock cookie (docs/specs/sharing). One name for all shares: the
+/// signed payload carries the share id, so a cookie can only ever vouch
+/// for the share it was minted for. Written by the unlock endpoint.
+pub const SHARE_UNLOCK_COOKIE_NAME: &str = "castify_share_unlock";
 const SESSION_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const CSRF_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 const CSRF_TOKEN_BYTES: usize = 32;
@@ -66,6 +70,27 @@ pub fn extract_session_id(jar: &CookieJar, secret: &SessionSecret) -> Option<Ses
     }
     let token = SessionToken(raw.to_string());
     token.verify(secret).ok()
+}
+
+/// Read and verify a share unlock cookie, recovering the share it unlocks
+/// (docs/specs/sharing). `None` when absent, empty, or failing HMAC/payload
+/// verification — callers treat `None` as "locked", never as an error: a
+/// tampered cookie is indistinguishable from no cookie at this layer.
+///
+/// Like [`extract_session_id`], this verifies the signature only. Whether
+/// the unlock is still *meaningful* (share not revoked/expired, cookie
+/// within its TTL, share id matches) is re-decided per request by
+/// `shares::status::resolve_share_state` — the cookie alone is never
+/// authority.
+pub fn extract_share_unlock(
+    jar: &CookieJar,
+    secret: &SessionSecret,
+) -> Option<crate::shares::token::VerifiedUnlock> {
+    let raw = jar.get(SHARE_UNLOCK_COOKIE_NAME)?.value();
+    if raw.is_empty() {
+        return None;
+    }
+    crate::shares::token::verify_unlock_value(secret, raw).ok()
 }
 
 /// Generate a fresh random CSRF token (32 bytes, base64 standard).
