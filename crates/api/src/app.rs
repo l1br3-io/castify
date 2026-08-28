@@ -172,6 +172,14 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/share/{token}/videos/{id}/thumbnail",
             axum::routing::get(share::thumbnail),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/subtitles",
+            axum::routing::get(share::subtitles),
+        )
+        .route(
+            "/api/share/{token}/videos/{id}/subtitles/{subtitle_id}",
+            axum::routing::get(share::subtitle_track),
         );
 
     #[cfg(feature = "e2e")]

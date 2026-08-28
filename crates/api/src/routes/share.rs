@@ -10,6 +10,11 @@
 //!     — media mirrors (task 005): the shared guard, then byte-identical
 //!     delegation to the owner handlers' cores (see [`stream`],
 //!     [`stream_url`], [`thumbnail`])
+//!   * `GET /api/share/{token}/videos/{id}/subtitles[/{subtitle_id}]`
+//!     — subtitle mirrors (task 006): same guard, then the owner subtitle
+//!     cores — list in the existing DTO shape, track text with the
+//!     track↔video binding check intact (see [`subtitles`],
+//!     [`subtitle_track`])
 //!
 //! Pre-auth by the `/api/share/` prefix rule in [`crate::middleware`]:
 //! recipients hold no session. Validation is per-request against the
@@ -39,12 +44,13 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use castify_auth::password::verify_password;
-use castify_catalog::VideoSummary;
+use castify_catalog::{SubtitleTrack, VideoSummary};
 
 use crate::cookies::build_share_unlock_cookie;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::videos::{
-    serve_stream_url, serve_thumbnail, serve_video_stream, StreamUrlResponse,
+    serve_stream_url, serve_subtitle_list, serve_subtitle_track, serve_thumbnail,
+    serve_video_stream, StreamUrlResponse,
 };
 use crate::shares::ratelimit::RateVerdict;
 use crate::shares::status::{
@@ -222,4 +228,33 @@ pub async fn thumbnail(
 ) -> ApiResult<Response> {
     authorize_share_item(&state, &jar, &token, &id).await?;
     serve_thumbnail(&state, &id).await
+}
+
+// ------------------------------------------ subtitle mirrors (task 006)
+
+/// `GET /api/share/{token}/videos/{id}/subtitles` — recipient track list.
+/// Guard, then the owner list core: the existing [`SubtitleTrack`] DTO
+/// shape, so the SPA renders recipient subtitles with the same components.
+pub async fn subtitles(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id)): Path<(String, String)>,
+) -> ApiResult<Json<Vec<SubtitleTrack>>> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    Ok(Json(serve_subtitle_list(&state, &id).await?))
+}
+
+/// `GET /api/share/{token}/videos/{id}/subtitles/{subtitle_id}` — serve
+/// subtitle text. Guard, then the owner serving core: same fetch paths
+/// (extracted-from-disk vs sidecar-from-provider) and same format rule
+/// (SRT→VTT, ASS raw). The track↔video binding check is inherent to the
+/// core's lookup (`id AND video_id`), so a track bound to a different
+/// video is a 404 even when both videos are members of the share.
+pub async fn subtitle_track(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((token, id, subtitle_id)): Path<(String, String, String)>,
+) -> ApiResult<Response> {
+    authorize_share_item(&state, &jar, &token, &id).await?;
+    serve_subtitle_track(&state, &id, &subtitle_id).await
 }

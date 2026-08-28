@@ -1544,17 +1544,40 @@ pub async fn list_subtitles(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Vec<SubtitleTrack>>> {
+    Ok(Json(serve_subtitle_list(&state, &id).await?))
+}
+
+/// Subtitle-list core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 006): authorization is the caller's job, this
+/// resolves the tracks in the existing DTO shape.
+pub(crate) async fn serve_subtitle_list(
+    state: &AppState,
+    id: &str,
+) -> ApiResult<Vec<SubtitleTrack>> {
     let repo = state.catalog_repository();
-    if !repo.video_exists(&id).await? {
+    if !repo.video_exists(id).await? {
         return Err(ApiError::NotFound);
     }
-    let tracks = repo.fetch_subtitles(&id).await?;
-    Ok(Json(tracks))
+    let tracks = repo.fetch_subtitles(id).await?;
+    Ok(tracks)
 }
 
 /// `GET /api/videos/{id}/subtitles/{track_id}` — serve a subtitle track,
 /// routing by `format_family` + `format` instead of a single `if format ==
-/// "srt"` branch (M8 Task 003).
+/// "srt"` branch (M8 Task 003). See [`serve_subtitle_track`] for the
+/// fetch-path and format rules.
+pub async fn get_subtitle_track(
+    State(state): State<AppState>,
+    Path((id, track_id)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    serve_subtitle_track(&state, &id, &track_id).await
+}
+
+/// Subtitle-serving core shared by the owner route and the share mirror
+/// (docs/specs/sharing task 006). The track↔video binding is inherent:
+/// `fetch_subtitle_track` selects on `id AND video_id`, so a track row
+/// belonging to a different video than the path's `{id}` resolves to
+/// `None` → 404 here, exactly as the owner handler behaves.
 ///
 /// **Fetch path** branches on `extracted_path`:
 /// - `Some(path)` → extracted-embedded track. Read bytes from disk; no
@@ -1569,13 +1592,14 @@ pub async fn list_subtitles(
 /// - `ass`/`ssa` → serve raw, `Content-Type: text/plain` (libass.js in Task
 ///   004 consumes the raw ASS source — the browser must not re-interpret it
 ///   as WebVTT).
-pub async fn get_subtitle_track(
-    State(state): State<AppState>,
-    Path((id, track_id)): Path<(String, String)>,
+pub(crate) async fn serve_subtitle_track(
+    state: &AppState,
+    id: &str,
+    track_id: &str,
 ) -> ApiResult<Response> {
     let repo = state.catalog_repository();
     let (track, connection_id, provider_file_id, extracted_path) = repo
-        .fetch_subtitle_track(&id, &track_id)
+        .fetch_subtitle_track(id, track_id)
         .await?
         .ok_or(ApiError::NotFound)?;
 
@@ -1596,7 +1620,7 @@ pub async fn get_subtitle_track(
     } else {
         let connection_id = connection_id.as_deref().ok_or(ApiError::NotFound)?;
         let provider_file_id = provider_file_id.as_deref().ok_or(ApiError::NotFound)?;
-        fetch_subtitle_content_with_refresh(&state, connection_id, provider_file_id).await?
+        fetch_subtitle_content_with_refresh(state, connection_id, provider_file_id).await?
     };
 
     let content = render_subtitle(&track.format, &bytes);

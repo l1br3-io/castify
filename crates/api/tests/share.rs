@@ -668,6 +668,172 @@ async fn mirror_thumbnail_denial_matrix() {
     assert_mirror_denial_matrix("thumbnail").await;
 }
 
+// ------------------------------------------- subtitle mirrors (task 006)
+
+/// Seed a sidecar subtitle row on `video_id` (same shape as the owner
+/// tests' `seed_subtitle`) — the list route reads it without touching a
+/// provider, so this needs no e2e feature.
+async fn seed_sidecar_subtitle(
+    state: &AppState,
+    video_id: &str,
+    provider_file_id: &str,
+    language: Option<&str>,
+    filename: &str,
+    format: &str,
+) -> String {
+    let id = format!("sub-{video_id}-{provider_file_id}");
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format, format_family) \
+         VALUES (?, ?, 'c1', ?, ?, ?, ?, 'text')",
+    )
+    .bind(&id)
+    .bind(video_id)
+    .bind(provider_file_id)
+    .bind(language)
+    .bind(filename)
+    .bind(format)
+    .execute(state.pool())
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn mirror_subtitle_list_denial_matrix() {
+    assert_mirror_denial_matrix("subtitles").await;
+}
+
+#[tokio::test]
+async fn mirror_subtitle_track_denial_matrix() {
+    // Denials run at the guard, before any track lookup, so the track id
+    // in the path is arbitrary.
+    assert_mirror_denial_matrix("subtitles/any-track").await;
+}
+
+#[tokio::test]
+async fn mirror_subtitle_list_returns_sidecar_tracks_in_existing_dto_shape() {
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+    seed_sidecar_subtitle(&state, &videos[0], "file-1", Some("en"), "a.en.srt", "srt").await;
+
+    let (status, body) = get(
+        app,
+        &mirror_uri(&share.token, &videos[0], "subtitles"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    let tracks = body.as_array().expect("tracks is an array");
+    assert_eq!(tracks.len(), 1);
+    // Existing SubtitleTrack DTO — the SPA renders recipient tracks with
+    // the same components as owner tracks.
+    assert_eq!(tracks[0]["id"], format!("sub-{}-file-1", videos[0]));
+    assert_eq!(tracks[0]["language"], "en");
+    assert_eq!(tracks[0]["filename"], "a.en.srt");
+    assert_eq!(tracks[0]["format"], "srt");
+    assert_eq!(tracks[0]["format_family"], "text");
+    assert!(tracks[0]["embedded_track_id"].is_null());
+}
+
+/// Seed an extracted-embedded track whose bytes live on local disk —
+/// serving it never touches a provider, so the happy path runs without
+/// the e2e feature. Returns the track id.
+async fn seed_extracted_subtitle_on_disk(
+    state: &AppState,
+    video_id: &str,
+    track_id: &str,
+    format: &str,
+    body: &[u8],
+) -> String {
+    let sub_dir = state
+        .config()
+        .data_dir
+        .join("extracted-subs")
+        .join(video_id);
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    let path = sub_dir.join(format!("{track_id}.{format}"));
+    std::fs::write(&path, body).unwrap();
+    sqlx::query(
+        "INSERT INTO video_subtitles \
+         (id, video_id, connection_id, provider_file_id, embedded_track_id, \
+          language, filename, format, format_family, extracted_path) \
+         VALUES (?, ?, NULL, NULL, 1, NULL, ?, ?, 'text', ?)",
+    )
+    .bind(track_id)
+    .bind(video_id)
+    .bind(format!("{track_id}.{format}"))
+    .bind(format)
+    .bind(path.to_string_lossy().to_string())
+    .execute(state.pool())
+    .await
+    .unwrap();
+    track_id.to_string()
+}
+
+#[tokio::test]
+async fn mirror_subtitle_track_serves_text_for_member() {
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+    // SRT from disk exercises the same format rule as the owner route:
+    // converted to WebVTT, served as text/vtt.
+    let srt_body = b"1\n00:00:01,000 --> 00:00:03,000\nHello\n";
+    let track_id =
+        seed_extracted_subtitle_on_disk(&state, &videos[0], "track-srt", "srt", srt_body).await;
+
+    let (status, headers, bytes) = get_raw(
+        app,
+        &mirror_uri(&share.token, &videos[0], &format!("subtitles/{track_id}")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("text/vtt")
+    );
+    let vtt = String::from_utf8_lossy(&bytes);
+    assert!(vtt.starts_with("WEBVTT"), "SRT → VTT conversion: {vtt}");
+    assert!(
+        !vtt.contains("--> 00:00:03,000"),
+        "comma timestamps replaced with dots"
+    );
+}
+
+#[tokio::test]
+async fn mirror_subtitle_track_rejects_track_bound_to_a_different_video() {
+    // Both videos are members, so the guard passes for either — only the
+    // track↔video binding check can reject the cross-video combination.
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+    let srt_body = b"1\n00:00:01,000 --> 00:00:03,000\nHello\n";
+    let track_id =
+        seed_extracted_subtitle_on_disk(&state, &videos[1], "track-b", "srt", srt_body).await;
+
+    // Track belongs to videos[1]; the path names videos[0] → 404.
+    let (status, _, _) = get_raw(
+        app.clone(),
+        &mirror_uri(&share.token, &videos[0], &format!("subtitles/{track_id}")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "cross-video track must 404");
+
+    // Positive control: the same track via its own video serves fine.
+    let (status, _, _) = get_raw(
+        app,
+        &mirror_uri(&share.token, &videos[1], &format!("subtitles/{track_id}")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn mirror_thumbnail_serves_disk_cached_bytes_for_member() {
     let (app, state, _guard) = boot().await;
@@ -707,7 +873,13 @@ async fn owner_video_routes_still_401_without_session() {
     // Mirrors add access; they must not widen it. A recipient holding only
     // a share URL (no session) still can't touch the owner surface.
     let (app, _state, _guard) = boot().await;
-    for suffix in ["stream", "stream-url", "thumbnail"] {
+    for suffix in [
+        "stream",
+        "stream-url",
+        "thumbnail",
+        "subtitles",
+        "subtitles/some-track",
+    ] {
         let (status, _, _) = get_raw(
             app.clone(),
             &format!("/api/videos/some-id/{suffix}"),
@@ -855,6 +1027,55 @@ async fn mirror_stream_url_strategies_are_share_scoped() {
     assert!(
         url.starts_with("/api/__e2e/mock-cdn/"),
         "direct CDN URL passes through unchanged: {url}"
+    );
+}
+
+/// Sidecar bytes live at the provider — the share mirror serves them
+/// through the same fetch pipeline (single token refresh) as the owner
+/// route, so this happy path needs the e2e mock provider.
+#[cfg(feature = "e2e")]
+#[tokio::test]
+async fn mirror_subtitle_track_serves_sidecar_bytes_from_provider() {
+    use castify_catalog::Provider;
+    let (app, state, _guard) = boot().await;
+    let videos = seed_streamable_videos(&state, Provider::GoogleDrive, &["gd-vacation"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+
+    // Sidecar row referencing the mock's subtitle file id — the mock's
+    // fetch_subtitle_content returns a VTT-typed payload for any id.
+    let connection_id: String = sqlx::query_scalar("SELECT connection_id FROM videos WHERE id = ?")
+        .bind(&videos[0])
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    let track_id = format!("sub-{}-gd-vacation-srt", videos[0]);
+    sqlx::query(
+        "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, language, filename, format, format_family) \
+         VALUES (?, ?, ?, 'gd-vacation-srt', 'en', 'vacation.en.srt', 'srt', 'text')",
+    )
+    .bind(&track_id)
+    .bind(&videos[0])
+    .bind(&connection_id)
+    .execute(state.pool())
+    .await
+    .unwrap();
+
+    let (status, headers, bytes) = get_raw(
+        app,
+        &mirror_uri(&share.token, &videos[0], &format!("subtitles/{track_id}")),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        header_value(&headers, "content-type").as_deref(),
+        Some("text/vtt")
+    );
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.starts_with("WEBVTT"),
+        "sidecar SRT served as VTT: {body}"
     );
 }
 
