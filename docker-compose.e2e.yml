@@ -4,11 +4,18 @@
 # mock provider factories and a seed endpoint (`POST /api/__e2e/seed-connection`).
 # These endpoints are NOT present in production builds.
 #
+# The runtime target is the alpine+ffmpeg stage (`e2e-runtime` in the
+# Dockerfile) so the Playwright suite can exercise the real transcode
+# pipeline (strategy override → ffmpeg → HLS → hls.js) — see
+# docs/specs/sharing task 013.
+#
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up --build -d
 
 services:
   castify:
     build:
+      context: .
+      target: e2e-runtime
       args:
         E2E: "true"

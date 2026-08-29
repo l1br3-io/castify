@@ -47,3 +47,27 @@ EXPOSE 8427
 USER 65532:65532
 
 ENTRYPOINT ["/castify"]
+
+# ---- Stage 4: E2E runtime (alpine + ffmpeg; test-only) ----
+# Built via `--target e2e-runtime` (docker-compose.e2e.yml). The transcode
+# pipeline shells out to system ffmpeg/ffprobe (docs/specs/sharing task 013:
+# the e2e suite plays a genuinely transcode-needing item end to end), and the
+# distroless production stage has neither binary. Alpine runs the same musl
+# static binary and carries ffmpeg, so strategy override → ffmpeg → HLS →
+# hls.js is exercised for real in Playwright. Production images never build
+# this stage (BuildKit skips it without --target).
+FROM alpine:3.22 AS e2e-runtime
+
+RUN apk add --no-cache ffmpeg
+
+COPY --from=backend /app/target/release/castify /castify
+COPY --from=backend --chown=65532:65532 /data /data
+
+ENV CASTIFY_HOST=0.0.0.0
+ENV CASTIFY_PORT=8427
+ENV CASTIFY_DATA_DIR=/data
+
+EXPOSE 8427
+USER 65532:65532
+
+ENTRYPOINT ["/castify"]

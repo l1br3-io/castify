@@ -231,7 +231,7 @@ export async function getVideoDetail(
 
 export interface StreamUrlResponse {
   url: string;
-  strategy: "direct" | "proxy";
+  strategy: "direct" | "proxy" | "cached" | "transcode";
   expires_at: string | null;
 }
 
@@ -404,4 +404,117 @@ export async function clearPlayerDB(page: Page): Promise<void> {
       req.onblocked = () => resolve();
     })
   `);
+}
+
+// ── Sharing (docs/specs/sharing) ────────────────────────────────────
+//
+// Owner-side helpers run on an authenticated owner page (session + CSRF,
+// like the connection helpers above). Recipient-side helpers run on a
+// page from a CLEAN context — no session — mirroring how a real recipient
+// hits the pre-auth `/api/share/*` routes. The unlock POST is the only
+// recipient mutation; its Set-Cookie lands in the context jar, so later
+// `page.request` GETs on `/api/share/*` carry it automatically (cookie
+// Path is /api/share/).
+
+export interface CreatedShare {
+  id: string;
+  title: string;
+  token: string;
+  share_url: string;
+}
+
+/** `POST /api/shares` — create a share (owner). Password is optional. */
+export async function createShare(
+  page: Page,
+  body: {
+    video_ids: string[];
+    title?: string;
+    password?: string;
+    expires_at?: string;
+  },
+  csrf: string,
+): Promise<CreatedShare> {
+  const res = await page.request.post("/api/shares", {
+    headers: await authHeaders(page, csrf),
+    data: body,
+  });
+  expect(res.status()).toBe(201);
+  return res.json();
+}
+
+/** `DELETE /api/shares/{id}` — revoke a share (owner). Idempotent 204. */
+export async function revokeShare(
+  page: Page,
+  shareId: string,
+  csrf: string,
+): Promise<void> {
+  const res = await page.request.delete(`/api/shares/${encodeURIComponent(shareId)}`, {
+    headers: await authHeaders(page, csrf),
+  });
+  expect(res.status()).toBe(204);
+}
+
+export interface ShareResolveResponse {
+  title: string;
+  item_count: number;
+  locked: boolean;
+  status: string;
+}
+
+/** `GET /api/share/{token}` — recipient resolve (works while locked). */
+export async function resolveShare(
+  page: Page,
+  token: string,
+): Promise<ShareResolveResponse> {
+  const res = await page.request.get(
+    `/api/share/${encodeURIComponent(token)}`,
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+/**
+ * `POST /api/share/{token}/unlock` — recipient password gate (API path;
+ * the UI path is exercised by navigating the landing page). Sets the
+ * signed unlock cookie in the calling context's jar.
+ */
+export async function unlockShare(
+  page: Page,
+  token: string,
+  password: string,
+): Promise<void> {
+  const res = await page.request.post(
+    `/api/share/${encodeURIComponent(token)}/unlock`,
+    { data: { password } },
+  );
+  expect(res.status()).toBe(204);
+}
+
+/** `GET /api/share/{token}/items` — member summaries in curation order. */
+export async function getShareItems(
+  page: Page,
+  token: string,
+): Promise<VideoSummary[]> {
+  const res = await page.request.get(
+    `/api/share/${encodeURIComponent(token)}/items`,
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+/**
+ * `GET /api/share/{token}/videos/{id}/stream-url` — strategy resolution
+ * through the share mirror. Castify-served URLs come back rooted at
+ * `/api/share/{token}/...`; browser-direct CDN URLs pass through.
+ */
+export async function getShareStreamUrl(
+  page: Page,
+  token: string,
+  videoId: string,
+): Promise<StreamUrlResponse> {
+  const res = await page.request.get(
+    `/api/share/${encodeURIComponent(token)}/videos/${encodeURIComponent(videoId)}/stream-url`,
+  );
+  expect(res.ok()).toBeTruthy();
+  return res.json();
 }

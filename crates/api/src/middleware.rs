@@ -44,6 +44,15 @@ pub fn is_pre_auth(method: &Method, path: &str) -> bool {
     if path.starts_with("/api/share/") {
         return matches!(method, &Method::GET) || is_share_unlock_post(method, path);
     }
+    // The e2e mock CDN simulates a provider's public preauthenticated CDN
+    // URL — production direct-strategy URLs point at the provider, not at
+    // Castify, so no session applies. Recipient browsers (docs/specs/
+    // sharing) fetch it with no session; it must be pre-auth like the
+    // thing it stands in for. Route exists only in e2e builds.
+    #[cfg(feature = "e2e")]
+    if path.starts_with("/api/__e2e/mock-cdn/") {
+        return matches!(method, &Method::GET);
+    }
     matches!(
         (method, path),
         (&Method::GET, "/api/health")
@@ -184,6 +193,18 @@ mod tests {
         assert!(!is_pre_auth(&Method::POST, "/api/share/abc123"));
         // ...including the degenerate empty-token form.
         assert!(!is_pre_auth(&Method::POST, "/api/share//unlock"));
+    }
+
+    /// The e2e mock CDN stands in for a provider's public preauthenticated
+    /// CDN URL — recipient browsers fetch it with no session (sharing task
+    /// 013). Only compiled in e2e builds, matching the route it gates.
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn pre_auth_covers_e2e_mock_cdn_gets() {
+        assert!(is_pre_auth(&Method::GET, "/api/__e2e/mock-cdn/od-clip"));
+        // Mutations against it (there are none in the router, but the
+        // prefix rule must not open a hole) stay gated.
+        assert!(!is_pre_auth(&Method::POST, "/api/__e2e/mock-cdn/x"));
     }
 
     #[test]
