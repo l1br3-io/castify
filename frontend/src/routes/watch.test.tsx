@@ -3,6 +3,7 @@ import { fireEvent, screen, act, waitFor } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { WatchPage } from "./watch";
+import { setCsrfToken } from "../api/client";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 import type { VideoDetailDto } from "../api/types";
 
@@ -16,6 +17,11 @@ vi.mock("../lib/player-db", () => ({
   getSubtitlePref: vi.fn().mockResolvedValue(null),
   saveGlobalPrefs: vi.fn().mockResolvedValue(undefined),
   saveSubtitlePref: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mock the share-link IndexedDB store (task 012) — jsdom has no IndexedDB.
+vi.mock("../lib/share-links-db", () => ({
+  saveShareLink: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Mock jassub (M8 Task 004) — the dynamic import inside useLibassSubtitles
@@ -89,9 +95,11 @@ vi.mock("hls.js", () => ({
 }));
 
 import { getProgress, clearProgress } from "../lib/player-db";
+import { saveShareLink } from "../lib/share-links-db";
 
 const mockGetProgress = vi.mocked(getProgress);
 const mockClearProgress = vi.mocked(clearProgress);
+const mockSaveShareLink = vi.mocked(saveShareLink);
 
 const VIDEO_DETAIL: VideoDetailDto = {
   id: "v1",
@@ -135,7 +143,10 @@ function watchFetch(detail: VideoDetailDto = VIDEO_DETAIL) {
 
 function renderWatchPage(
   videoId = "v1",
-  fetchImpl?: (input: RequestInfo | URL) => Response | Promise<Response>,
+  fetchImpl?: (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => Response | Promise<Response>,
 ) {
   return renderWithProviders(
     <Routes>
@@ -354,6 +365,66 @@ describe("WatchPage", () => {
       screen.getByRole("group", { name: "Rate this video" }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("radio", { name: /\d star/i })).toHaveLength(5);
+  });
+
+  // --- Task 012: Share action + creation dialog ---
+
+  it("opens the Share dialog prefilled with the current item and creates a one-time link", async () => {
+    mockCanPlayType("probably");
+    setCsrfToken("csrf-test");
+    mockSaveShareLink.mockResolvedValue(undefined);
+    const base = watchFetch();
+    const { fetchSpy } = renderWatchPage(
+      "v1",
+      (input, init) => {
+        const url = String(input);
+        if (url === "/api/shares" && (init?.method ?? "GET") === "POST") {
+          return jsonResponse(
+            {
+              id: "s1",
+              title: "cat.mp4",
+              token: "tok_abc",
+              share_url: "/share/tok_abc",
+            },
+            201,
+          );
+        }
+        return base(input);
+      },
+    );
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+
+    // Dialog prefilled with the current item.
+    expect(
+      await screen.findByRole("heading", { name: "Share cat.mp4" }),
+    ).toBeInTheDocument();
+
+    // Create → exactly one POST for this item with defaults omitted.
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+    let posts: [unknown, RequestInit?][] = [];
+    await waitFor(() => {
+      posts = fetchSpy.mock.calls.filter(
+        ([input, init]) =>
+          String(input) === "/api/shares" && init?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+    });
+    expect(JSON.parse(String(posts[0][1]?.body))).toEqual({
+      video_ids: ["v1"],
+    });
+
+    // Link shown once, with copy + warning; stored per-device for Settings.
+    expect(
+      await screen.findByText(`${window.location.origin}/share/tok_abc`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/only once/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockSaveShareLink).toHaveBeenCalledWith("s1", "/share/tok_abc"),
+    );
+
+    setCsrfToken(null);
   });
 
   it("reflects is_favorite=true on the hero FavoriteToggle (M3 T7)", async () => {

@@ -28,6 +28,7 @@ import { FavoriteToggle } from "../components/favorite-toggle";
 import { RatingStars } from "../components/rating-stars";
 import { DedupBadge, ProviderBadge } from "../components/badges";
 import { PlayerControls } from "../components/player-controls";
+import { ShareDialog } from "../components/share-dialog";
 import { UpNext } from "../components/up-next";
 import { useAutoAdvance } from "../hooks/use-auto-advance";
 import { useHlsStream } from "../hooks/use-hls-stream";
@@ -711,6 +712,10 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
   const resBucket = resolutionBucket(video.height);
   const others = otherProviders(video);
 
+  // Task 012: Share entry point — opens the creation dialog prefilled
+  // with this item. Local state; the dialog owns its own mutation.
+  const [shareOpen, setShareOpen] = useState(false);
+
   return (
     <div className="space-y-3">
       <h1 className="text-xl font-bold tracking-tight">{video.name}</h1>
@@ -739,11 +744,26 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
       </div>
       {/* Personalization controls — hero variant. `VideoDetailDto` is a
           structural superset of `VideoSummaryDto`, so both controls accept
-          it without adapter code. */}
+          it without adapter code. The Share action (task 012) sits in the
+          same row and opens the creation dialog for this item. */}
       <div className="flex flex-wrap items-center gap-4 pt-1">
         <FavoriteToggle video={video} variant="hero" />
         <RatingStars video={video} variant="hero" />
+        <button
+          type="button"
+          onClick={() => setShareOpen(true)}
+          className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+        >
+          Share
+        </button>
       </div>
+      {shareOpen && (
+        <ShareDialog
+          videoIds={[video.id]}
+          itemLabel={video.name}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 }

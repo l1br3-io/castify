@@ -10,24 +10,20 @@
 // 002), so a row can offer a link only when *this browser* created the
 // share — the link is remembered per-device in IndexedDB
 // (`lib/share-links-db.ts`). Shares created elsewhere render status only;
-// there is nothing to reconstruct from (the server stores a hash).
-//
-// Copy uses `navigator.clipboard` when present and falls back to the
-// legacy `execCommand("copy")` dance (non-secure contexts, older browsers),
-// surfacing a brief copied/failed state either way.
+// there is nothing to reconstruct from (the server stores a hash). The
+// button itself is the shared `CopyLinkButton` (`copy-link-button.tsx`,
+// also used by the task 012 creation dialog).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { revokeShare, type ShareDto } from "../api/shares";
 import { describeError } from "../lib/format";
-import { copyToClipboard } from "../lib/clipboard";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
-import { absoluteShareUrl, SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
+import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
+import { CopyLinkButton } from "./copy-link-button";
 import { ErrorState } from "./ui/error-state";
 import { Skeleton } from "./ui/skeleton";
-
-const COPIED_RESET_MS = 2000;
 
 export function SharesSection() {
   return (
@@ -167,46 +163,6 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
         )}
       </div>
     </li>
-  );
-}
-
-function CopyLinkButton({ linkPath }: { linkPath: string }) {
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
-    "idle",
-  );
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (resetTimer.current) clearTimeout(resetTimer.current);
-    };
-  }, []);
-
-  async function handleCopy(): Promise<void> {
-    if (resetTimer.current) clearTimeout(resetTimer.current);
-    const ok = await copyToClipboard(absoluteShareUrl(linkPath));
-    setCopyState(ok ? "copied" : "failed");
-    resetTimer.current = setTimeout(
-      () => setCopyState("idle"),
-      COPIED_RESET_MS,
-    );
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => void handleCopy()}
-        className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)]"
-      >
-        {copyState === "copied" ? "Copied" : "Copy link"}
-      </button>
-      {copyState === "failed" && (
-        <p className="text-xs text-[var(--color-castify-accent-dim)]">
-          Couldn't copy — please try again.
-        </p>
-      )}
-    </>
   );
 }
 

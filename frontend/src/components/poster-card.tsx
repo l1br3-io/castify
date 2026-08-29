@@ -59,12 +59,24 @@ type PosterCardProps = {
   /** Bottom-overlay slot — T11 RatingStars. Renders on top of the duration/
    *  resolution badges; the slot itself controls its hover visibility. */
   bottomOverlaySlot?: ReactNode;
-  /**
-   * Access scope for media URLs. Defaults to owner routes; share pages pass
-   * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
-   * share mirror instead of the session-gated owner route.
-   */
+/**
+ * Access scope for media URLs. Defaults to owner routes; share pages pass
+ * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
+ * share mirror instead of the session-gated owner route.
+ */
   scope?: AccessScope;
+  /**
+   * Selection mode (task 012 browse multi-select). When set, the card
+   * stops navigating (no stretched link), the top-right corner carries a
+   * real checkbox, and clicking anywhere on the card toggles selection.
+   * Keyboard users drive the checkbox itself — the card body is
+   * pointer-only, so interactive slots (favorite/rating) can be omitted
+   * by the caller without losing accessibility.
+   */
+  selection?: {
+    isSelected: boolean;
+    onToggle: () => void;
+  };
 };
 
 export function PosterCard({
@@ -74,6 +86,7 @@ export function PosterCard({
   topRightSlot,
   bottomOverlaySlot,
   scope,
+  selection,
 }: PosterCardProps) {
   // Providers from `sources` excluding the representative's own. Used to
   // decide whether to render a DedupBadge. Shared helper (lib/video.ts).
@@ -82,6 +95,7 @@ export function PosterCard({
 
   return (
     <article
+      onClick={selection ? selection.onToggle : undefined}
       className={`
         relative group flex flex-col gap-2
         rounded-[var(--radius-card)] border
@@ -91,9 +105,11 @@ export function PosterCard({
         hover:border-[var(--color-castify-accent)]/40
         focus-within:border-[var(--color-castify-accent)]/40
         motion-reduce:transition-none
+        ${selection ? "cursor-pointer" : ""}
+        ${selection?.isSelected ? "border-[var(--color-castify-accent)] ring-1 ring-[var(--color-castify-accent)]" : ""}
       `}
     >
-      {href && (
+      {!selection && href && (
         <>
           <Link
             to={href}
@@ -120,6 +136,18 @@ export function PosterCard({
             </div>
           </div>
         </>
+      )}
+      {selection && (
+        <input
+          type="checkbox"
+          checked={selection.isSelected}
+          onChange={selection.onToggle}
+          // Both the checkbox and the card body toggle — stop the bubble
+          // so a checkbox click doesn't fire twice.
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Select ${video.name}`}
+          className="absolute right-2 top-2 z-20 h-5 w-5 cursor-pointer accent-[var(--color-castify-accent)]"
+        />
       )}
       <Thumbnail
         video={video}

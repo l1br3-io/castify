@@ -1119,3 +1119,110 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     // is unit-tested in continue-watching-card.test.tsx.
   });
 });
+
+// Multi-select share mode (task 012): "Select" swaps card navigation for
+// toggle-selection; "Share N items" opens the creation dialog with the
+// click order as curation order. The dialog itself is unit-tested in
+// share-dialog.test.tsx — these cover the browse entry point only.
+
+vi.mock("../lib/share-links-db", () => ({
+  saveShareLink: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { saveShareLink } from "../lib/share-links-db";
+
+const mockSaveShareLink = vi.mocked(saveShareLink);
+
+describe("BrowsePage — multi-select share mode (task 012)", () => {
+  beforeEach(() => {
+    setCsrfToken("csrf-test");
+    mockSaveShareLink.mockResolvedValue(undefined);
+  });
+  afterEach(() => setCsrfToken(null));
+
+  it("selects items, shares them in click order, and shows the link once", async () => {
+    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/shares" && method === "POST") {
+          return jsonResponse(
+            {
+              id: "s9",
+              title: "2 videos",
+              token: "tok_9",
+              share_url: "/share/tok_9",
+            },
+            201,
+          );
+        }
+        return browseFetch()(input);
+      },
+    });
+
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+
+    // Enter select mode — Share starts disabled at 0 selections.
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    const shareButton = screen.getByRole("button", { name: /share 0 items/i });
+    expect(shareButton).toBeDisabled();
+
+    // Toggle v2 via its checkbox, v1 via the card body (title click) —
+    // the click order becomes the share's curation order.
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select dedup-video.mp4" }),
+    );
+    const gridSection = container.querySelector("#all-videos")!;
+    fireEvent.click(within(gridSection as HTMLElement).getByText("cat.mp4"));
+    expect(screen.getByText(/2 items selected/)).toBeInTheDocument();
+
+    // Share → dialog with item count → create.
+    fireEvent.click(screen.getByRole("button", { name: /share 2 items/i }));
+    expect(
+      await screen.findByRole("heading", { name: "Share 2 videos" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+
+    let posts: [unknown, RequestInit?][] = [];
+    await waitFor(() => {
+      posts = fetchSpy.mock.calls.filter(
+        ([input, init]) =>
+          String(input) === "/api/shares" && init?.method === "POST",
+      );
+      expect(posts).toHaveLength(1);
+    });
+    expect(JSON.parse(String(posts[0][1]?.body))).toEqual({
+      video_ids: ["v2", "v1"],
+    });
+
+    // Link displayed once with copy + warning; persisted per-device.
+    expect(
+      await screen.findByText(`${window.location.origin}/share/tok_9`),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/only once/i)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockSaveShareLink).toHaveBeenCalledWith("s9", "/share/tok_9"),
+    );
+  });
+
+  it("Cancel exits select mode and clears the selection", async () => {
+    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+
+    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select cat.mp4" }));
+    expect(screen.getByText(/1 item selected/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(
+      screen.queryByRole("checkbox", { name: /select /i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+    // Cards navigate again — the stretched link is back.
+    expect(
+      screen.getAllByRole("link", { name: "Play cat.mp4" }).length,
+    ).toBeGreaterThan(0);
+  });
+});

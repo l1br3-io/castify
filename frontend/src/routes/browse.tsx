@@ -29,6 +29,11 @@
 //   * Library truly empty (recentlyAdded has 0 videos): scan-aware CTA.
 //   * Grid empty due to active filter: "No videos match this filter."
 //   * Grid empty due to search query: 'No videos match "q".'
+//
+// Multi-select share mode (task 012): "Select" in the grid header toggles
+// a selection mode where PosterCards toggle instead of navigating; the
+// action bar's "Share N items" opens the shared creation dialog with the
+// click order as curation order.
 
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -48,6 +53,7 @@ import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
 import { FolderOrganizer } from "../components/folder-organizer";
+import { ShareDialog } from "../components/share-dialog";
 import { describeError } from "../lib/format";
 import { useBrowseFilters } from "../lib/filter-state";
 import {
@@ -73,6 +79,23 @@ export function BrowsePage() {
   const [query, setQuery] = useState(filters.values.q);
   const debouncedQuery = useDebouncedValue(query, 300);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Task 012: multi-select share mode. `selectedIds` is an array (not a
+  // Set) so the owner's click order becomes the share's curation order.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  function toggleSelected(id: string): void {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  function exitSelectMode(): void {
+    setSelectMode(false);
+    setSelectedIds([]);
+  }
 
   // Sync debounced search → URL. URL `q` is the single source of truth for the
   // API call + `isSearching` display. The setter identity changes per render
@@ -255,22 +278,66 @@ export function BrowsePage() {
               </h2>
             )}
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <span className="opacity-60">Sort</span>
-            <select
-              aria-label="Sort videos"
-              value={filters.values.sort}
-              onChange={(e) => filters.setSort(e.target.value as VideoSortKey)}
-              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+              aria-pressed={selectMode || undefined}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
             >
-              {VIDEO_SORT_OPTIONS.map((key) => (
-                <option key={key} value={key}>
-                  {VIDEO_SORT_LABELS[key]}
-                </option>
-              ))}
-            </select>
-          </label>
+              {selectMode ? "Cancel" : "Select"}
+            </button>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="opacity-60">Sort</span>
+              <select
+                aria-label="Sort videos"
+                value={filters.values.sort}
+                onChange={(e) => filters.setSort(e.target.value as VideoSortKey)}
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              >
+                {VIDEO_SORT_OPTIONS.map((key) => (
+                  <option key={key} value={key}>
+                    {VIDEO_SORT_LABELS[key]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
+
+        {/* Task 012: multi-select action bar — shown while select mode is
+            active. "Share N items" opens the same creation dialog the
+            watch page uses; it needs ≥1 selection. */}
+        {selectMode && (
+          <div
+            className="flex flex-wrap items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-3"
+          >
+            <span className="text-sm">
+              {selectedIds.length}{" "}
+              {selectedIds.length === 1 ? "item" : "items"} selected
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedIds.length > 0) setShareOpen(true);
+              }}
+              disabled={selectedIds.length === 0}
+              className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-1.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+            >
+              Share {selectedIds.length}{" "}
+              {selectedIds.length === 1 ? "item" : "items"}
+            </button>
+            {selectedIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedIds([])}
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Filter panel — top bar (provider chips + More filters drawer) +
             active-filter chips. */}
@@ -287,8 +354,27 @@ export function BrowsePage() {
             setQuery("");
             filters.setQ("");
           }}
+          selection={
+            selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
+          }
         />
       </div>
+
+      {/* Task 012: creation dialog from the multi-select bar. Closing it
+          (Done or Cancel) clears the selection — a second share wants a
+          fresh curation, and a cancelled one has nothing to keep. */}
+      {shareOpen && selectedIds.length > 0 && (
+        <ShareDialog
+          videoIds={selectedIds}
+          itemLabel={`${selectedIds.length} ${
+            selectedIds.length === 1 ? "video" : "videos"
+          }`}
+          onClose={() => {
+            setShareOpen(false);
+            setSelectedIds([]);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -393,6 +479,12 @@ interface BrowseGridProps {
   searchQuery?: string;
   onClearFilters: () => void;
   onClearSearch: () => void;
+  /** Present while browse multi-select is active (task 012) — cards
+   * toggle selection instead of navigating to the watch page. */
+  selection?: {
+    selectedIds: string[];
+    onToggle: (id: string) => void;
+  };
 }
 
 function BrowseGrid({
@@ -403,6 +495,7 @@ function BrowseGrid({
   searchQuery,
   onClearFilters,
   onClearSearch,
+  selection,
 }: BrowseGridProps) {
   if (videos.isLoading) {
     return <LoadingSkeletonGrid />;
@@ -467,8 +560,22 @@ function BrowseGrid({
             video={video}
             href={`/watch/${video.id}`}
             queue={gridQueue}
-            topRightSlot={<FavoriteToggle video={video} />}
-            bottomOverlaySlot={<RatingStars video={video} />}
+            // Selection mode replaces navigation + personalization with
+            // toggling — the slots would fight the card-level click.
+            topRightSlot={
+              selection ? undefined : <FavoriteToggle video={video} />
+            }
+            bottomOverlaySlot={
+              selection ? undefined : <RatingStars video={video} />
+            }
+            selection={
+              selection
+                ? {
+                    isSelected: selection.selectedIds.includes(video.id),
+                    onToggle: () => selection.onToggle(video.id),
+                  }
+                : undefined
+            }
           />
         ))}
       </div>
