@@ -5,11 +5,8 @@
 Castify is a free, open-source personal media server (Rust workspace + Vite/React SPA).
 Connect cloud providers, unify them into one catalog, browse, and play. See
 [`docs/VISION.md`](docs/VISION.md) for the *why* and [`docs/ROADMAP.md`](docs/ROADMAP.md)
-for direction + the delivery lifecycle. The current effort (M9 — Redesign the
-home page) lives under
-[`docs/specs/home-redesign/`](docs/specs/home-redesign/):
-[`spec.md`](docs/specs/home-redesign/spec.md) (drafted; `plan.md` +
-`todo.md` land with `/planning`).
+for direction + the delivery lifecycle. No effort is active; start the next with
+`/spec` (candidates in [`docs/ROADMAP.md`](docs/ROADMAP.md) § Future directions).
 
 ## Commands
 
@@ -46,9 +43,10 @@ One directory per effort, in place forever: each effort lives at
 `docs/specs/<effort-slug>/` with `spec.md` + `plan.md` + `todo.md`. Status lives in the
 spec.md frontmatter (`status: draft | active | shipped`) and the todo.md checkboxes —
 not in a duplicate table elsewhere. Shipped efforts stay put; their spec.md frontmatter
-flips to `status: shipped` (no archive step). Past efforts: M0–M8 + Lossless
-Reconnect under [`docs/specs/`](docs/specs/); current effort: M9 at
-[`docs/specs/home-redesign/`](docs/specs/home-redesign/).
+flips to `status: shipped` (no archive step). All efforts shipped (M0–M9, Lossless
+Reconnect, Sharing) live under [`docs/specs/`](docs/specs/); nothing is active — the
+next effort starts with `/spec` (candidates in [`docs/ROADMAP.md`](docs/ROADMAP.md) §
+Future directions).
 
 ## Boundaries
 
