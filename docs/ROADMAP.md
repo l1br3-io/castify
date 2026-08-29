@@ -55,7 +55,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 
 ## Milestones
 
-> **Last shipped: Lossless Reconnect** — disconnect is now a soft-delete; reconnecting the same account revives in place, preserving every video UUID + resume position. See [`docs/specs/lossless-reconnect/spec.md`](./specs/lossless-reconnect/spec.md). All planned milestones (M0–M8) are shipped.
+> **Last shipped: Sharing** — read-only links for family and friends: curated item lists, optional argon2id password gate, expiry/revocation, full playback pipeline (direct + transcode/HLS) through share-scoped mirrors, zero recipient accounts or server writes. See [`docs/specs/sharing/spec.md`](./specs/sharing/spec.md).
 
 | Milestone | State |
 |-----------|-------|
@@ -70,6 +70,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 | M7 — Adaptive bitrate | Shipped |
 | M8 — Advanced subtitles | Shipped |
 | Lossless Reconnect | Shipped (corrective) |
+| Sharing | Shipped |
 | M9 — Redesign the home page | In progress |
 
 Dependency sequencing for the self-hosted arc: M3.5 → M4 → M5 → M6 (needs M4+M5) →
@@ -81,6 +82,5 @@ Dependency sequencing for the self-hosted arc: M3.5 → M4 → M5 → M6 (needs 
 
 Revisited once the core hub is shipped and adopted:
 
-- **Sharing** — read-only access for family and friends via link, password-optional, expiring, revocable.
 - **Media intelligence** — memories and stories, face and place search, smart organization and cleanup.
 - **Platform & ecosystem** — cross-platform mobile, desktop, and CLI apps, TV apps, casting, watch parties, multi-user household profiles, audio/music support.
