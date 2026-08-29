@@ -29,6 +29,7 @@ ci:
     echo "== backend: fmt ==";   cargo fmt --all -- --check
     echo "== backend: clippy =="; cargo clippy --all-targets --all-features -- -D warnings
     echo "== backend: test ==";  cargo test --all
+    echo "== backend: test (e2e feature) =="; cargo test -p castify-api --features e2e -- --test-threads=1
     echo "== frontend: install =="; ( cd frontend && npm ci )
     echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck )
     echo "== frontend: lint =="; ( cd frontend && npm run lint )
@@ -41,6 +42,7 @@ preflight:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "== backend: test (single-threaded) =="; cargo test -p castify-api -- --test-threads=1
+    echo "== backend: test (e2e feature, single-threaded) =="; cargo test -p castify-api --features e2e -- --test-threads=1
     echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck )
     echo "== frontend: lint =="; ( cd frontend && npm run lint )
     echo "== frontend: test =="; ( cd frontend && npm run test )

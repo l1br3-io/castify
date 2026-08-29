@@ -21,7 +21,12 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor, fireEvent } from "@testing-library/react";
 
 import { ShareDialog } from "./share-dialog";
-import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
+import {
+  jsonResponse,
+  jsonError,
+  renderWithProviders,
+  type FetchHandler,
+} from "../test/utils";
 import { setCsrfToken } from "../api/client";
 import { saveShareLink } from "../lib/share-links-db";
 
@@ -67,7 +72,7 @@ function postCalls(fetchSpy: {
 
 function setupDialog(
   videoIds: string[],
-  fetchImplementation: ReturnType<typeof createShareFetch>,
+  fetchImplementation: FetchHandler,
   itemLabel = "cat.mp4",
 ) {
   const onClose = vi.fn();
@@ -246,5 +251,43 @@ describe("ShareDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
     fireEvent.click(await screen.findByRole("button", { name: /done/i }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
+  });
+
+  it("ignores Escape while the create POST is in flight", async () => {
+    // A share created behind a closed dialog is recoverable only via
+    // Settings, so Escape must not close mid-POST (parity with the
+    // backdrop click guard).
+    let release: (value: Response) => void = () => {};
+    const inFlight = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const { onClose } = setupDialog(["v1"], (input, init) => {
+      const url = String(input);
+      if (url === "/api/shares" && (init?.method ?? "GET") === "POST")
+        return inFlight;
+      return jsonError(404, `unmocked ${init?.method ?? "GET"} ${url}`);
+    });
+
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+    expect(await screen.findByRole("button", { name: /creating/i })).toBeDisabled();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The POST still completes into the created view once it resolves.
+    release(jsonResponse(CREATED_BODY, 201));
+    expect(await screen.findByText(/only once/i)).toBeInTheDocument();
+  });
+
+  it("uses singular copy for a single video and plural for many", async () => {
+    setupDialog(["v1"], createShareFetch());
+    await screen.findByRole("dialog");
+    expect(screen.getByText(/watch this video without an account/i)).toBeInTheDocument();
+
+    setupDialog(["v1", "v2", "v3"], createShareFetch());
+    expect(
+      await screen.findByText(/watch these 3 videos without an account/i),
+    ).toBeInTheDocument();
   });
 });

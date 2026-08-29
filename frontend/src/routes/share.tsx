@@ -12,12 +12,16 @@
 //     ├─ locked → password gate; POST unlock only on submit
 //     │    ├─ 401 → inline "Wrong password.", stay on the form
 //     │    ├─ 429 → inline try-later state, stay on the form
-//     │    └─ 204 → GET items → grid
+//     │    ├─ other error → inline server error, stay on the form
+//     │    └─ 204 → flip cached resolve to unlocked, GET items → grid
 //     └─ unlocked → GET items → grid
 //
 // The resolve query is `staleTime: Infinity` + `retry: false`: a dead share
 // stays dead on this mount (no re-resolve loop), and revisiting the page
-// within the session reads from cache.
+// within the session reads from cache. A successful unlock flips that
+// cached entry to `locked: false` in place (no refetch), so returning
+// later in the session renders the grid — not the gate — while the
+// unlock cookie is still valid.
 //
 // The grid reuses `PosterCard` read-only — no `topRightSlot` favorite, no
 // `bottomOverlaySlot` rating, no progress bar. Cards carry the share scope
@@ -38,16 +42,12 @@ import { PosterCard } from "../components/poster-card";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
-import { fetchShareItems, resolveShare, unlockShare } from "../api/shares";
+import { fetchShareItems, resolveShare, unlockShare, type ShareResolveDto } from "../api/shares";
 import { ApiError } from "../api/client";
 import { describeError } from "../lib/format";
 
 export function SharePage() {
   const { token } = useParams<{ token: string }>();
-  // True after a successful unlock on this mount. Kept as local state (not a
-  // resolve-query invalidation) so unlocking costs exactly one unlock POST +
-  // one items GET — never a second resolve.
-  const [unlocked, setUnlocked] = useState(false);
 
   const resolve = useQuery({
     queryKey: ["share", token, "resolve"],
@@ -57,8 +57,7 @@ export function SharePage() {
     staleTime: Infinity,
   });
 
-  const canFetchItems =
-    resolve.data !== undefined && (!resolve.data.locked || unlocked);
+  const canFetchItems = resolve.data !== undefined && !resolve.data.locked;
 
   const items = useQuery({
     queryKey: ["share", token, "items"],
@@ -115,13 +114,7 @@ export function SharePage() {
   const share = resolve.data;
 
   if (!canFetchItems || itemsLockedOut) {
-    return (
-      <PasswordGate
-        title={share.title}
-        token={token as string}
-        onUnlocked={() => setUnlocked(true)}
-      />
-    );
+    return <PasswordGate title={share.title} token={token as string} />;
   }
 
   if (items.isPending) {
@@ -175,26 +168,24 @@ export function SharePage() {
 // Password gate
 // ---------------------------------------------------------------------------
 
-function PasswordGate({
-  title,
-  token,
-  onUnlocked,
-}: {
-  title: string;
-  token: string;
-  onUnlocked: () => void;
-}) {
+function PasswordGate({ title, token }: { title: string; token: string }) {
   const [password, setPassword] = useState("");
   const queryClient = useQueryClient();
 
   const unlock = useMutation({
     mutationFn: () => unlockShare(token, password),
     onSuccess: () => {
-      // Invalidate rather than just flipping local state: covers the
-      // cookie-lapse path where the items query already holds an error and
-      // needs an explicit kick in addition to becoming enabled again.
+      // Flip the cached resolve to unlocked in place (setQueryData, not a
+      // refetch): unlocking costs exactly one unlock POST + one items GET,
+      // and the cache no longer claims `locked` — so returning to this
+      // page later in the session (watch → back) renders the grid from
+      // cache instead of re-showing the gate for a still-valid cookie.
+      // If the cookie has since lapsed, items answers 401 and the gate
+      // returns via `itemsLockedOut`.
+      queryClient.setQueryData<ShareResolveDto>(["share", token, "resolve"], (old) =>
+        old ? { ...old, locked: false } : old,
+      );
       void queryClient.invalidateQueries({ queryKey: ["share", token, "items"] });
-      onUnlocked();
     },
   });
 
@@ -233,7 +224,12 @@ function PasswordGate({
           )}
           {errorStatus === 429 && (
             <p role="alert" className="text-sm text-[var(--color-castify-muted)]">
-              Too many attempts. Please try again in a minute.
+              Too many attempts. Please try again in about 15 minutes.
+            </p>
+          )}
+          {unlock.isError && errorStatus !== 401 && errorStatus !== 429 && (
+            <p role="alert" className="text-sm text-[var(--color-castify-muted)]">
+              Couldn't unlock this share: {describeError(unlock.error)}
             </p>
           )}
           <button

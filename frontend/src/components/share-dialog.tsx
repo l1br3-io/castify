@@ -112,15 +112,17 @@ export function ShareDialog({
   });
 
   // Escape closes only pre-creation: once the link is on screen it must
-  // be dismissed deliberately (Done), never by a stray keypress.
+  // be dismissed deliberately (Done), never by a stray keypress — and not
+  // mid-POST either (same guard as the backdrop below; a share created
+  // behind a closed dialog is recoverable only via Settings).
   useEffect(() => {
     if (created) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !create.isPending) onClose();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [created, onClose]);
+  }, [created, create.isPending, onClose]);
 
   function handleSubmit(e: FormEvent): void {
     e.preventDefault();
@@ -156,8 +158,10 @@ export function ShareDialog({
               Share {itemLabel}
             </h2>
             <p className="text-sm opacity-60">
-              Anyone with the link can watch these{" "}
-              {videoIds.length === 1 ? "videos" : `${videoIds.length} videos`}
+              Anyone with the link can watch{" "}
+              {videoIds.length === 1
+                ? "this video"
+                : `these ${videoIds.length} videos`}
               {" "}without an account.
             </p>
 

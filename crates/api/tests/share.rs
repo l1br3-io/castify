@@ -488,6 +488,20 @@ async fn unlock_on_revoked_share_is_410_share_unavailable() {
 }
 
 #[tokio::test]
+async fn unlock_on_expired_share_is_410_share_unavailable() {
+    let (app, state, _guard) = boot().await;
+    // Seeded through the repo with a past expiry (the API would reject
+    // one at creation). The status machine 410s before the placeholder
+    // PHC string is ever verified.
+    let share = seed_share(&state, Some("pw"), Some("2000-01-01T00:00:00Z"), &[]).await;
+
+    let (status, cookie, body) = post_unlock(app, &share.token, "pw").await;
+    assert_eq!(status, StatusCode::GONE, "body = {body}");
+    assert_eq!(body["code"], "share_unavailable");
+    assert!(cookie.is_none(), "a dead share must never mint a cookie");
+}
+
+#[tokio::test]
 async fn unlock_rate_limit_engages_after_five_failures_even_with_right_password() {
     let (app, state, _guard) = boot().await;
     let share = seed_password_share(&state, "correct horse", &[]).await;
@@ -581,15 +595,17 @@ fn mirror_uri(token: &str, video_id: &str, suffix: &str) -> String {
     format!("/api/share/{token}/videos/{video_id}/{suffix}")
 }
 
-/// One boot, four denial shapes: an open share (its member video is the
-/// positive control), a revoked share, a locked share, and an unknown
-/// token. Returns everything the per-route matrix tests need. The guard
-/// must stay alive for the caller's lifetime — dropping it unlinks the
-/// db file and later pool connections would 500 on an empty database.
+/// One boot, five denial shapes: an open share (its member video is the
+/// positive control), a revoked share, an expired share, a locked share,
+/// and an unknown token. Returns everything the per-route matrix tests
+/// need. The guard must stay alive for the caller's lifetime — dropping it
+/// unlinks the db file and later pool connections would 500 on an empty
+/// database.
 struct DenialFixture {
     app: axum::Router,
     open: String,
     revoked: String,
+    expired: String,
     locked: String,
     member: String,
     outsider: String,
@@ -606,11 +622,17 @@ async fn denial_fixture() -> DenialFixture {
         .revoke(&revoked_share.id)
         .await
         .unwrap();
+    // Seeded straight through the repo — the API rejects past expiries, so
+    // an expired row can only exist if it expired after creation.
+    let expired = seed_share(&state, None, Some("2000-01-01T00:00:00Z"), &member)
+        .await
+        .token;
     let locked = seed_share(&state, Some("pw"), None, &member).await.token;
     DenialFixture {
         app,
         open,
         revoked: revoked_share.token,
+        expired,
         locked,
         member: videos[0].clone(),
         outsider: videos[1].clone(),
@@ -618,9 +640,10 @@ async fn denial_fixture() -> DenialFixture {
     }
 }
 
-/// The shared per-route matrix: non-member → 404, revoked → 410, locked
-/// (no cookie) → 401, unknown token → 404. Authorization runs before any
-/// provider access, so these hold without a configured provider.
+/// The shared per-route matrix: non-member → 404, revoked → 410, expired
+/// → 410, locked (no cookie) → 401, unknown token → 404. Authorization
+/// runs before any provider access, so these hold without a configured
+/// provider.
 async fn assert_mirror_denial_matrix(suffix: &str) {
     let f = denial_fixture().await;
 
@@ -641,6 +664,15 @@ async fn assert_mirror_denial_matrix(suffix: &str) {
     )
     .await;
     assert_eq!(status, StatusCode::GONE, "revoked must 410");
+
+    let (status, _, _) = get_raw(
+        f.app.clone(),
+        &mirror_uri(&f.expired, &f.member, suffix),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::GONE, "expired must 410");
 
     let (status, _, _) = get_raw(
         f.app.clone(),

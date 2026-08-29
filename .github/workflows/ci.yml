@@ -26,6 +26,12 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
         run: cargo test --all
+      # The `e2e` feature gates the byte-serving mirror tests against the
+      # in-process mock providers (crates/api/src/e2e.rs) — `cargo test
+      # --all` runs default features only, so run them explicitly or they
+      # never execute in automation.
+      - name: Tests (e2e feature)
+        run: cargo test -p castify-api --features e2e -- --test-threads=1
 
   frontend:
     name: Frontend (TypeScript)

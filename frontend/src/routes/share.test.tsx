@@ -18,6 +18,7 @@ import {
   type FetchHandler,
 } from "../test/utils";
 import type { VideoSummaryDto } from "../api/types";
+import type { ShareResolveDto } from "../api/shares";
 
 const TOKEN = "tok_abc123";
 
@@ -177,9 +178,64 @@ describe("SharePage", () => {
     fireEvent.click(screen.getByRole("button", { name: /unlock/i }));
 
     expect(
-      await screen.findByText("Too many attempts. Please try again in a minute."),
+      await screen.findByText("Too many attempts. Please try again in about 15 minutes."),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
+  it("shows an inline error when unlock fails without a status (network/5xx)", async () => {
+    const { fetchSpy } = renderSharePage({
+      resolve: () =>
+        jsonResponse({
+          title: "Trip footage",
+          item_count: 1,
+          locked: true,
+          status: "active",
+        }),
+      unlock: () => jsonError(500, "database exploded"),
+    });
+
+    fireEvent.change(await screen.findByLabelText("Password"), {
+      target: { value: "correct horse" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /unlock/i }));
+
+    // Any non-401/429 failure surfaces inline — never a silent dead button.
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(callsTo(fetchSpy, ITEMS_URL)).toBe(0);
+  });
+
+  it("flips the cached resolve to unlocked on success, so a remount skips the gate", async () => {
+    // The app's query client keeps resolve cached between mounts (gcTime
+    // 5min, staleTime Infinity). The gate must not reappear after
+    // unlock → watch → back while the unlock cookie is still valid, so
+    // the unlock handler owns flipping the cached `locked` flag.
+    const { fetchSpy, queryClient } = renderSharePage({
+      resolve: () =>
+        jsonResponse({
+          title: "Trip footage",
+          item_count: 1,
+          locked: true,
+          status: "active",
+        }),
+      unlock: () => new Response(null, { status: 204 }),
+      items: () => jsonResponse([shareVideo("vA", "Video A")]),
+    });
+
+    fireEvent.change(await screen.findByLabelText("Password"), {
+      target: { value: "correct horse" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /unlock/i }));
+
+    await screen.findByRole("link", { name: "Play Video A" });
+
+    const cached = queryClient.getQueryData<ShareResolveDto>(["share", TOKEN, "resolve"]);
+    expect(cached?.locked).toBe(false);
+
+    // And the flip cost nothing extra: still one resolve, one unlock.
+    expect(callsTo(fetchSpy, RESOLVE_URL)).toBe(1);
+    expect(callsTo(fetchSpy, UNLOCK_URL)).toBe(1);
   });
 
   it("renders a sticky terminal state without a retry loop on 410", async () => {

@@ -253,15 +253,17 @@ describe("ShareWatchPage", () => {
     });
 
     // Drive the playback-tracking path (pause after advancing) so any
-    // latent progress POST would have fired by now.
-    (video as HTMLVideoElement).currentTime = 42;
-    fireEvent(video, new Event("pause"));
-
-    await waitFor(() =>
+    // latent progress POST would have fired by now. The pause event is
+    // re-dispatched inside waitFor: under parallel load the tracking
+    // listener can attach a tick after the <video> element appears, and a
+    // one-shot dispatch would silently miss it (observed flake).
+    await waitFor(() => {
+      (video as HTMLVideoElement).currentTime = 42;
+      fireEvent(video, new Event("pause"));
       expect(mockSaveProgressEntry).toHaveBeenCalledWith(
         expect.objectContaining({ videoId: VIDEO_ID, positionSeconds: 42 }),
-      ),
-    );
+      );
+    });
 
     // Zero owner routes, zero mutations — the spec's "no server writes
     // during recipient playback" line, asserted at the fetch layer.
