@@ -24,7 +24,7 @@
 // unlock cookie is still valid.
 //
 // The grid reuses `PosterCard` read-only — no `topRightSlot` favorite, no
-// `bottomOverlaySlot` rating, no progress bar. Cards carry the share scope
+// `ratingSlot` rating, no progress bar. Cards carry the share scope
 // so thumbnails resolve through the pre-auth mirror, and link to
 // `/share/:token/watch/:videoId` (task 010's player page). Share members
 // are always videos, so `FileCard` has no role here.

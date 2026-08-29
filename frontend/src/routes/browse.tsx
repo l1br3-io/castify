@@ -565,7 +565,7 @@ function BrowseGrid({
             topRightSlot={
               selection ? undefined : <FavoriteToggle video={video} />
             }
-            bottomOverlaySlot={
+            ratingSlot={
               selection ? undefined : <RatingStars video={video} />
             }
             selection={

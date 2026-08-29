@@ -1,10 +1,9 @@
 // RatingStars — 5-star rating widget.
 //
 // Placements (PRD FR-6, FR-8.2, FR-9.2):
-//   * PosterCard (`variant="card"`): bottom overlay strip. Hover-revealed
-//     when the video has no rating; always visible when `my_rating !== null`
-//     so the rating state is glanceable. Solid backdrop (`bg-black/70`)
-//     covers the duration/resolution badges while the user is interacting.
+//   * PosterCard (`variant="card"`): body row under the year/provider
+//     line. Always visible (rated or not) — no hover gating, so the
+//     rating state is glanceable and the affordance is discoverable.
 //   * HeroShowcase (`variant="hero"`): always visible, larger stars.
 //
 // Interaction (plan L1119–1124):
@@ -81,18 +80,13 @@ export function RatingStars({ video, variant = "card" }: RatingStarsProps) {
     );
   }
 
-  // Card variant: hover-gated when unrated, always visible when rated.
-  const visibility =
-    currentRating !== null
-      ? "opacity-100"
-      : "opacity-0 group-hover:opacity-100 focus-within:opacity-100";
-
+  // Card variant: body row in PosterCard — always visible, no hover gating.
   return (
     <div
       role="group"
       aria-label="Rate this video"
       onMouseLeave={() => setHoverRating(null)}
-      className={`flex items-center gap-0.5 rounded bg-black/70 px-1 py-0.5 backdrop-blur transition ${visibility}`}
+      className="flex items-center gap-0.5"
     >
       {STAR_VALUES.map((star) => (
         <button

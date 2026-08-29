@@ -121,23 +121,23 @@ describe("PosterCard", () => {
     expect(screen.getByRole("button", { name: "♡" })).toBeInTheDocument();
   });
 
-  it("renders bottomOverlaySlot alongside duration/resolution badges (T11)", () => {
-    const { container } = renderWithProviders(
+  it("renders ratingSlot in the body below the year/provider line", () => {
+    renderWithProviders(
       <PosterCard
         video={VIDEO}
-        bottomOverlaySlot={<div data-testid="rating-slot">stars go here</div>}
+        href="/watch/v1"
+        ratingSlot={<div data-testid="rating-slot">stars go here</div>}
       />,
     );
-
-    // Drive the img into the loaded state.
-    fireImageEvent(container, "load");
-
-    // Slot is present.
-    expect(screen.getByTestId("rating-slot")).toBeInTheDocument();
-    // Badges ALSO render (T11 deviation from T7 #38: the slot overlays the
-    // badges via absolute positioning + its own hover-gated visibility).
-    expect(screen.getByText("2:00")).toBeInTheDocument();
-    expect(screen.getByText("1080p")).toBeInTheDocument();
+    const rating = screen.getByTestId("rating-slot");
+    // Document order: name → meta line → rating row.
+    const name = screen.getByText("cat.mp4");
+    expect(name.compareDocumentPosition(rating) &
+      Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The row must sit above the stretched link (relative z-10) so the
+    // stars stay clickable, and hug its content (w-fit) so the rest of
+    // the strip still clicks through to the link.
+    expect(rating.parentElement).toHaveClass("relative", "z-10", "w-fit");
   });
 
   it("omits the resolution badge for heights below 360 after load", () => {
@@ -164,22 +164,20 @@ describe("PosterCard", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("positions slot wrappers above the stretched link via z-10", () => {
+  it("positions the thumbnail slot wrapper above the stretched link via z-10", () => {
     renderWithProviders(
       <PosterCard
         video={VIDEO}
         href="/watch/v1"
         topRightSlot={<button type="button">fav</button>}
-        bottomOverlaySlot={<div data-testid="rating">stars</div>}
       />,
     );
     const link = screen.getByRole("link", { name: "Play cat.mp4" });
-    // Slots should be in containers with z-10 (above the z-0 link).
+    // The thumbnail slot wrapper is z-10 (above the z-0 link) so the
+    // favorite stays clickable.
     const slotContainers = link.parentElement!.querySelectorAll(".z-10");
-    expect(slotContainers.length).toBe(2);
-  });
-
-  // --- M3 T7: ephemeral queue state propagation ---
+    expect(slotContainers.length).toBe(1);
+  });  // --- M3 T7: ephemeral queue state propagation ---
 
   // Renders at /watch/:id with the location serialized so the test can
   // assert on `state.queue` after clicking a PosterCard link.

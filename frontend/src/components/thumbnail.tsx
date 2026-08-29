@@ -46,15 +46,9 @@ export type ThumbnailProps = {
   /** Top-right corner slot — T11 FavoriteToggle (unused by CW cards). */
   topRightSlot?: ReactNode;
   /**
-   * Bottom-overlay slot — T11 RatingStars for PosterCard. Renders on top of
-   * the duration/resolution badges; the slot itself controls its hover
-   * visibility. Unused by CW cards (they use `bottomBarSlot` instead).
-   */
-  bottomOverlaySlot?: ReactNode;
-  /**
    * Optional full-width bar pinned to the bottom edge of the thumbnail
-   * (e.g. the continue-watching progress bar). Renders above the badges
-   * and `bottomOverlaySlot`. Unused by PosterCard.
+   * (e.g. the continue-watching progress bar). Renders above the badges.
+   * Unused by PosterCard.
    */
   bottomBarSlot?: ReactNode;
 };
@@ -65,7 +59,6 @@ export function Thumbnail({
   video,
   src,
   topRightSlot,
-  bottomOverlaySlot,
   bottomBarSlot,
 }: ThumbnailProps) {
   const [state, setState] = useState<ThumbState>("loading");
@@ -113,9 +106,7 @@ export function Thumbnail({
         />
       )}
 
-      {/* Metadata badges — render when the image is loaded. Always visible;
-          the bottomOverlaySlot (when present) sits on top via absolute
-          positioning + its own hover-gated visibility. */}
+      {/* Metadata badges — render when the image is loaded. Always visible. */}
       {state === "loaded" && (
         <>
           {video.duration_ms !== null && (
@@ -139,11 +130,6 @@ export function Thumbnail({
 
       {topRightSlot && (
         <div className="absolute right-1 top-1 z-10">{topRightSlot}</div>
-      )}
-      {bottomOverlaySlot && (
-        <div className="absolute inset-x-1 bottom-1 z-10">
-          {bottomOverlaySlot}
-        </div>
       )}
     </div>
   );

@@ -77,7 +77,7 @@ export function Shelf({ title, videos, onViewAll, totalCount, compact }: ShelfPr
               href={`/watch/${video.id}`}
               queue={queue}
               topRightSlot={<FavoriteToggle video={video} />}
-              bottomOverlaySlot={<RatingStars video={video} />}
+              ratingSlot={<RatingStars video={video} />}
             />
           </div>
         ))}

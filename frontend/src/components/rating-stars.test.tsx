@@ -60,18 +60,18 @@ describe("RatingStars", () => {
     svgs.forEach((svg) => expect(svg?.getAttribute("fill")).toBe("none"));
   });
 
-  it("is hover-gated (opacity-0 group-hover:opacity-100) when unrated", () => {
+  it("is always visible when unrated (no hover gating)", () => {
     const { container } = renderWithProviders(<GroupedStars video={UNRATED} />);
     const group = container.querySelector('[role="group"]');
-    expect(group?.className).toContain("opacity-0");
-    expect(group?.className).toContain("group-hover:opacity-100");
+    expect(group?.className).not.toContain("opacity-0");
+    expect(group?.className).not.toContain("group-hover:opacity-100");
   });
 
   it("is always visible when rated", () => {
     const { container } = renderWithProviders(<GroupedStars video={RATED} />);
     const group = container.querySelector('[role="group"]');
-    expect(group?.className).toContain("opacity-100");
     expect(group?.className).not.toContain("opacity-0");
+    expect(group?.className).not.toContain("group-hover:opacity-100");
   });
 
   it("hover fills stars as a preview without firing a request", () => {

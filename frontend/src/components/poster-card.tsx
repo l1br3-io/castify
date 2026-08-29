@@ -4,9 +4,6 @@
 //   * The stretched link is now keyboard-focusable (removed the old
 //     `tabIndex={-1}` that made the entire card unreachable via Tab —
 //     audit §4: "Cards have no in-card keyboard focus").
-//   * A decorative play-overlay appears on hover/focus-within to make the
-//     click target's purpose obvious (the overlay itself is `pointer-events-
-//     none` and `aria-hidden`; clicks still go to the link).
 //   * Body shows a year + provider line (year derived from `created_at`).
 //   * Hover discipline (identity pass task 005): no lift — the border
 //     shifts toward the accent and the video name underlines instead,
@@ -18,17 +15,19 @@
 //   │                           [slot] │  top-right (T11 favorite)
 //   │   <img aspect-video object-cover │
 //   │        loading="lazy">           │
-//   │      [▶ overlay on hover]        │
 //   │ [1080p]               [2:00]     │  resolution bottom-left,
-//   │       [slot]                     │  duration bottom-right
-//   │                                  │  bottom-overlay (T11 rating)
-//   └──────────────────────────────────┘
+//   └──────────────────────────────────┘  duration bottom-right
 //   name (2-line clamp)
 //   2023 · [Provider] [Also in: …]
+//   [slot]                                 rating stars (T11)
 //
-// T11 slot reservation contract (unchanged):
-//   * `topRightSlot`        — absolute top-right corner; renders above the img.
-//   * `bottomOverlaySlot`   — absolute bottom strip; T11's rating stars.
+// Slot contracts:
+//   * `topRightSlot` — absolute top-right corner of the thumbnail;
+//     renders above the img.
+//   * `ratingSlot`   — body row below the year/provider line. Must stay
+//     clickable above the stretched link, hence `relative z-10 w-fit`
+//     (`w-fit` so the rest of the row's strip still clicks through to
+//     the link).
 
 import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -38,7 +37,6 @@ import type { VideoSummaryDto } from "../api/types";
 import { otherProviders } from "../lib/video";
 import { DedupBadge, ProviderBadge } from "./badges";
 import { Thumbnail } from "./thumbnail";
-import { PlayIcon } from "./icons";
 
 type PosterCardProps = {
   video: VideoSummaryDto;
@@ -56,9 +54,9 @@ type PosterCardProps = {
   queue?: string[];
   /** Top-right corner slot — T11 FavoriteToggle. */
   topRightSlot?: ReactNode;
-  /** Bottom-overlay slot — T11 RatingStars. Renders on top of the duration/
-   *  resolution badges; the slot itself controls its hover visibility. */
-  bottomOverlaySlot?: ReactNode;
+  /** Rating row in the card body — T11 RatingStars, below the year/provider
+   *  line. Always visible (the slot itself controls its own styling). */
+  ratingSlot?: ReactNode;
 /**
  * Access scope for media URLs. Defaults to owner routes; share pages pass
  * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
@@ -84,7 +82,7 @@ export function PosterCard({
   href,
   queue,
   topRightSlot,
-  bottomOverlaySlot,
+  ratingSlot,
   scope,
   selection,
 }: PosterCardProps) {
@@ -110,32 +108,19 @@ export function PosterCard({
       `}
     >
       {!selection && href && (
-        <>
-          <Link
-            to={href}
-            state={queue ? { queue } : undefined}
-            // No longer `tabIndex={-1}` — the link is the keyboard entry to
-            // the card. The focus ring is rendered on the article via
-            // `focus-within:ring` below so it visually wraps the whole card.
-            className="absolute inset-0 rounded-[var(--radius-card)] z-0
-                       outline-none focus-visible:ring-2
-                       focus-visible:ring-[var(--color-castify-accent)]
-                       focus-visible:ring-offset-2
-                       focus-visible:ring-offset-[var(--color-castify-surface)]"
-            aria-label={`Play ${video.name}`}
-          />
-          {/* Decorative play overlay — pointer-events-none so clicks pass
-              through to the link. aria-hidden because the link already
-              conveys "play this video". */}
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center rounded-[var(--radius-card)] opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
-          >
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-castify-accent)] text-[var(--color-castify-canvas)] shadow-lg">
-              <PlayIcon className="h-5 w-5 translate-x-0.5" />
-            </div>
-          </div>
-        </>
+        <Link
+          to={href}
+          state={queue ? { queue } : undefined}
+          // No longer `tabIndex={-1}` — the link is the keyboard entry to
+          // the card. The focus ring is rendered on the article via
+          // `focus-within:ring` below so it visually wraps the whole card.
+          className="absolute inset-0 rounded-[var(--radius-card)] z-0
+                     outline-none focus-visible:ring-2
+                     focus-visible:ring-[var(--color-castify-accent)]
+                     focus-visible:ring-offset-2
+                     focus-visible:ring-offset-[var(--color-castify-surface)]"
+          aria-label={`Play ${video.name}`}
+        />
       )}
       {selection && (
         <input
@@ -153,7 +138,6 @@ export function PosterCard({
         video={video}
         src={scope ? thumbnailUrl(video.id, scope) : undefined}
         topRightSlot={topRightSlot}
-        bottomOverlaySlot={bottomOverlaySlot}
       />
       <div className="flex flex-col gap-1 px-1 pb-1">
         <h3
@@ -167,6 +151,9 @@ export function PosterCard({
           <ProviderBadge provider={video.provider} />
           {others.length > 0 && <DedupBadge providers={others} />}
         </div>
+        {ratingSlot && (
+          <div className="relative z-10 w-fit">{ratingSlot}</div>
+        )}
       </div>
     </article>
   );
