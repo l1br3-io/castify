@@ -14,14 +14,13 @@
 // button itself is the shared `CopyLinkButton` (`copy-link-button.tsx`,
 // also used by the task 012 creation dialog).
 //
-// Edit-items: active rows get an "Edit items" button (mutable-share-list)
-// that opens the `ShareEditDialog` in place. The dialog owns fetching
-// members, the catalog, and the save PUT; on success it invalidates the
-// shares query, so this row re-renders with the server's new item_count.
-// Revoked/expired rows render status only — the server would 409 the
-// edit anyway.
+// Manage: active rows get a "Manage" button (share-manage-page task 003)
+// that navigates to `/settings/shares/:id` — the detail page owns removal
+// (task 004) and adding (task 005). Revoked/expired rows render status
+// only.
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { revokeShare, type ShareDto } from "../api/shares";
@@ -29,7 +28,6 @@ import { describeError } from "../lib/format";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { CopyLinkButton } from "./copy-link-button";
-import { ShareEditDialog } from "./share-edit-dialog";
 import { ErrorState } from "./ui/error-state";
 import { Skeleton } from "./ui/skeleton";
 
@@ -112,7 +110,6 @@ function SharesList() {
 
 function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | null }) {
   const queryClient = useQueryClient();
-  const [isEditing, setIsEditing] = useState(false);
 
   const revoke = useMutation({
     mutationFn: () => revokeShare(share.id),
@@ -157,13 +154,12 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       <div className="mt-3 flex items-center gap-2">
         {share.status === "active" && (
           <>
-            <button
-              type="button"
-              onClick={() => setIsEditing(true)}
-              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+            <Link
+              to={`/settings/shares/${encodeURIComponent(share.id)}`}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)]"
             >
-              Edit items
-            </button>
+              Manage
+            </Link>
             <button
               type="button"
               onClick={handleRevoke}
@@ -180,14 +176,11 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
           </p>
         )}
       </div>
-      {isEditing && (
-        <ShareEditDialog share={share} onClose={() => setIsEditing(false)} />
-      )}
     </li>
   );
 }
 
-function StatusBadge({ status }: { status: ShareDto["status"] }) {
+export function StatusBadge({ status }: { status: ShareDto["status"] }) {
   if (status === "active") {
     return (
       <span className="rounded-full bg-[var(--color-castify-accent)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent)]">

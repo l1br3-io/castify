@@ -19,6 +19,7 @@ import { LoginPage } from "./routes/login";
 import { NotFoundPage } from "./routes/not-found";
 import { SettingsPage } from "./routes/settings";
 import { SetupPage } from "./routes/setup";
+import { ShareManagePage } from "./routes/share-manage";
 import { SharePage } from "./routes/share";
 import { ShareWatchPage } from "./routes/share-watch";
 import { WatchPage } from "./routes/watch";
@@ -52,6 +53,14 @@ export const routeTree: RouteObject[] = [
       {
         path: "settings",
         element: <SettingsPage />,
+        loader: requireSessionLoader,
+      },
+      {
+        // Share detail (share-manage-page task 003) — the owner's manage
+        // surface for one share. Sibling of `settings`, not a child, so
+        // the page owns its own layout width (wide grid).
+        path: "settings/shares/:id",
+        element: <ShareManagePage />,
         loader: requireSessionLoader,
       },
       {
