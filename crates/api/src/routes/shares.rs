@@ -1,12 +1,15 @@
-//! Owner-facing shares REST — create, list, revoke (docs/specs/sharing).
+//! Owner-facing shares REST — create, list, revoke, edit items
+//! (docs/specs/sharing, docs/specs/mutable-share-list).
 //!
 //!   * `POST   /api/shares`     — create a share (see [`create`])
 //!   * `GET    /api/shares`     — management list (see [`list`])
 //!   * `DELETE /api/shares/{id}` — revoke (see [`revoke`])
+//!   * `PUT    /api/shares/{id}/items` — replace the item list (see
+//!     [`replace_items`])
 //!
-//! All three are session-gated by the standard middleware (nothing here is
-//! pre-auth; the recipient-facing mirrors live elsewhere) and mutations go
-//! through the double-submit CSRF check like every other owner write.
+//! All of these are session-gated by the standard middleware (nothing here
+//! is pre-auth; the recipient-facing mirrors live elsewhere) and mutations
+//! go through the double-submit CSRF check like every other owner write.
 //!
 //! Security invariants this module is responsible for:
 //!   * The raw token is returned by `POST` **exactly once** and is stored
@@ -53,6 +56,13 @@ pub struct CreateShareRequest {
     pub password: Option<String>,
     /// Optional RFC3339 expiry; must be strictly in the future.
     pub expires_at: Option<String>,
+}
+
+/// Body of `PUT /api/shares/{id}/items`: the complete replacement list,
+/// in curation order. Same shape rules as `CreateShareRequest::video_ids`.
+#[derive(Debug, Deserialize)]
+pub struct ReplaceItemsRequest {
+    pub video_ids: Vec<String>,
 }
 
 /// Response of `POST /api/shares`. `token` and `share_url` appear here and
@@ -287,6 +297,73 @@ pub async fn revoke(
         .revoke_owned(&owner_id.to_string(), &id)
         .await?;
     tracing::info!(share_id = %id, "share revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /api/shares/{id}/items` — replace a live share's full item list.
+///
+/// Validation mirrors [`create`], ordered cheap-first: request shape
+/// (non-empty, duplicate-free) → owner/terminal check → catalog existence
+/// → one transactional write. Unknown and foreign ids are both plain 404
+/// (like [`revoke`], no existence leak across owners), while a known but
+/// terminal share is 409: the owner can already see their own revoked or
+/// expired row in the management list, so naming the conflict leaks
+/// nothing and explains why nothing is editable — there is no audience
+/// left to serve a changed list to. Only `share_items` is written; token,
+/// password, expiry, and title are untouched by scope (revoke + re-create
+/// remains the path for those), so the handed-out link keeps working and
+/// serves exactly the new list on the recipient's next request.
+pub async fn replace_items(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(req): Json<ReplaceItemsRequest>,
+) -> ApiResult<StatusCode> {
+    let owner_id: Uuid = resolve_owner_id(&state, &jar).await?;
+
+    if req.video_ids.is_empty() {
+        return Err(ApiError::Validation {
+            detail: "video_ids must contain at least 1 item".to_string(),
+        });
+    }
+    let unique: HashSet<&String> = req.video_ids.iter().collect();
+    if unique.len() != req.video_ids.len() {
+        return Err(ApiError::Validation {
+            detail: "video_ids contains duplicates".to_string(),
+        });
+    }
+
+    let row = state
+        .share_repository()
+        .fetch_owned(&owner_id.to_string(), &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let status = derive_status(
+        row.revoked_at.as_deref(),
+        row.expires_at.as_deref(),
+        Utc::now(),
+    );
+    if status != ShareStatus::Active {
+        return Err(ApiError::Conflict(format!("share is {}", status.as_str())));
+    }
+
+    for video_id in &req.video_ids {
+        if !state.catalog_repository().video_exists(video_id).await? {
+            return Err(ApiError::Validation {
+                detail: format!("video {video_id} does not exist in the catalog"),
+            });
+        }
+    }
+
+    state
+        .share_repository()
+        .replace_items(&owner_id.to_string(), &id, &req.video_ids)
+        .await?;
+    tracing::info!(
+        share_id = %id,
+        item_count = req.video_ids.len(),
+        "share items replaced"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 

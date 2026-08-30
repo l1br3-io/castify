@@ -213,5 +213,8 @@ mod tests {
         assert!(!is_pre_auth(&Method::GET, "/api/shares"));
         assert!(!is_pre_auth(&Method::POST, "/api/shares"));
         assert!(!is_pre_auth(&Method::DELETE, "/api/shares/42"));
+        // The item-list edit (docs/specs/mutable-share-list) is an owner
+        // mutation — session + CSRF, like every other /api/shares write.
+        assert!(!is_pre_auth(&Method::PUT, "/api/shares/42/items"));
     }
 }

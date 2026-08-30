@@ -155,6 +155,10 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::post(shares::create).get(shares::list),
         )
         .route("/api/shares/{id}", axum::routing::delete(shares::revoke))
+        .route(
+            "/api/shares/{id}/items",
+            axum::routing::put(shares::replace_items),
+        )
         .route("/api/share/{token}", axum::routing::get(share::resolve))
         .route("/api/share/{token}/items", axum::routing::get(share::items))
         .route(

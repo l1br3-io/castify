@@ -631,3 +631,277 @@ async fn revoke_is_idempotent_and_returns_204() {
             .unwrap();
     assert!(revoked_at.is_some(), "revoked_at persisted");
 }
+
+// ----------------------------------------------------------- replace items
+
+/// CSRF-correct `PUT /api/shares/{id}/items` with the given video ids.
+async fn replace_items(
+    app: &axum::Router,
+    session: &str,
+    share_id: &str,
+    video_ids: Vec<String>,
+) -> (StatusCode, Value) {
+    let csrf = fetch_csrf(app, session).await;
+    request(
+        app.clone(),
+        "PUT",
+        &format!("/api/shares/{share_id}/items"),
+        Some(session),
+        Some((&csrf, &csrf)),
+        Some(json!({"video_ids": video_ids})),
+    )
+    .await
+}
+
+/// A share's items in curation order, straight from the table.
+async fn persisted_items(pool: &SqlitePool, share_id: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT video_id FROM share_items WHERE share_id = ? ORDER BY position")
+        .bind(share_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// Insert a second owner and a share owned by them, bypassing the API
+/// (first-run setup guarantees exactly one owner, so this is the only way
+/// to exercise a foreign share id). Returns the stranger's share id.
+async fn seed_stranger_share(pool: &SqlitePool, videos: &[String]) -> String {
+    let stranger = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO owners (id, created_at, display_name) VALUES (?, '2026-01-01T00:00:00Z', NULL)",
+    )
+    .bind(stranger.to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+    castify_api::shares::ShareRepository::new(pool.clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &stranger,
+            token_hash: &hash_share_token("stranger-test-token"),
+            password_hash: None,
+            title: "Stranger",
+            expires_at: None,
+            video_ids: videos,
+        })
+        .await
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
+async fn replace_items_without_session_is_unauthorized() {
+    let (app, _state, _session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "PUT",
+        "/api/shares/whatever/items",
+        None,
+        None,
+        Some(json!({"video_ids": ["x"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn replace_items_without_csrf_is_forbidden() {
+    let (app, _state, session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "PUT",
+        "/api/shares/whatever/items",
+        Some(&session),
+        None,
+        Some(json!({"video_ids": ["x"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn replace_items_swaps_list_in_order_and_leaves_share_fields_untouched() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4"]).await;
+
+    let (status, created) = create_share(
+        &app,
+        &session,
+        json!({
+            "title": "Trip footage",
+            "video_ids": [&videos[0], &videos[1]],
+            "password": "family-only-secret",
+            "expires_at": FUTURE_EXPIRY,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let before: (Vec<u8>, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT token_hash, password_hash, title, expires_at FROM shares WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(state.pool())
+    .await
+    .unwrap();
+
+    // Replace with a reordered subset — curation order is array order.
+    let (status, body) = replace_items(
+        &app,
+        &session,
+        &id,
+        vec![videos[2].clone(), videos[0].clone()],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body = {body}");
+
+    let after: (Vec<u8>, Option<String>, String, Option<String>) = sqlx::query_as(
+        "SELECT token_hash, password_hash, title, expires_at FROM shares WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(state.pool())
+    .await
+    .unwrap();
+    assert_eq!(before, after, "this endpoint writes share_items only");
+
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        vec![videos[2].clone(), videos[0].clone()],
+        "exactly the new list, in the caller's order"
+    );
+
+    // The management list reflects the edit (item_count is server-owned).
+    let (_, list) = request(app, "GET", "/api/shares", Some(&session), None, None).await;
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .expect("share listed");
+    assert_eq!(entry["item_count"], 2);
+}
+
+#[tokio::test]
+async fn replace_items_on_revoked_share_conflicts() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let csrf = fetch_csrf(&app, &session).await;
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/shares/{id}"),
+        Some(&session),
+        Some((&csrf, &csrf)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = replace_items(&app, &session, &id, videos.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "a rejected replace must not touch the old list"
+    );
+}
+
+#[tokio::test]
+async fn replace_items_on_expired_share_conflicts() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+
+    // The API refuses to create an already-expired share, so seed the row
+    // straight through the repository.
+    let id = castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &owner_uuid(state.pool()).await,
+            token_hash: &hash_share_token("expired-edit-token"),
+            password_hash: None,
+            title: "Expired",
+            expires_at: Some("2000-01-01T00:00:00Z"),
+            video_ids: &videos,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let (status, body) = replace_items(&app, &session, &id, videos).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+}
+
+#[tokio::test]
+async fn replace_items_on_unknown_or_foreign_share_is_not_found() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+
+    // Unknown id: plain 404.
+    let (status, _) = replace_items(
+        &app,
+        &session,
+        "00000000-0000-0000-0000-000000000000",
+        videos.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Foreign id: also plain 404 — no existence leak across owners.
+    let stranger_id = seed_stranger_share(state.pool(), &videos).await;
+    let (status, _) = replace_items(&app, &session, &stranger_id, videos.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        persisted_items(state.pool(), &stranger_id).await,
+        videos,
+        "a foreign replace must not touch the stranger's list"
+    );
+}
+
+#[tokio::test]
+async fn replace_items_rejects_empty_list() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = replace_items(&app, &session, &id, vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(body["message"].as_str().unwrap_or("").contains("item"));
+}
+
+#[tokio::test]
+async fn replace_items_rejects_duplicate_ids() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = replace_items(
+        &app,
+        &session,
+        &id,
+        vec![videos[0].clone(), videos[0].clone()],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+}
+
+#[tokio::test]
+async fn replace_items_rejects_non_catalog_id_and_keeps_old_list() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let bogus = vec![videos[0].clone(), "not-a-video".to_string()];
+    let (status, body) = replace_items(&app, &session, &id, bogus).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "a failed replace must leave the old list intact"
+    );
+}
