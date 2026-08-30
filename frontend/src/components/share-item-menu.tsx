@@ -67,15 +67,63 @@ export function ShareItemMenu({
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open]);
 
+  // The panel is position: fixed, anchored once at open. Scrolling or
+  // resizing under it detaches it from its trigger — and a detached
+  // "Remove" overlay can sit over a different card. Close instead of
+  // re-anchoring; reopening is one click.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, { passive: true, capture: true });
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, { capture: true });
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  // Opening moves focus into the panel (ARIA APG menu pattern): keyboard
+  // users land on the first item instead of stranding on the trigger with
+  // dead Escape/arrow keys. The portal renders later than this effect's
+  // first paint, so query it fresh here.
+  useEffect(() => {
+    if (!open) return;
+    const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
+    first?.focus();
+  }, [open]);
+
   function close(): void {
     setOpen(false);
     triggerRef.current?.focus();
+  }
+
+  /** Trigger keys while open: Escape closes (focus returns here),
+   * ArrowDown hands focus to the panel (where the arrow cycle lives). */
+  function handleTriggerKeyDown(e: React.KeyboardEvent): void {
+    if (!open) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      menuRef.current
+        ?.querySelector<HTMLElement>('[role="menuitem"]')
+        ?.focus();
+    }
   }
 
   function handleMenuKeyDown(e: React.KeyboardEvent): void {
     if (e.key === "Escape") {
       e.preventDefault();
       close();
+      return;
+    }
+    // Tab leaves the menu: dismiss (focus proceeds to the next document
+    // tab stop naturally) rather than leaving a dangling open panel.
+    if (e.key === "Tab") {
+      setOpen(false);
       return;
     }
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -115,6 +163,7 @@ export function ShareItemMenu({
         aria-expanded={open}
         aria-label={`More actions for ${videoName}`}
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={handleTriggerKeyDown}
         className={TRIGGER_CLASS}
       >
         <svg

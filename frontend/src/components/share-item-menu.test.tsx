@@ -32,7 +32,7 @@ function renderMenu(
 }
 
 describe("ShareItemMenu", () => {
-  it("opens a menu with Open and Remove from share on trigger click", () => {
+  it("opens a menu with Open and Remove from share on trigger click, focusing the first item", () => {
     renderMenu();
     const trigger = screen.getByRole("button", {
       name: /more actions for alpha clip/i,
@@ -40,7 +40,6 @@ describe("ShareItemMenu", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(trigger);
-    const menu = screen.getByRole("menu");
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(
       screen.getByRole("menuitem", { name: /open/i }),
@@ -48,21 +47,59 @@ describe("ShareItemMenu", () => {
     expect(
       screen.getByRole("menuitem", { name: /remove from share/i }),
     ).toBeInTheDocument();
-    void menu;
+    // ARIA APG: opening focuses the first menuitem.
+    expect(screen.getByRole("menuitem", { name: /open/i })).toHaveFocus();
   });
 
-  it("Escape closes the menu and returns focus to the trigger", () => {
+  it("Escape from an open menu closes it and returns focus to the trigger", () => {
     renderMenu();
     const trigger = screen.getByRole("button", {
       name: /more actions for alpha clip/i,
     });
     fireEvent.click(trigger);
-    const menu = screen.getByRole("menu");
 
-    fireEvent.keyDown(menu, { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("Escape on the trigger closes an open menu (keyboard-open path)", () => {
+    renderMenu();
+    const trigger = screen.getByRole("button", {
+      name: /more actions for alpha clip/i,
+    });
+    fireEvent.click(trigger);
+    // Simulate focus still on the trigger (keyboard open via Enter).
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("ArrowDown on the trigger moves focus into the menu", () => {
+    renderMenu();
+    const trigger = screen.getByRole("button", {
+      name: /more actions for alpha clip/i,
+    });
+    fireEvent.click(trigger);
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+
+    expect(screen.getByRole("menuitem", { name: /open/i })).toHaveFocus();
+  });
+
+  it("Tab inside the menu dismisses it (focus moves on naturally)", () => {
+    renderMenu();
+    fireEvent.click(
+      screen.getByRole("button", { name: /more actions for alpha clip/i }),
+    );
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Tab" });
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("closes on mousedown outside the menu", () => {
@@ -77,14 +114,24 @@ describe("ShareItemMenu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
+  it("closes on window scroll (the fixed panel would detach from its trigger)", () => {
+    renderMenu();
+    fireEvent.click(
+      screen.getByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+
+    fireEvent.scroll(window);
+
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("moves focus between menu items with arrow keys", () => {
     renderMenu();
     fireEvent.click(
       screen.getByRole("button", { name: /more actions for alpha clip/i }),
     );
     const items = screen.getAllByRole("menuitem");
-    items[0].focus();
-    expect(items[0]).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("menu"), { key: "ArrowDown" });
     expect(items[1]).toHaveFocus();
