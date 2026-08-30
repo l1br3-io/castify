@@ -410,4 +410,56 @@ describe("ShareWatchPage", () => {
     ).not.toBeInTheDocument();
     expect(document.querySelector("video")).toBeNull();
   });
+
+  it("shows the removed-from-share card when the stream-url mirror 404s", async () => {
+    mockCanPlayType("probably");
+    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
+      streamUrl: () => jsonError(404, "not a member"),
+    }));
+
+    expect(
+      await screen.findByText("This video is no longer available in this share"),
+    ).toBeInTheDocument();
+    const back = screen.getByRole("link", { name: /share page/i });
+    expect(back).toHaveAttribute("href", `/share/${TOKEN}`);
+    // Terminal state — no retry affordance, no player.
+    expect(
+      screen.queryByRole("button", { name: /Try again/i }),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector("video")).toBeNull();
+  });
+
+  it("shows the removed-from-share card when the subtitles mirror 404s", async () => {
+    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
+      subtitles: () => jsonError(404, "not a member"),
+    }));
+
+    expect(
+      await screen.findByText("This video is no longer available in this share"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /share page/i }),
+    ).toHaveAttribute("href", `/share/${TOKEN}`);
+    expect(
+      screen.queryByRole("button", { name: /Try again/i }),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector("video")).toBeNull();
+  });
+
+  it("keeps the generic error card for non-404 mirror failures (502)", async () => {
+    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
+      subtitles: () => jsonError(502, "provider uplink failed"),
+    }));
+
+    expect(
+      await screen.findByText(/Couldn't load this share/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("This video is no longer available in this share"),
+    ).not.toBeInTheDocument();
+    // Generic card keeps its retry affordance — a 502 may be transient.
+    expect(
+      screen.getByRole("button", { name: /Try again/i }),
+    ).toBeInTheDocument();
+  });
 });

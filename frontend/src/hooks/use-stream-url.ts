@@ -150,6 +150,12 @@ export function useStreamUrl(id: string | undefined, scope: AccessScope = OWNER_
     // card. The default retry policy still covers transient network blips
     // for failures that don't signature-match reauth.
     retry: (failureCount, err) => {
+      // In share scope a 404 is equally terminal: the mirrors answer 404
+      // for membership loss (`authorize_share_item`, by design
+      // indistinguishable from an unknown id), so retrying would only
+      // delay the dedicated removed-from-share card by the full backoff
+      // schedule. Owner scope keeps the default retry policy unchanged.
+      if (scope.kind === "share" && err.status === 404) return false;
       if (isReauthLikelyError(err)) return false;
       return failureCount < 3;
     },

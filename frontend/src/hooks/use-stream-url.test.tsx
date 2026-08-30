@@ -13,7 +13,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { streamUrlQueryKey, useStreamUrl } from "./use-stream-url";
-import { jsonResponse } from "../test/utils";
+import { jsonError, jsonResponse } from "../test/utils";
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -81,6 +81,28 @@ describe("useStreamUrl", () => {
 
     expect(result.current.isLoading).toBe(false);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("treats a 404 as terminal — settles to error without retrying", async () => {
+    // Share scope: membership loss is 404 by design; owner scope: the
+    // video is gone from the catalog. Either way retrying just delays
+    // the terminal card.
+    const spy = vi.fn(() => jsonError(404, "not found"));
+    vi.stubGlobal("fetch", spy);
+    const { wrapper } = createWrapper();
+
+    const { result } = renderHook(
+      () => useStreamUrl("v1", { kind: "share", token: "tok_abc" }),
+      { wrapper },
+    );
+
+    // Tight timeout keeps this test fast under the old retry-3x policy
+    // (which would leave the query pending through the 1s/2s/4s backoff).
+    await waitFor(() => expect(result.current.isError).toBe(true), {
+      timeout: 500,
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.current.error).toMatchObject({ status: 404 });
   });
 });
 

@@ -84,6 +84,21 @@ function appendBurnParam(baseUrl: string, trackId: string): string {
   return `${baseUrl}${sep}burn_subtitles=${encodeURIComponent(trackId)}`;
 }
 
+/**
+ * Membership-loss detector for share-scope mirror fetches. Every mirror
+ * guards through `authorize_share_item`, which answers 404 for a
+ * non-member — deliberately indistinguishable from an unknown video id
+ * (a valid token must not probe the catalog, mutable-share-list plan /
+ * task 004's denial proof). Both mirror queries on this page are gated on
+ * the items list having already resolved the video as a member, so a 404
+ * arriving after that point means the owner removed the video from the
+ * share while the recipient had the page open. The page is share-scoped
+ * by construction, so no extra scope check is needed here.
+ */
+function isMembershipLoss(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.status === 404;
+}
+
 export function ShareWatchPage() {
   const { token, videoId } = useParams<{ token: string; videoId: string }>();
   const scope: AccessScope | undefined =
@@ -216,6 +231,9 @@ export function ShareWatchPage() {
   }
 
   if (subtitles.isError) {
+    if (isMembershipLoss(subtitles.error)) {
+      return <ShareVideoRemoved token={token} />;
+    }
     return (
       <main className="mx-auto max-w-5xl px-4 py-10">
         <ErrorState
@@ -243,8 +261,12 @@ export function ShareWatchPage() {
   // ones. The owner's Reconnect flow is meaningless to a recipient (it
   // needs the owner's session to re-grant OAuth tokens), so the share page
   // deliberately does NOT branch on `isReauthLikelyError` the way
-  // `watch.tsx` does.
+  // `watch.tsx` does. Membership loss (404) is the one exception — it
+  // gets the dedicated terminal card above.
   if (streamUrlQuery.error) {
+    if (isMembershipLoss(streamUrlQuery.error)) {
+      return <ShareVideoRemoved token={token} />;
+    }
     return (
       <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
         <BackToShare token={token} />
@@ -293,6 +315,33 @@ function BackToShare({ token }: { token: string | undefined }) {
     >
       ← Back to share
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Removed from share — terminal card for membership loss (a 404 from a
+// share-scope mirror after the items list already proved membership; see
+// `isMembershipLoss`). Same shape as the page's other terminal states:
+// centered, a link back to the grid, and deliberately no retry/reconnect
+// affordance — the state can only change on the owner's side.
+// ---------------------------------------------------------------------------
+
+function ShareVideoRemoved({ token }: { token: string | undefined }) {
+  return (
+    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+      <div className="space-y-4 text-center">
+        <EmptyState
+          title="This video is no longer available in this share"
+          body="Whoever shared it removed this video from the list."
+        />
+        <Link
+          to={`/share/${encodeURIComponent(token as string)}`}
+          className="inline-block rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
+        >
+          Go to the share page
+        </Link>
+      </div>
+    </main>
   );
 }
 
