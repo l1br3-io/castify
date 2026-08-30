@@ -1,11 +1,13 @@
-// Share manage page tests (share-manage-page task 003).
+// Share manage page tests (share-manage-page tasks 003 + 004).
 //
 // Owner-facing detail route `/settings/shares/:id`. The page composes two
 // reads: share meta from the shares list query (find by id — there is no
 // single-share endpoint, and the list is already cached from Settings) and
 // members from the owned-items route. These tests pin the state machine:
-// render order, unknown-id not-found, terminal read-only, and members
-// error retry. Removal/undo arrive in task 004 and extend this file.
+// render order, unknown-id not-found, terminal read-only, members error
+// retry, and (task 004) the removal flow — PUT splices, undo restores the
+// original index, failure keeps the card, last-item guard, and single-slot
+// undo toasts.
 
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
@@ -54,6 +56,9 @@ function video(id: string, name: string): VideoSummaryDto {
 }
 
 const MEMBERS = [video("v1", "Alpha clip"), video("v2", "Beta clip")];
+const GAMMA = video("v3", "Gamma clip");
+/** Every video any test in this file can PUT — the id→video universe. */
+const UNIVERSE = [...MEMBERS, GAMMA];
 
 /** Stubs the two GETs the page rides. Extra URLs 404 so omissions are loud. */
 function manageFetch(
@@ -171,4 +176,172 @@ describe("ShareManagePage", () => {
     });
     expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
   });
+
+  // --- Removal flow (task 004) -------------------------------------------
+
+  it("removes an item: PUT splices the id, grid refetches, undo toast offers restore", async () => {
+    const state = { items: MEMBERS };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
+
+    await waitFor(() => {
+      expect(handler.puts).toEqual([["v2"]]);
+    });
+    // Refetched grid no longer contains the removed item.
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
+    );
+    // Undo toast names the removed item.
+    expect(screen.getByText(/removed 'alpha clip'/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /undo/i })).toHaveLength(1);
+  });
+
+  it("undo re-PUTs the item at its original index", async () => {
+    const state = { items: MEMBERS };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /undo/i }));
+
+    await waitFor(() => {
+      expect(handler.puts).toEqual([["v2"], ["v1", "v2"]]);
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Alpha clip")).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the item and surfaces an inline error when the PUT fails", async () => {
+    const state = { items: MEMBERS, failPut: true };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
+
+    expect(
+      await screen.findByRole("alert", { name: /couldn't remove/i }),
+    ).toBeInTheDocument();
+    // The card is still there (no refetch happened, no toast fired).
+    expect(screen.getByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /undo/i })).not.toBeInTheDocument();
+  });
+
+  it("guards the last item: Remove is disabled with the revoke hint", async () => {
+    const state = { items: [MEMBERS[0]] };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
+    );
+
+    const remove = screen.getByRole("menuitem", { name: /remove from share/i });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.getByText(/a share needs at least one item/i),
+    ).toBeInTheDocument();
+    expect(handler.puts).toHaveLength(0);
+  });
+
+  it("single-slot undo: a second removal replaces the first toast", async () => {
+    // Three members: after removing Alpha, two remain — Beta is not yet
+    // the guarded last item, so a second removal is allowed.
+    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    // Remove Alpha; wait for its toast, then remove Beta.
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
+    await screen.findByText(/removed 'alpha clip'/i);
+
+    // The refetched grid now shows only Beta; open its menu.
+    const betaTrigger = await screen.findByRole("button", {
+      name: /more actions for beta clip/i,
+    });
+    fireEvent.click(betaTrigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
+
+    // Exactly one undo toast remains, naming the latest removal.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: /undo/i })).toHaveLength(1),
+    );
+    expect(screen.getByText(/removed 'beta clip'/i)).toBeInTheDocument();
+    expect(screen.queryByText(/removed 'alpha clip'/i)).not.toBeInTheDocument();
+  });
 });
+
+/** Stateful handler for removal-flow tests: GET serves the live array, PUT
+ * records every body (for order assertions) and flips the array. `failPut`
+ * makes PUTs answer 500 to exercise the error path. */
+function removalFetch(state: {
+  items: VideoSummaryDto[];
+  failPut?: boolean;
+}): ((input: RequestInfo | URL, init?: RequestInit) => Response) & {
+  puts: string[][];
+} {
+  const puts: string[][] = [];
+  const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/shares") return jsonResponse([ACTIVE]);
+    if (url === "/api/shares/s1/items" && method === "GET")
+      return jsonResponse(state.items);
+    if (url === "/api/shares/s1/items" && method === "PUT") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        video_ids: string[];
+      };
+      puts.push(body.video_ids);
+      if (state.failPut) return jsonError(500, "boom");
+      // Map ids from the full universe (an undo re-adds an id that is not
+      // in the current list — filtering current would drop it).
+      state.items = body.video_ids
+        .map((id) => UNIVERSE.find((v) => v.id === id))
+        .filter((v): v is VideoSummaryDto => v !== undefined);
+      return new Response(null, { status: 204 });
+    }
+    return jsonError(404, "unmocked");
+  };
+  handler.puts = puts;
+  return handler;
+}
+
