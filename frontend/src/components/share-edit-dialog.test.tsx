@@ -15,14 +15,20 @@
 //   * a failed PUT surfaces inline without closing, and a pending PUT
 //     disables submit and blocks Escape dismissal;
 //   * a successful save invalidates the mounted shares query (Settings
-//     refetches — the server owns state) and then closes.
+//     refetches — the server owns state) and then closes;
+//   * reopening after a save adopts the saved member list, not the
+//     cached pre-edit one (found by the task-009 e2e: with the app-wide
+//     30s staleTime, an un-invalidated members cache made removals
+//     reappear pre-checked, and saving again would resurrect them).
 //
 // fetch is stubbed through renderWithProviders' fetchSpy; the mounted
 // `SharesProbe` keeps the shares query active so invalidation is
 // observable as a refetch.
 
+import { useState } from "react";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 
 import { ShareEditDialog } from "./share-edit-dialog";
 import {
@@ -92,14 +98,20 @@ function SharesProbe() {
 interface EditFetchOverrides {
   /** Response factory for `PUT /api/shares/s1/items` (204 by default). */
   putResponse?: () => Response | Promise<Response>;
+  /** Members per GET ordinal (1 = first open). Defaults to MEMBERS. */
+  membersByGet?: (getNumber: number) => VideoSummaryDto[];
 }
 
 function editDialogFetch(overrides: EditFetchOverrides = {}): FetchHandler {
+  let membersGets = 0;
   return (input, init) => {
     const url = new URL(String(input), "http://localhost");
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.pathname === "/api/shares/s1/items") {
-      if (method === "GET") return jsonResponse(MEMBERS);
+      if (method === "GET") {
+        membersGets += 1;
+        return jsonResponse(overrides.membersByGet?.(membersGets) ?? MEMBERS);
+      }
       if (method === "PUT")
         return overrides.putResponse?.() ?? new Response(null, { status: 204 });
     }
@@ -150,6 +162,28 @@ function setupDialog(
     { fetchImplementation },
   );
   return { ...rendered, onClose };
+}
+
+/**
+ * Mounts/unmounts the dialog the way the Settings row does
+ * (`{isEditing && <ShareEditDialog/>}`) behind a "Reopen dialog" button —
+ * one render, one QueryClient, so reopen-after-save exercises the same
+ * cache the first mount populated.
+ */
+function EditDialogHarness({ onClose }: { onClose: () => void }) {
+  const [open, setOpen] = useState(true);
+  function handleClose(): void {
+    setOpen(false);
+    onClose();
+  }
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Reopen dialog
+      </button>
+      {open && <ShareEditDialog share={SHARE} onClose={handleClose} />}
+    </>
+  );
 }
 
 describe("ShareEditDialog", () => {
@@ -215,6 +249,54 @@ describe("ShareEditDialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     // Server order [v2, v1] passes through verbatim, addition appended.
     expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v4"]]);
+  });
+
+  // --- reopen after save (bug found by the task-009 e2e) ---
+
+  it("reopening after a save adopts the saved list, not the cached pre-edit members", async () => {
+    const onClose = vi.fn();
+    // Mirror the production client's cache discipline (query-client.ts):
+    // the default throwaway client here uses gcTime 0, which garbage-
+    // collects the members entry during the unmount gap and hides the
+    // bug this test pins.
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, staleTime: 30_000 },
+      },
+    });
+    // GET #1 (first open): members [Beta, Alpha]. GET #2+ (reopen): the
+    // server's post-save list — only Alpha.
+    const { fetchSpy } = renderWithProviders(
+      <>
+        <EditDialogHarness onClose={onClose} />
+        <SharesProbe />
+      </>,
+      {
+        queryClient,
+        fetchImplementation: editDialogFetch({
+          membersByGet: (n) => (n === 1 ? MEMBERS : [video("v1", "Alpha clip")]),
+        }),
+      },
+    );
+
+    // Remove Beta, save — the PUT carries exactly the survivor.
+    fireEvent.click(await screen.findByLabelText("Beta clip"));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(putVideoIds(fetchSpy)).toEqual([["v1"]]);
+
+    // Reopen — same session, same cache (the Settings-row lifecycle).
+    fireEvent.click(screen.getByRole("button", { name: /reopen dialog/i }));
+
+    // The dialog adopts the SAVED list: Alpha checked, Beta back in the
+    // library and unchecked — not still-selected from the pre-edit cache.
+    // (waitFor: the adoption effect commits a frame after the rows mount.)
+    await waitFor(() =>
+      expect(screen.getByLabelText("Alpha clip")).toBeChecked(),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Beta clip")).not.toBeChecked(),
+    );
   });
 
   // --- search + checked-state survival ---

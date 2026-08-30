@@ -38,6 +38,10 @@ interface RenderWithProvidersOptions {
   // so callers can seed router state for queue-aware tests (M3 T11).
   initialEntries?: InitialEntry[];
   fetchImplementation?: FetchHandler;
+  // Override the default throwaway QueryClient — e.g. to mirror the
+  // production client's staleTime/gcTime when a test is specifically
+  // about cache behavior across mounts.
+  queryClient?: QueryClient;
 }
 
 function defaultFetch(): Response {
@@ -48,15 +52,20 @@ export function renderWithProviders(
   ui: ReactElement,
   options: RenderWithProvidersOptions = {},
 ) {
-  const { initialEntries = ["/"], fetchImplementation = defaultFetch } =
-    options;
+  const {
+    initialEntries = ["/"],
+    fetchImplementation = defaultFetch,
+    queryClient: providedClient,
+  } = options;
 
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
-      mutations: { retry: false },
-    },
-  });
+  const queryClient =
+    providedClient ??
+    new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
 
   const fetchSpy = vi.fn(fetchImplementation);
   vi.stubGlobal("fetch", fetchSpy);

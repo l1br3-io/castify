@@ -46,6 +46,17 @@ const CATALOG_LIMIT = 200;
  * not per keystroke. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/**
+ * Owner-side members read for one share. Module-level so `save.onSuccess`
+ * can drop the same entry the `useQuery` below populates: the moment the
+ * PUT lands, that cache is known-stale, and the app-wide 30s staleTime
+ * would otherwise serve the pre-edit list to the next mount — whose
+ * adopt-once effect would turn it back into the selection (resurrecting
+ * just-removed items on the next save).
+ */
+const shareItemsOwnedKey = (shareId: string) =>
+  ["share-items-owned", shareId] as const;
+
 export function ShareEditDialog({
   share,
   onClose,
@@ -63,7 +74,7 @@ export function ShareEditDialog({
   const [selectedIds, setSelectedIds] = useState<string[] | null>(null);
 
   const members = useQuery({
-    queryKey: ["share-items-owned", share.id],
+    queryKey: shareItemsOwnedKey(share.id),
     queryFn: () => fetchShareItemsOwned(share.id),
   });
   const catalog = useQuery({
@@ -84,6 +95,11 @@ export function ShareEditDialog({
     mutationFn: () => replaceShareItems(share.id, selectedIds ?? []),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
+      // Invalidate alone isn't enough for this dialog's own read: with the
+      // app's 30s staleTime the next mount would still serve the cached
+      // pre-edit members while refetching. Drop the entry so the next
+      // open starts from the server's list.
+      queryClient.removeQueries({ queryKey: shareItemsOwnedKey(share.id) });
       onClose();
     },
   });
