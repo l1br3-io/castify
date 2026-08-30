@@ -10,6 +10,11 @@
 //   * success — accent stripe, auto-dismiss after 4s
 //   * error   — accent-dim stripe, sticky until dismissed
 //   * info    — muted stripe, auto-dismiss after 4s
+//
+// Per-push options (share-manage-page task 001): an action button (e.g.
+// "Undo" — activates then dismisses) and a `ttlMs` override. Pushes return
+// the toast id and the api exposes `dismiss(id)` so a page can replace its
+// own prior toast (single-slot undo).
 
 import {
   useCallback,
@@ -25,6 +30,7 @@ import {
   ToastContext,
   type Toast,
   type ToastApi,
+  type ToastOptions,
   type ToastVariant,
 } from "../../hooks/use-toast";
 
@@ -50,14 +56,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (variant: ToastVariant, message: string) => {
+    (variant: ToastVariant, message: string, options?: ToastOptions) => {
       const id = nextToastId++;
-      setToasts((list) => [...list, { id, variant, message }]);
-      const ttl = AUTO_DISMISS_MS[variant];
+      setToasts((list) => [
+        ...list,
+        { id, variant, message, action: options?.action },
+      ]);
+      const ttl = options?.ttlMs ?? AUTO_DISMISS_MS[variant];
       if (ttl !== null) {
         const handle = setTimeout(() => dismiss(id), ttl);
         timeouts.current.set(id, handle);
       }
+      return id;
     },
     [dismiss],
   );
@@ -72,11 +82,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const api = useMemo<ToastApi>(
     () => ({
-      success: (m) => push("success", m),
-      error: (m) => push("error", m),
-      info: (m) => push("info", m),
+      success: (m, options) => push("success", m, options),
+      error: (m, options) => push("error", m, options),
+      info: (m, options) => push("info", m, options),
+      dismiss,
     }),
-    [push],
+    [push, dismiss],
   );
 
   return (
@@ -136,6 +147,20 @@ function ToastItem({
     >
       <div className={`w-1 ${stripeColor}`} aria-hidden />
       <div className="flex-1 px-4 py-3 text-sm">{toast.message}</div>
+      {toast.action && (
+        <button
+          type="button"
+          onClick={() => {
+            // Activate, then dismiss — the action's window closes with the
+            // toast (an expired Undo button must not linger).
+            toast.action?.onAction();
+            onDismiss();
+          }}
+          className="self-center whitespace-nowrap px-2 text-sm font-semibold text-[var(--color-castify-accent)] transition hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button
         type="button"
         onClick={onDismiss}
