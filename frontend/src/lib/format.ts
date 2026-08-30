@@ -93,3 +93,16 @@ export function hashHue(s: string): number {
   }
   return h;
 }
+
+/** ISO timestamp → "Aug 1, 2026" (or the raw string when parsing fails). */
+export function formatDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}

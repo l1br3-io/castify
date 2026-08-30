@@ -25,20 +25,21 @@ import { useRef, useState } from "react";
 import { PosterCard } from "../components/poster-card";
 import { ShareEditDialog } from "../components/share-edit-dialog";
 import { ShareItemMenu } from "../components/share-item-menu";
-import { StatusBadge } from "../components/shares-list";
+import { StatusBadge } from "../components/status-badge";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
+import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import { replaceShareItems, fetchShareItemsOwned, type ShareDto } from "../api/shares";
 import type { VideoSummaryDto } from "../api/types";
-import { describeError } from "../lib/format";
+import { describeError, formatDate } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { shareItemsOwnedKey, useShareItemsOwned } from "../hooks/use-share-items";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { useToast } from "../hooks/use-toast";
 
-/** Undo window — a touch longer than the 4s default info toast. */
-const UNDO_TTL_MS = 6000;
+/** Undo window — the spec's 5 seconds (info default is 4s). */
+const UNDO_TTL_MS = 5000;
 
 /** Last-item guard copy (task 004; server enforces non-empty with 400). */
 const LAST_ITEM_HINT =
@@ -56,7 +57,7 @@ export function ShareManagePage() {
 
   if (shares.isPending) {
     return (
-      <section className="mx-auto max-w-7xl space-y-4 px-4 py-10">
+      <section className="space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-4 w-40" />
         <SkeletonGrid />
@@ -66,7 +67,7 @@ export function ShareManagePage() {
 
   if (shares.isError) {
     return (
-      <section className="mx-auto max-w-7xl px-4 py-10">
+      <section className="space-y-4">
         <ErrorState
           title="Couldn't load this share."
           body={describeError(shares.error)}
@@ -78,7 +79,7 @@ export function ShareManagePage() {
 
   if (!share) {
     return (
-      <section className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+      <section className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
         <EmptyState
           title="This share doesn't exist."
           body="It may have been created on another device — the list below is everything on this server."
@@ -229,7 +230,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
     : items.data;
 
   return (
-    <section className="mx-auto max-w-7xl space-y-4 px-4 py-10">
+    <section className="space-y-4">
       <div>
         <Link
           to="/settings"
@@ -264,6 +265,8 @@ function ShareDetail({ share }: { share: ShareDto }) {
         />
       )}
 
+      {/* Unreachable while the server enforces non-empty lists — kept so
+          the page degrades sanely if that ever changes. */}
       {items.data && items.data.length === 0 && (
         <EmptyState
           title="Nothing in this share."
@@ -300,6 +303,9 @@ function ShareDetail({ share }: { share: ShareDto }) {
           )}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {visibleItems?.map((video) => {
+            // With two removals in flight this dims only the latest's
+            // card (mutation.variables holds one); the earlier card's PUT
+            // is still protected by pendingRemovals — cosmetic only.
             const isRemoving =
               remove.isPending && remove.variables?.video.id === video.id;
             return (
@@ -346,34 +352,3 @@ function ShareDetail({ share }: { share: ShareDto }) {
   );
 }
 
-function SkeletonGrid() {
-  return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div
-          key={i}
-          className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2"
-        >
-          <Skeleton className="aspect-video w-full" />
-          <div className="space-y-1.5 px-1 pb-1">
-            <Skeleton className="h-3 w-3/4" />
-            <Skeleton className="h-3 w-1/2" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** ISO timestamp → "Aug 1, 2026" (or the raw string when parsing fails). */
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}

@@ -24,10 +24,11 @@ import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { revokeShare, type ShareDto } from "../api/shares";
-import { describeError } from "../lib/format";
+import { describeError, formatDate } from "../lib/format";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { CopyLinkButton } from "./copy-link-button";
+import { StatusBadge } from "./status-badge";
 import { ErrorState } from "./ui/error-state";
 import { Skeleton } from "./ui/skeleton";
 
@@ -178,38 +179,4 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       </div>
     </li>
   );
-}
-
-export function StatusBadge({ status }: { status: ShareDto["status"] }) {
-  if (status === "active") {
-    return (
-      <span className="rounded-full bg-[var(--color-castify-accent)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent)]">
-        Active
-      </span>
-    );
-  }
-  if (status === "expired") {
-    return (
-      <span className="rounded-full bg-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium opacity-70">
-        Expired
-      </span>
-    );
-  }
-  return (
-    <span className="rounded-full bg-[var(--color-castify-accent-dim)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-dim)]">
-      Revoked
-    </span>
-  );
-}
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
 }

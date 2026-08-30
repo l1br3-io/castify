@@ -40,6 +40,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { PosterCard } from "../components/poster-card";
 import { EmptyState } from "../components/ui/empty-state";
+import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import { fetchShareItems, resolveShare, unlockShare, type ShareResolveDto } from "../api/shares";
@@ -261,25 +262,3 @@ function TerminalState({ title, body }: { title: string; body: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Loading skeleton
-// ---------------------------------------------------------------------------
-
-function SkeletonGrid() {
-  return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div
-          key={i}
-          className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2"
-        >
-          <Skeleton className="aspect-video w-full" />
-          <div className="space-y-1.5 px-1 pb-1">
-            <Skeleton className="h-3 w-3/4" />
-            <Skeleton className="h-3 w-1/2" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
