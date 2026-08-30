@@ -15,8 +15,10 @@
 //        the removed id 404s on the share scope the moment the PUT lands
 //   #6 membership-loss card           → "no longer available in this
 //        share" renders (not the generic stream-error card), link back
-//   #8 Settings reflects edits        → row item_count flips 2→1→2 from
-//        the server refetch (no optimistic patching)
+//   #8 Settings reflects edits          → row item_count flips 2→1→2;
+//        the "server refetch, no optimistic patching" half of this
+//        criterion is pinned by the vitest (≥2 GET /api/shares after a
+//        save) — the e2e row text alone can't distinguish the two
 //
 // Recipient timing model (the spec promises no live push — convergence
 // on next fetch/navigation). Two pages in one recipient context:
@@ -33,7 +35,7 @@
 //     asserted here as the fresh-navigation denial, matching how a
 //     never-member id behaves (sharing.spec.ts's non-member test).
 
-import { test, expect, type BrowserContext, type Page } from "@playwright/test";
+import { test, expect, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 import {
   createShare,
@@ -42,7 +44,9 @@ import {
   getCsrfToken,
   getVideos,
   revokeShare,
-  seedAndScan,
+  seedConnection,
+  triggerScan,
+  waitForScanComplete,
   type CreatedShare,
 } from "./helpers";
 
@@ -76,7 +80,7 @@ async function clickCardLink(page: Page, ariaLabel: string): Promise<void> {
 }
 
 /** Open a recipient page — no session, no cookies, fresh IndexedDB. */
-async function recipientPage(browser: import("@playwright/test").Browser): Promise<{
+async function recipientPage(browser: Browser): Promise<{
   context: BrowserContext;
   page: Page;
 }> {
@@ -104,7 +108,13 @@ test.describe("Share list editing (docs/specs/mutable-share-list task 009)", () 
     try {
       await ensureAuthenticated(page);
       const csrf = await getCsrfToken(page);
-      gdConnId = await seedAndScan(page, "google_drive", "gd-edit@example.com", csrf);
+      // Assign the connection id before the scan waits: a failure inside
+      // the scan poll must still reach afterAll's disconnect, or the
+      // leaked fixtures (same names sharing.spec.ts picks by) stay in the
+      // catalog and poison the next spec's byName lookups.
+      gdConnId = await seedConnection(page, "google_drive", "gd-edit@example.com", csrf);
+      await triggerScan(page, gdConnId, csrf);
+      await waitForScanComplete(page, gdConnId);
 
       const data = await getVideos(page);
       const gd = data.videos.filter((v) => v.provider === "google_drive");

@@ -256,12 +256,14 @@ describe("ShareEditDialog", () => {
   it("reopening after a save adopts the saved list, not the cached pre-edit members", async () => {
     const onClose = vi.fn();
     // Mirror the production client's cache discipline (query-client.ts):
-    // the default throwaway client here uses gcTime 0, which garbage-
-    // collects the members entry during the unmount gap and hides the
-    // bug this test pins.
+    // staleTime keeps a reopen serving cached data, and gcTime (explicit
+    // here — the default 5min works but the contract shouldn't inherit
+    // it) keeps the entry alive across the unmount gap. The default
+    // throwaway client here uses gcTime 0, which garbage-collects the
+    // members entry during that gap and hides the bug this test pins.
     const queryClient = new QueryClient({
       defaultOptions: {
-        queries: { retry: false, staleTime: 30_000 },
+        queries: { retry: false, staleTime: 30_000, gcTime: 300_000 },
       },
     });
     // GET #1 (first open): members [Beta, Alpha]. GET #2+ (reopen): the

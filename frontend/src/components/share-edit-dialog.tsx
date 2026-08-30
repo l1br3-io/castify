@@ -19,7 +19,9 @@
 //
 // Save flow: one `PUT /api/shares/{id}/items` (`useMutation`); on success
 // `SHARES_QUERY_KEY` is invalidated (Settings refetches — the server owns
-// `item_count`, no local patching) and the dialog closes. Failures surface
+// `item_count`, no local patching) and this dialog's own members cache is
+// dropped (see `shareItemsOwnedKey`) so a reopen starts from the server.
+// The dialog then closes. Failures surface
 // inline via `describeError` and stay open for retry. Escape/backdrop
 // dismissal is guarded mid-PUT, matching the creation dialog: a PUT fired
 // behind a closed dialog leaves the user guessing whether it landed.
