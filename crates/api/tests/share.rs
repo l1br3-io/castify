@@ -1463,3 +1463,209 @@ async fn mirror_cached_stream_serves_hot_cache_hit_for_member() {
     );
     assert_eq!(bytes.len(), 5);
 }
+
+// --------------------------- membership flip (mutable share list, task 004)
+//
+// The mutable-list contract's denial proof: `PUT /api/shares/{id}/items`
+// must flip a recipient's access to a removed video from allow to deny on
+// the very next request, with zero backend enforcement changes. Every
+// mirror authorizes per-request via `authorize_share_item` → `is_member`,
+// so if any route ever caches membership this test fails — that is its
+// purpose.
+
+/// Log the owner in through the real route and return the session cookie.
+/// This file is otherwise session-free (pre-auth recipient surface); the
+/// flip test needs the owner surface to drive the replace route.
+async fn owner_session(app: &axum::Router) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/session")
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from(
+                    json!({"password": "correct horse battery staple"}).to_string(),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .headers()
+        .get(axum::http::header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(';').next())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .expect("login sets a session cookie")
+}
+
+/// CSRF-correct `PUT /api/shares/{id}/items` — same double-submit shape
+/// as the SPA. Returns only the status (204 on success).
+async fn owner_replace_items(
+    app: &axum::Router,
+    session: &str,
+    share_id: &str,
+    video_ids: &[String],
+) -> StatusCode {
+    let csrf_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/csrf")
+                .header("cookie", session)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(csrf_response.status(), StatusCode::OK);
+    let bytes = csrf_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let csrf: String = serde_json::from_slice::<Value>(&bytes).unwrap()["token"]
+        .as_str()
+        .expect("csrf token")
+        .to_string();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/shares/{share_id}/items"))
+                .header("cookie", format!("{session}; castify_csrf={csrf}"))
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(Bytes::from(
+                    json!({"video_ids": video_ids}).to_string(),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    response.status()
+}
+
+#[tokio::test]
+async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
+    // Hot cache enabled so the share-scoped stream-url route can answer a
+    // member 200 through its cached fast path — no provider involved.
+    let (app, state, _guard) = boot_with(|cfg| cfg.video_cache.enabled = true).await;
+    let videos = seed_videos(state.pool(), &["keep.mp4", "remove.mp4"]).await;
+    let (kept, removed) = (videos[0].clone(), videos[1].clone());
+    let cached_bytes: &[u8] = b"cached-video-bytes";
+    for (id, name) in [(&kept, "keep.mp4"), (&removed, "remove.mp4")] {
+        state
+            .video_cache()
+            .expect("cache enabled")
+            .put_bytes(id, cached_bytes)
+            .await
+            .unwrap();
+        state
+            .catalog_repository()
+            .upsert_video_cache_entry(id, "c1", name, cached_bytes.len() as u64)
+            .await
+            .unwrap();
+    }
+    let share = seed_share(&state, None, None, &[kept.clone(), removed.clone()]).await;
+    let session = owner_session(&app).await;
+
+    // Before: both are members and both serve. The removed-to-be video
+    // answers through the items list AND the share-scoped stream-url path.
+    let (status, body) = get(app.clone(), &format!("/api/share/{}", share.token), None).await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["item_count"], 2);
+
+    let (status, body) = get(
+        app.clone(),
+        &format!("/api/share/{}/items", share.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![kept.as_str(), removed.as_str()]);
+
+    let removed_stream_url = mirror_uri(&share.token, &removed, "stream-url");
+    let (status, body) = get(app.clone(), &removed_stream_url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "member stream-url pre-replace: {body}"
+    );
+    assert_eq!(body["strategy"], "cached");
+    assert_eq!(
+        body["url"],
+        format!(
+            "/api/share/{}/videos/{}/cached-stream",
+            share.token, removed
+        ),
+        "served URL must be share-scoped"
+    );
+
+    // Owner replaces the list, keeping only `kept`.
+    let status = owner_replace_items(&app, &session, &share.id, &[kept.clone()]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // After: the share itself is fine — resolve and items still serve,
+    // with counts converged to the new list.
+    let (status, body) = get(app.clone(), &format!("/api/share/{}", share.token), None).await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["item_count"], 1);
+
+    let (status, body) = get(
+        app.clone(),
+        &format!("/api/share/{}/items", share.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![kept.as_str()], "removed video drops out of items");
+
+    // The IDENTICAL stream-url request that just served now 404s —
+    // membership loss on the recipient surface is indistinguishable from
+    // an unknown id, by design.
+    let (status, _) = get(app.clone(), &removed_stream_url, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "post-replace stream-url");
+
+    // And every other mirror denies at the guard too — no route may hold
+    // a stale allow. Denials run before any provider access.
+    for suffix in ["stream", "thumbnail", "subtitles"] {
+        let (status, _, _) = get_raw(
+            app.clone(),
+            &mirror_uri(&share.token, &removed, suffix),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "removed /{suffix}");
+    }
+
+    // Unaffected: the kept video still serves the identical request shape.
+    let (status, body) = get(
+        app.clone(),
+        &mirror_uri(&share.token, &kept, "stream-url"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "kept video still serves: {body}");
+    assert_eq!(body["strategy"], "cached");
+}
