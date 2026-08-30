@@ -8,18 +8,28 @@
 //     the legacy execCommand path otherwise, surfacing copied-state
 //     feedback either way;
 //   * rows for shares created on another device (no IndexedDB link) render
-//     status only — no link, no copy button, no reconstruction.
+//     status only — no link, no copy button, no reconstruction;
+//   * "Edit items" appears on active rows only (revoked/expired rows
+//     render status only — matches the server's 409), opens the edit
+//     dialog for that share, and a saved edit flows back into the row's
+//     item count via the shares-query invalidation the dialog fires.
 //
 // The IndexedDB link store is mocked at the module boundary (jsdom has no
 // IndexedDB); fetch is stubbed through renderWithProviders' fetchSpy.
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 
 import { SharesSection } from "./shares-list";
-import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
+import {
+  jsonResponse,
+  jsonError,
+  renderWithProviders,
+  type FetchHandler,
+} from "../test/utils";
 import { setCsrfToken } from "../api/client";
 import type { ShareDto } from "../api/shares";
+import type { VideoSummaryDto } from "../api/types";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 
 vi.mock("../lib/share-links-db", () => ({
@@ -96,6 +106,13 @@ const REVOKED = shareDto({
   revoked_at: "2026-08-02T12:00:00Z",
   status: "revoked",
 });
+const EXPIRED = shareDto({
+  id: "s4",
+  title: "Stale share",
+  item_count: 2,
+  expires_at: "2026-08-01T00:00:00Z",
+  status: "expired",
+});
 
 function sharesFetch(shares: unknown) {
   return (input: RequestInfo | URL, init?: RequestInit) => {
@@ -116,6 +133,63 @@ function countShareListCalls(
     const url = String(input);
     return url === "/api/shares" && (init?.method ?? "GET") === "GET";
   }).length;
+}
+
+// --- Edit-items dialog fixtures (the dialog fetches members + catalog
+// itself; the list only needs to serve those routes while it's open). ---
+
+function video(id: string, name: string): VideoSummaryDto {
+  return {
+    id,
+    name,
+    provider: "google_drive",
+    size_bytes: 1_000,
+    mime_type: "video/mp4",
+    duration_ms: 60_000,
+    width: 1920,
+    height: 1080,
+    sources: [],
+    created_at: "2026-01-01T00:00:00Z",
+    path: `/Videos/${name}`,
+    is_favorite: false,
+    my_rating: null,
+    thumbnail_status: "pending",
+    position_seconds: null,
+    completed: false,
+  };
+}
+
+const EDIT_MEMBERS = [video("v1", "Alpha clip"), video("v2", "Beta clip")];
+const EDIT_LIBRARY = [...EDIT_MEMBERS, video("v3", "Gamma clip")];
+
+/** Shares list + edit-dialog routes in one handler. The list response is
+ * read through the holder so a PUT can flip what the post-save refetch
+ * serves (the server owns item_count). */
+function editFlowFetch(sharesState: { current: ShareDto[] }): FetchHandler {
+  return (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url.pathname === "/api/shares" && method === "GET")
+      return jsonResponse(sharesState.current);
+    if (url.pathname === "/api/shares/s1/items" && method === "GET")
+      return jsonResponse(EDIT_MEMBERS);
+    if (url.pathname === "/api/shares/s1/items" && method === "PUT") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        video_ids: string[];
+      };
+      // Mirror the server: the refetched row reports the PUT's count.
+      sharesState.current = [shareDto({ item_count: body.video_ids.length })];
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/api/videos")
+      return jsonResponse({
+        videos: EDIT_LIBRARY,
+        total: EDIT_LIBRARY.length,
+        page: 1,
+        limit: 200,
+      });
+    return jsonError(404, `unmocked ${method} ${url.pathname}`);
+  };
 }
 
 describe("SharesSection", () => {
@@ -323,5 +397,67 @@ describe("SharesSection", () => {
     ).toHaveLength(0);
 
     confirmSpy.mockRestore();
+  });
+
+  it('offers "Edit items" on active rows only', async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
+    });
+
+    await screen.findByText("Trip footage");
+    expect(
+      screen.getAllByRole("button", { name: /edit items/i }),
+    ).toHaveLength(1);
+  });
+
+  it("opens the edit dialog for the row's share and closes without saving", async () => {
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: editFlowFetch({ current: [ACTIVE] }),
+    });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /edit items/i }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Trip footage")).toBeInTheDocument();
+    // The dialog read this share's members via the owner route.
+    expect(
+      fetchSpy.mock.calls.some(([input]) => String(input) === "/api/shares/s1/items"),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("reflects a saved edit in the row's item count", async () => {
+    const sharesState = { current: [ACTIVE] };
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: editFlowFetch(sharesState),
+    });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /edit items/i }),
+    );
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Beta clip" }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter(
+          ([input, init]) =>
+            String(input) === "/api/shares/s1/items" &&
+            (init?.method ?? "GET") === "PUT",
+        ),
+      ).toHaveLength(1);
+    });
+    // Dialog closes and the refetched row shows the server's count.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText(/1 item(?!s)/)).toBeInTheDocument();
   });
 });

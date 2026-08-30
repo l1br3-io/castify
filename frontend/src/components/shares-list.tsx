@@ -13,6 +13,13 @@
 // there is nothing to reconstruct from (the server stores a hash). The
 // button itself is the shared `CopyLinkButton` (`copy-link-button.tsx`,
 // also used by the task 012 creation dialog).
+//
+// Edit-items: active rows get an "Edit items" button (mutable-share-list)
+// that opens the `ShareEditDialog` in place. The dialog owns fetching
+// members, the catalog, and the save PUT; on success it invalidates the
+// shares query, so this row re-renders with the server's new item_count.
+// Revoked/expired rows render status only — the server would 409 the
+// edit anyway.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -22,6 +29,7 @@ import { describeError } from "../lib/format";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { CopyLinkButton } from "./copy-link-button";
+import { ShareEditDialog } from "./share-edit-dialog";
 import { ErrorState } from "./ui/error-state";
 import { Skeleton } from "./ui/skeleton";
 
@@ -104,6 +112,7 @@ function SharesList() {
 
 function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | null }) {
   const queryClient = useQueryClient();
+  const [isEditing, setIsEditing] = useState(false);
 
   const revoke = useMutation({
     mutationFn: () => revokeShare(share.id),
@@ -147,14 +156,23 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       )}
       <div className="mt-3 flex items-center gap-2">
         {share.status === "active" && (
-          <button
-            type="button"
-            onClick={handleRevoke}
-            disabled={revoke.isPending}
-            className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
-          >
-            {revoke.isPending ? "Revoking…" : "Revoke"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+            >
+              Edit items
+            </button>
+            <button
+              type="button"
+              onClick={handleRevoke}
+              disabled={revoke.isPending}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+            >
+              {revoke.isPending ? "Revoking…" : "Revoke"}
+            </button>
+          </>
         )}
         {revoke.isError && (
           <p className="text-xs text-[var(--color-castify-accent-dim)]">
@@ -162,6 +180,9 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
           </p>
         )}
       </div>
+      {isEditing && (
+        <ShareEditDialog share={share} onClose={() => setIsEditing(false)} />
+      )}
     </li>
   );
 }
