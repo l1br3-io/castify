@@ -11,8 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createShare,
   fetchShareItems,
+  fetchShareItemsOwned,
   fetchShares,
   resolveShare,
+  replaceShareItems,
   revokeShare,
   unlockShare,
 } from "./shares";
@@ -108,6 +110,38 @@ describe("shares owner client", () => {
     await revokeShare("id/with/slash");
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash");
+  });
+
+  it("replaceShareItems PUTs the full replacement list and resolves on 204", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await replaceShareItems("s1", ["v2", "v1"]);
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
+    expect(lastInit(fetchSpy).method).toBe("PUT");
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({
+      video_ids: ["v2", "v1"],
+    });
+  });
+
+  it("replaceShareItems encodes the id", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await replaceShareItems("id/with/slash", ["v1"]);
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash/items");
+  });
+
+  it("fetchShareItemsOwned GETs /api/shares/{id}/items", async () => {
+    const fetchSpy = vi.fn(() => jsonResponse([]));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchShareItemsOwned("s1");
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
+    expect(lastInit(fetchSpy).method).toBe("GET");
   });
 });
 

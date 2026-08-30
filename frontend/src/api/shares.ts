@@ -2,9 +2,11 @@
 //
 // Two halves of one feature:
 //
-//   * Owner client — session-gated `/api/shares` (create/list/revoke) for
-//     the Settings management page (task 011) and creation dialogs
-//     (task 012). Mutations ride the normal CSRF flow in `apiFetch`.
+//   * Owner client — session-gated `/api/shares` (create/list/revoke) and
+//     `/api/shares/{id}/items` (replace/fetch members for the edit dialog,
+//     docs/specs/mutable-share-list) for the Settings management page
+//     (task 011) and creation dialogs (task 012). Mutations ride the
+//     normal CSRF flow in `apiFetch`.
 //   * Recipient client — pre-auth `/api/share/{token}/...` (resolve/items/
 //     unlock) for the public landing page (task 009). The HttpOnly unlock
 //     cookie is scoped to `Path=/api/share/`, so same-origin fetch attaches
@@ -18,7 +20,8 @@ import { apiFetch } from "./client";
 import type { VideoSummaryDto } from "./types";
 
 // ---------------------------------------------------------------------------
-// Owner client — `POST/GET /api/shares`, `DELETE /api/shares/{id}`
+// Owner client — `POST/GET /api/shares`, `DELETE /api/shares/{id}`,
+// `PUT/GET /api/shares/{id}/items`
 // ---------------------------------------------------------------------------
 
 /** Body of `POST /api/shares`. All validation (non-empty unique ids, title
@@ -86,6 +89,34 @@ export function revokeShare(shareId: string): Promise<void> {
   return apiFetch<void>(`/api/shares/${encodeURIComponent(shareId)}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * `PUT /api/shares/{id}/items` — replace the share's full item list. The
+ * body is the complete new curation order (not a delta), so the edit dialog
+ * submits exactly what its picker shows. 204 with no body; 409 for
+ * revoked/expired shares, 404 for foreign or unknown ids (no existence
+ * leak), 400 for empty/duplicate/non-catalog ids.
+ */
+export function replaceShareItems(shareId: string, videoIds: string[]): Promise<void> {
+  return apiFetch<void>(`/api/shares/${encodeURIComponent(shareId)}/items`, {
+    method: "PUT",
+    body: { video_ids: videoIds },
+  });
+}
+
+/**
+ * `GET /api/shares/{id}/items` — the current members for the edit dialog to
+ * pre-check. Session-gated owner route: the recipient endpoint is
+ * token-scoped and the raw token may not exist on this device (the server
+ * stores only a hash), so the owner reads members by share id instead.
+ * Unlike the PUT it also serves revoked/expired shares — read-only history
+ * for a dialog that may outlive the share's life.
+ */
+export function fetchShareItemsOwned(shareId: string): Promise<VideoSummaryDto[]> {
+  return apiFetch<VideoSummaryDto[]>(
+    `/api/shares/${encodeURIComponent(shareId)}/items`,
+  );
 }
 
 // ---------------------------------------------------------------------------
