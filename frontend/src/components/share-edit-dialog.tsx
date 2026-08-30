@@ -29,14 +29,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  fetchShareItemsOwned,
-  replaceShareItems,
-  type ShareDto,
-} from "../api/shares";
+import { replaceShareItems, type ShareDto } from "../api/shares";
 import { fetchVideos } from "../api/videos";
 import { describeError } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
+import { useShareItemsOwned, shareItemsOwnedKey } from "../hooks/use-share-items";
 import { SHARES_QUERY_KEY } from "../hooks/use-shares";
 import { Skeleton } from "./ui/skeleton";
 
@@ -49,15 +46,15 @@ const CATALOG_LIMIT = 200;
 const SEARCH_DEBOUNCE_MS = 300;
 
 /**
- * Owner-side members read for one share. Module-level so `save.onSuccess`
- * can drop the same entry the `useQuery` below populates: the moment the
- * PUT lands, that cache is known-stale, and the app-wide 30s staleTime
- * would otherwise serve the pre-edit list to the next mount — whose
- * adopt-once effect would turn it back into the selection (resurrecting
- * just-removed items on the next save).
+ * Owner-side members read for one share. Lifted to
+ * `hooks/use-share-items.ts` (share-manage-page task 002) so the manage
+ * page and this dialog share one cache entry; `save.onSuccess` drops the
+ * same entry the hook populates — the moment the PUT lands, that cache is
+ * known-stale, and the app-wide 30s staleTime would otherwise serve the
+ * pre-edit list to the next mount — whose adopt-once effect would turn it
+ * back into the selection (resurrecting just-removed items on the next
+ * save).
  */
-const shareItemsOwnedKey = (shareId: string) =>
-  ["share-items-owned", shareId] as const;
 
 export function ShareEditDialog({
   share,
@@ -75,10 +72,7 @@ export function ShareEditDialog({
   // preserved, additions appended, removals spliced) and is PUT verbatim.
   const [selectedIds, setSelectedIds] = useState<string[] | null>(null);
 
-  const members = useQuery({
-    queryKey: shareItemsOwnedKey(share.id),
-    queryFn: () => fetchShareItemsOwned(share.id),
-  });
+  const members = useShareItemsOwned(share.id);
   const catalog = useQuery({
     queryKey: ["share-edit-catalog", debouncedSearch],
     queryFn: () =>
