@@ -29,7 +29,7 @@ import { StatusBadge } from "../components/shares-list";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
-import { replaceShareItems, type ShareDto } from "../api/shares";
+import { replaceShareItems, fetchShareItemsOwned, type ShareDto } from "../api/shares";
 import type { VideoSummaryDto } from "../api/types";
 import { describeError } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
@@ -103,10 +103,13 @@ function ShareDetail({ share }: { share: ShareDto }) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
-  // In-flight removals, subtracted when computing the next PUT's id list:
-  // between one PUT's success and its refetch landing, the cached list is
-  // stale — without this set, a second rapid removal would resurrect the
-  // first-removed item by splicing from the pre-removal list.
+  // In-flight removals, subtracted when computing the next PUT's id list.
+  // Set membership spans the whole stale-cache window — from onMutate until
+  // the post-PUT refetch LANDS (not just the 204): between the PUT's success
+  // and that refetch, the cached list is stale, and a second removal
+  // computed from it would resurrect the first-removed item. The undo path
+  // filters the same set so a restore can never re-assert an id whose
+  // removal is still in flight.
   const pendingRemovals = useRef(new Set<string>());
   // Single-slot undo: a newer removal dismisses the prior toast (undo
   // restores only the most recent — the page copy names the item).
@@ -120,25 +123,41 @@ function ShareDetail({ share }: { share: ShareDto }) {
     });
   }
 
-  function undoRemoval(snapshot: {
+  /** Freshest member list, deduped against any in-flight refetch.
+   * `ensureQueryData` (not `getQueryData`) because the cache can be absent
+   * or stale at exactly the wrong moments: the add-only dialog drops the
+   * entry on save (`removeQueries`) while this page's refetch is starting,
+   * and an Undo can outlive navigation away (inactive query, no observer,
+   * stale data). Joining the in-flight fetch beats reading around it. */
+  function freshMemberIds(): Promise<VideoSummaryDto[]> {
+    return queryClient.ensureQueryData({
+      queryKey: shareItemsOwnedKey(share.id),
+      queryFn: () => fetchShareItemsOwned(share.id),
+    });
+  }
+
+  async function undoRemoval(snapshot: {
     video: VideoSummaryDto;
     index: number;
-  }): void {
-    const current =
-      queryClient.getQueryData<VideoSummaryDto[]>(
-        shareItemsOwnedKey(share.id),
-      ) ?? [];
-    const ids = current.map((v) => v.id);
-    const at = Math.min(snapshot.index, ids.length);
-    replaceShareItems(share.id, [
-      ...ids.slice(0, at),
-      snapshot.video.id,
-      ...ids.slice(at),
-    ])
-      .then(() => invalidateMemberQueries())
-      .catch(() => {
-        toast.error("Couldn't restore the item. Reload the page and try again.");
-      });
+  }): Promise<void> {
+    try {
+      const current = await freshMemberIds();
+      // Never re-assert an id whose removal is still in flight — an undo
+      // racing a newer removal must not resurrect what that removal is
+      // taking out (last-writer-wins would otherwise flip either way).
+      const ids = current
+        .filter((v) => !pendingRemovals.current.has(v.id))
+        .map((v) => v.id);
+      const at = Math.min(snapshot.index, ids.length);
+      await replaceShareItems(share.id, [
+        ...ids.slice(0, at),
+        snapshot.video.id,
+        ...ids.slice(at),
+      ]);
+      await invalidateMemberQueries();
+    } catch {
+      toast.error("Couldn't restore the item. Reload the page and try again.");
+    }
   }
 
   function pushUndoToast(snapshot: {
@@ -152,19 +171,17 @@ function ShareDetail({ share }: { share: ShareDto }) {
       ttlMs: UNDO_TTL_MS,
       action: {
         label: "Undo",
-        onAction: () => undoRemoval(snapshot),
+        onAction: () => void undoRemoval(snapshot),
       },
     });
   }
 
   const remove = useMutation({
-    mutationFn: ({ video }: { video: VideoSummaryDto; index: number }) => {
-      // Compute from the freshest cache (not the render closure) minus any
-      // in-flight removals — see pendingRemovals above.
-      const base =
-        queryClient.getQueryData<VideoSummaryDto[]>(
-          shareItemsOwnedKey(share.id),
-        ) ?? items.data ?? [];
+    mutationFn: async ({ video }: { video: VideoSummaryDto; index: number }) => {
+      // Freshest list (deduped against any in-flight refetch — see
+      // freshMemberIds) minus in-flight removals. Never the render
+      // closure's items.data, which can predate a dialog save.
+      const base = await freshMemberIds();
       const ids = base
         .filter(
           (v) => v.id !== video.id && !pendingRemovals.current.has(v.id),
@@ -177,11 +194,13 @@ function ShareDetail({ share }: { share: ShareDto }) {
       pendingRemovals.current.add(video.id);
     },
     onSuccess: async (_data, snapshot) => {
-      pendingRemovals.current.delete(snapshot.video.id);
-      // Await the refetch before offering Undo: undo splices into the
-      // cached list, which must already reflect the removal or the restore
-      // could double-insert (a duplicate the server would 400).
+      // Pop the guard only AFTER the refetch lands (see pendingRemovals):
+      // the stale-cache window is exactly PUT-204 → refetch-completion.
+      // Also: await before offering Undo — undo splices into the cached
+      // list, which must already reflect the removal or the restore could
+      // double-insert (a duplicate the server would 400).
       await invalidateMemberQueries();
+      pendingRemovals.current.delete(snapshot.video.id);
       pushUndoToast(snapshot);
     },
     onError: (error: unknown, { video }) => {
