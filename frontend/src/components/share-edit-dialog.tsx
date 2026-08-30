@@ -1,17 +1,20 @@
-// Share-items edit dialog (docs/specs/mutable-share-list, task 007).
+// Share add-items dialog (share-manage-page task 005; supersedes the
+// mutable-share-list full-edit dialog, whose Settings entry point was
+// replaced by the manage page — removal now lives there, so this picker
+// is add-only).
 //
 // Two-read data model: the dialog reads the share's current members
 // (`GET /api/shares/{id}/items` — owner route, curation order) *and* the
 // searchable catalog (`GET /api/videos?q=…&limit=200` — one generous page,
-// personal-server scale, no pagination UI). Members render pre-checked at
-// the top in the server's order; the catalog below is deduped against the
-// original member ids so each video has exactly one row.
+// personal-server scale, no pagination UI). Members render checked AND
+// disabled at the top in the server's order; the catalog below is deduped
+// against the original member ids so each video has exactly one row.
 //
-// Order contract: checkbox order IS curation order. Selection is an ordered
-// id array — members initialize it in the server's order, newly checked
-// catalog ids append, unchecking splices. Save PUTs that array verbatim
-// (`replaceShareItems`); the server re-validates (non-empty, no duplicates,
-// catalog ids) — the client's ≥1 guard is UX, not enforcement.
+// Order contract: selection is an ordered id array — members initialize it
+// in the server's order (locked; they cannot be unchecked), newly checked
+// catalog ids append. Save PUTs that array verbatim
+// (`replaceShareItems`); the server re-validates (non-empty, no
+// duplicates, catalog ids).
 //
 // Checked state is independent of what's on screen: re-searching narrows
 // the catalog but never drops selections. A checked video that falls out of
@@ -59,18 +62,10 @@ const SEARCH_DEBOUNCE_MS = 300;
 export function ShareEditDialog({
   share,
   onClose,
-  addOnly = false,
 }: {
-  /** The row being edited — the dialog only needs id + title. */
+  /** The share being appended to — the dialog only needs id + title. */
   share: Pick<ShareDto, "id" | "title">;
   onClose: () => void;
-  /**
-   * Add-only mode (share-manage-page task 005): the manage page owns
-   * removal, so when it mounts this dialog members render checked and
-   * disabled — the picker appends catalog picks only. Default false keeps
-   * the historical full-edit behavior.
-   */
-  addOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -127,8 +122,9 @@ export function ShareEditDialog({
 
   function handleSubmit(e: FormEvent): void {
     e.preventDefault();
-    if (selectedIds === null || selectedIds.length === 0 || save.isPending)
-      return;
+    // Members are locked in, so a loaded selection is never empty — the
+    // null check is the members-still-loading guard.
+    if (selectedIds === null || save.isPending) return;
     save.mutate();
   }
 
@@ -213,7 +209,9 @@ export function ShareEditDialog({
                   name={v.name}
                   checked={checked.has(v.id)}
                   onToggle={() => toggle(v.id)}
-                  disabled={addOnly}
+                  // Add-only picker: members are locked in — removal is
+                  // the manage page's job, not this dialog's.
+                  disabled
                 />
               ))}
             </fieldset>
@@ -286,7 +284,7 @@ export function ShareEditDialog({
               </button>
               <button
                 type="submit"
-                disabled={selectionCount === 0 || save.isPending}
+                disabled={selectedIds === null || save.isPending}
                 className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
               >
                 {save.isPending ? "Saving…" : "Save"}

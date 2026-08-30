@@ -330,7 +330,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
       )}
 
       {isAdding && (
-        <ShareEditDialog share={share} addOnly onClose={() => setIsAdding(false)} />
+        <ShareEditDialog share={share} onClose={() => setIsAdding(false)} />
       )}
 
       {remove.isError && removeError && (

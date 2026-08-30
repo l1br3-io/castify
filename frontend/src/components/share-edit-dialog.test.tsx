@@ -1,4 +1,5 @@
-// Tests for the share-items edit dialog (task 007).
+// Tests for the share add-items dialog (add-only since share-manage-page
+// task 005 — removal moved to the manage page).
 //
 // Behavior under test, per the task acceptance criteria:
 //   * current members render pre-checked at the top in the server's
@@ -152,12 +153,11 @@ function putVideoIds(fetchSpy: {
 
 function setupDialog(
   fetchImplementation: FetchHandler = editDialogFetch(),
-  addOnly = false,
 ): ReturnType<typeof renderWithProviders> & { onClose: ReturnType<typeof vi.fn> } {
   const onClose = vi.fn();
   const rendered = renderWithProviders(
     <>
-      <ShareEditDialog share={SHARE} addOnly={addOnly} onClose={onClose} />
+      <ShareEditDialog share={SHARE} onClose={onClose} />
       <SharesProbe />
     </>,
     { fetchImplementation },
@@ -201,6 +201,9 @@ describe("ShareEditDialog", () => {
     const alpha = screen.getByLabelText("Alpha clip");
     expect(beta).toBeChecked();
     expect(alpha).toBeChecked();
+    // Add-only picker: members are locked — removal is the manage page's.
+    expect(beta).toBeDisabled();
+    expect(alpha).toBeDisabled();
     // Curation order from the server (Beta before Alpha, not alphabetical).
     expect(
       beta.compareDocumentPosition(alpha) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -218,18 +221,17 @@ describe("ShareEditDialog", () => {
     expect(String(catalogCalls[0][0])).toContain("limit=200");
   });
 
-  // --- add/remove flow + save payload order ---
+  // --- add flow + save payload order ---
 
-  it("saves members-then-additions order, invalidates the shares list, and closes", async () => {
+  it("saves member order verbatim with additions appended, invalidates the shares list, and closes", async () => {
     const { fetchSpy, onClose } = setupDialog();
 
-    fireEvent.click(await screen.findByLabelText("Beta clip")); // remove member
-    fireEvent.click(screen.getByLabelText("Delta clip")); // add from catalog
+    fireEvent.click(await screen.findByLabelText("Delta clip")); // add from catalog
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    // Remaining member keeps curation position; the addition appends.
-    expect(putVideoIds(fetchSpy)).toEqual([["v1", "v4"]]);
+    // Server order [v2, v1] passes through verbatim, addition appended.
+    expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v4"]]);
 
     // The mounted shares query refetches after invalidation (initial mount
     // + post-save = at least 2 GET /api/shares).
@@ -239,17 +241,6 @@ describe("ShareEditDialog", () => {
       );
       expect(shareListCalls.length).toBeGreaterThanOrEqual(2);
     });
-  });
-
-  it("keeps the full member order with additions appended in the payload", async () => {
-    const { fetchSpy, onClose } = setupDialog();
-
-    fireEvent.click(await screen.findByLabelText("Delta clip"));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    // Server order [v2, v1] passes through verbatim, addition appended.
-    expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v4"]]);
   });
 
   // --- reopen after save (bug found by the task-009 e2e) ---
@@ -268,7 +259,7 @@ describe("ShareEditDialog", () => {
       },
     });
     // GET #1 (first open): members [Beta, Alpha]. GET #2+ (reopen): the
-    // server's post-save list — only Alpha.
+    // server's post-save list — Gamma joined as a member.
     const { fetchSpy } = renderWithProviders(
       <>
         <EditDialogHarness onClose={onClose} />
@@ -277,28 +268,30 @@ describe("ShareEditDialog", () => {
       {
         queryClient,
         fetchImplementation: editDialogFetch({
-          membersByGet: (n) => (n === 1 ? MEMBERS : [video("v1", "Alpha clip")]),
+          membersByGet: (n) =>
+            n === 1 ? MEMBERS : [...MEMBERS, video("v3", "Gamma clip")],
         }),
       },
     );
 
-    // Remove Beta, save — the PUT carries exactly the survivor.
-    fireEvent.click(await screen.findByLabelText("Beta clip"));
+    // Add Gamma, save — the PUT carries members + the addition.
+    fireEvent.click(await screen.findByLabelText("Gamma clip"));
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(putVideoIds(fetchSpy)).toEqual([["v1"]]);
+    expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v3"]]);
 
-    // Reopen — same session, same cache (the Settings-row lifecycle).
+    // Reopen — same session, same cache (the manage page's lifecycle).
     fireEvent.click(screen.getByRole("button", { name: /reopen dialog/i }));
 
-    // The dialog adopts the SAVED list: Alpha checked, Beta back in the
-    // library and unchecked — not still-selected from the pre-edit cache.
-    // (waitFor: the adoption effect commits a frame after the rows mount.)
+    // The dialog adopts the SAVED list: Gamma is now a checked, locked
+    // member — not still sitting unchecked in the library from the
+    // pre-save cache. (waitFor: the adoption effect commits a frame after
+    // the rows mount.)
     await waitFor(() =>
-      expect(screen.getByLabelText("Alpha clip")).toBeChecked(),
+      expect(screen.getByLabelText("Gamma clip")).toBeChecked(),
     );
     await waitFor(() =>
-      expect(screen.getByLabelText("Beta clip")).not.toBeChecked(),
+      expect(screen.getByLabelText("Gamma clip")).toBeDisabled(),
     );
   });
 
@@ -324,23 +317,12 @@ describe("ShareEditDialog", () => {
       expect(screen.queryByLabelText("Delta clip")).toBeNull(),
     );
 
-    // Delta is still selected: the payload keeps it after a further edit.
-    fireEvent.click(screen.getByLabelText("Beta clip"));
+    // Delta is still selected: the payload keeps it alongside a second
+    // visible addition (Gamma re-checked after the search).
+    fireEvent.click(screen.getByLabelText("Gamma clip"));
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(putVideoIds(fetchSpy)).toEqual([["v1", "v4"]]);
-  });
-
-  // --- empty selection guard ---
-
-  it("blocks submit while nothing is selected", async () => {
-    const { fetchSpy } = setupDialog();
-
-    fireEvent.click(await screen.findByLabelText("Beta clip"));
-    fireEvent.click(screen.getByLabelText("Alpha clip"));
-
-    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
-    expect(putVideoIds(fetchSpy)).toEqual([]);
+    expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v4", "v3"]]);
   });
 
   // --- failure + retry ---
@@ -407,28 +389,15 @@ describe("ShareEditDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
-  // --- add-only mode (share-manage-page task 005) ---
+  // --- locked members ---
 
-  it("addOnly: members render checked and disabled; clicking a member cannot uncheck it", async () => {
-    setupDialog(editDialogFetch(), true);
+  it("clicking a member's label cannot uncheck it", async () => {
+    setupDialog();
 
-    const beta = await screen.findByLabelText("Beta clip");
-    expect(beta).toBeDisabled();
-    expect(beta).toBeChecked();
+    await screen.findByLabelText("Beta clip");
 
     // Clicking the member's label is a no-op on the disabled checkbox.
     fireEvent.click(screen.getByText("Beta clip"));
     expect(screen.getByLabelText("Beta clip")).toBeChecked();
-  });
-
-  it("addOnly: save PUTs members + appended catalog picks (no removals possible)", async () => {
-    const { fetchSpy } = setupDialog(editDialogFetch(), true);
-
-    fireEvent.click(await screen.findByLabelText("Gamma clip"));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    await waitFor(() =>
-      expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v3"]]),
-    );
   });
 });
