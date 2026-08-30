@@ -1,4 +1,4 @@
-//! Owner-facing shares REST — integration tests (task 002).
+//! Owner-facing shares REST — integration tests (tasks 002 + 003).
 //!
 //! Drives the full middleware stack (`build_app`) exactly like the browser
 //! would: session cookie for auth, double-submit CSRF for mutations. The
@@ -904,4 +904,165 @@ async fn replace_items_rejects_non_catalog_id_and_keeps_old_list() {
         videos,
         "a failed replace must leave the old list intact"
     );
+}
+
+// --------------------------------------------------------------- get items
+
+#[tokio::test]
+async fn get_items_without_session_is_unauthorized() {
+    let (app, _state, _session, _guard) = boot().await;
+    let (status, _) = request(app, "GET", "/api/shares/whatever/items", None, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn get_items_returns_members_in_curation_order_in_video_summary_shape() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4"]).await;
+    // Curated order deliberately differs from catalog insertion order.
+    let curated = vec![videos[1].clone(), videos[2].clone()];
+
+    let (status, created) = create_share(
+        &app,
+        &session,
+        json!({"title": "Trip", "video_ids": curated}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {created}");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = request(
+        app,
+        "GET",
+        &format!("/api/shares/{id}/items"),
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+
+    let items = body.as_array().expect("items is an array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["id"], curated[0].as_str());
+    assert_eq!(items[1]["id"], curated[1].as_str());
+    assert_eq!(items[0]["name"], "b.mp4");
+
+    // Field contract: the catalog's VideoSummary shape, nothing extra —
+    // the same DTO the recipient endpoint and owner catalog serve.
+    let mut keys: Vec<&str> = items[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "completed",
+            "created_at",
+            "duration_ms",
+            "height",
+            "id",
+            "is_favorite",
+            "mime_type",
+            "my_rating",
+            "name",
+            "path",
+            "position_seconds",
+            "provider",
+            "size_bytes",
+            "sources",
+            "thumbnail_status",
+            "width",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn get_items_on_unknown_or_foreign_share_is_not_found() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+
+    // Unknown id: plain 404.
+    let (status, _) = request(
+        app.clone(),
+        "GET",
+        "/api/shares/00000000-0000-0000-0000-000000000000/items",
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Foreign id: also plain 404 — no existence leak across owners.
+    let stranger_id = seed_stranger_share(state.pool(), &videos).await;
+    let (status, _) = request(
+        app,
+        "GET",
+        &format!("/api/shares/{stranger_id}/items"),
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// This endpoint deliberately stays permissive on terminal shares (unlike
+/// the PUT): it is a read feeding the edit dialog's history, not a
+/// mutation path — see the handler doc comment for the recorded choice.
+#[tokio::test]
+async fn get_items_serves_revoked_and_expired_shares() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+
+    // Revoked through the API.
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let revoked_id = created["id"].as_str().unwrap().to_string();
+    let csrf = fetch_csrf(&app, &session).await;
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/shares/{revoked_id}"),
+        Some(&session),
+        Some((&csrf, &csrf)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Expired seeded through the repository (the API refuses to create one).
+    let expired_id = castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &owner_uuid(state.pool()).await,
+            token_hash: &hash_share_token("expired-get-items-token"),
+            password_hash: None,
+            title: "Expired",
+            expires_at: Some("2000-01-01T00:00:00Z"),
+            video_ids: &videos,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    for id in [revoked_id, expired_id] {
+        let (status, body) = request(
+            app.clone(),
+            "GET",
+            &format!("/api/shares/{id}/items"),
+            Some(&session),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "id = {id}, body = {body}");
+        assert_eq!(
+            body.as_array().unwrap().len(),
+            2,
+            "the historical list is still readable"
+        );
+    }
 }

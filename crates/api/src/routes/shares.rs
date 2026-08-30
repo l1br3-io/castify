@@ -6,6 +6,8 @@
 //!   * `DELETE /api/shares/{id}` — revoke (see [`revoke`])
 //!   * `PUT    /api/shares/{id}/items` — replace the item list (see
 //!     [`replace_items`])
+//!   * `GET    /api/shares/{id}/items` — members for the edit dialog (see
+//!     [`list_items`])
 //!
 //! All of these are session-gated by the standard middleware (nothing here
 //! is pre-auth; the recipient-facing mirrors live elsewhere) and mutations
@@ -34,6 +36,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use castify_auth::password::hash_password;
+use castify_catalog::VideoSummary;
 
 use crate::auth::resolve_owner_id;
 use crate::error::{ApiError, ApiResult};
@@ -365,6 +368,42 @@ pub async fn replace_items(
         "share items replaced"
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/shares/{id}/items` — the share's member videos, in curation
+/// order, for the edit dialog's pre-checks.
+///
+/// The recipient items endpoint is token-scoped and this device may hold
+/// no raw token (only the hash exists server-side), so the owner reads
+/// members through this session-gated route instead. Same mapping as the
+/// recipient handler: [`VideoSummary`] shape via the by-ids read, which is
+/// owner-neutral — no favorites/ratings/progress enrichment here.
+///
+/// Scoping matches [`replace_items`] (`fetch_owned`): foreign and unknown
+/// ids are both plain 404, no existence leak across owners. Status,
+/// however, deliberately does **not** match the PUT: this read serves
+/// revoked and expired shares too. It feeds history ("what was in this
+/// dead share?") rather than a mutation path, and filtering would only
+/// add a status branch the dialog doesn't need — recorded here as the
+/// permissive choice.
+pub async fn list_items(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<VideoSummary>>> {
+    let owner_id = resolve_owner_id(&state, &jar).await?;
+    let row = state
+        .share_repository()
+        .fetch_owned(&owner_id.to_string(), &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let share_items = state.share_repository().list_items(&row.id).await?;
+    let video_ids: Vec<String> = share_items.iter().map(|i| i.video_id.clone()).collect();
+    let summaries = state
+        .catalog_repository()
+        .fetch_video_summaries_by_ids(&video_ids)
+        .await?;
+    Ok(Json(summaries))
 }
 
 #[cfg(test)]
