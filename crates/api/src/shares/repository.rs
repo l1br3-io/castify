@@ -127,6 +127,25 @@ impl ShareRepository {
         rows.iter().map(row_to_share).collect()
     }
 
+    /// Owner-scoped lookup — the row the owner routes need to inspect
+    /// (terminal state, expiry) before acting. Foreign and unknown ids
+    /// are both `None`, so this never leaks whether a share exists.
+    pub async fn fetch_owned(
+        &self,
+        owner_id: &str,
+        share_id: &str,
+    ) -> ShareResult<Option<ShareRow>> {
+        let row = sqlx::query(
+            "SELECT id, owner_id, token_hash, password_hash, title, expires_at, revoked_at, created_at \
+             FROM shares WHERE id = ? AND owner_id = ?",
+        )
+        .bind(share_id)
+        .bind(owner_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| row_to_share(&r)).transpose()
+    }
+
     /// Set `revoked_at` (terminal). Returns rows affected — 0 means the
     /// share doesn't exist or was already revoked (idempotent for callers).
     pub async fn revoke(&self, share_id: &str) -> ShareResult<u64> {
@@ -155,6 +174,54 @@ impl ShareRepository {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    /// Owner-scoped full-list swap. One transaction: guard on exists +
+    /// owned + not revoked, delete every `share_items` row for the
+    /// share, re-insert the caller's list with fresh `0..N` positions
+    /// (the old positions die with the old rows — no stale gaps). A
+    /// bogus video id trips the FK and rolls the whole swap back, so
+    /// the old list survives intact (same atomicity shape as
+    /// [`ShareRepository::create_share`]).
+    ///
+    /// Returns the item rows written (deleted + inserted). `Ok(0)` means
+    /// the guard rejected the write — not found, not owned, or revoked
+    /// (all three collapse here; routes call
+    /// [`ShareRepository::fetch_owned`] first to map 404 vs 410).
+    pub async fn replace_items(
+        &self,
+        owner_id: &str,
+        share_id: &str,
+        video_ids: &[String],
+    ) -> ShareResult<u64> {
+        let mut tx = self.pool.begin().await?;
+        let live: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM shares WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+        )
+        .bind(share_id)
+        .bind(owner_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if live.is_none() {
+            // Dropping the tx rolls back — nothing was written.
+            return Ok(0);
+        }
+        let deleted = sqlx::query("DELETE FROM share_items WHERE share_id = ?")
+            .bind(share_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        for (position, video_id) in video_ids.iter().enumerate() {
+            sqlx::query("INSERT INTO share_items (share_id, video_id, position) VALUES (?, ?, ?)")
+                .bind(share_id)
+                .bind(video_id)
+                .bind(position as i64)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+
+        Ok(deleted + video_ids.len() as u64)
     }
 
     /// Membership guard — every mirror route's authorization check
@@ -475,6 +542,156 @@ mod tests {
             .unwrap();
         let after_delete = repo.list_items(&created.id).await.unwrap();
         assert_eq!(after_delete.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_owned_scopes_to_the_owning_owner() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        let row = repo
+            .fetch_owned(&owner.to_string(), &created.id)
+            .await
+            .unwrap()
+            .expect("owning owner fetches the row");
+        assert_eq!(row.id, created.id);
+        assert_eq!(row.owner_id, owner.to_string());
+
+        // A different owner and an unknown id both count as not-found —
+        // no existence leak across owners.
+        let stranger = seed_owner(&pool).await;
+        assert!(repo
+            .fetch_owned(&stranger.to_string(), &created.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .fetch_owned(&owner.to_string(), "missing-id")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn replace_items_swaps_the_full_list_in_curation_order() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4", "c.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        let swapped = vec![videos[2].clone(), videos[0].clone()];
+        let written = repo
+            .replace_items(&owner.to_string(), &created.id, &swapped)
+            .await
+            .unwrap();
+        assert!(written > 0, "successful replace reports rows written");
+
+        let items = repo.list_items(&created.id).await.unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| i.video_id.as_str())
+                .collect::<Vec<_>>(),
+            swapped.iter().map(String::as_str).collect::<Vec<_>>(),
+            "caller's order is the new curation order"
+        );
+        assert_eq!(
+            items.iter().map(|i| i.position).collect::<Vec<_>>(),
+            vec![0, 1],
+            "positions are fresh and contiguous"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_with_a_foreign_video_fails_atomically() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        let bogus = vec![videos[0].clone(), "not-a-video".to_string()];
+        assert!(
+            repo.replace_items(&owner.to_string(), &created.id, &bogus)
+                .await
+                .is_err(),
+            "FK violation must fail the replace"
+        );
+
+        // Atomic: the old list is intact, in its original order.
+        let items = repo.list_items(&created.id).await.unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| i.video_id.as_str())
+                .collect::<Vec<_>>(),
+            videos.iter().map(String::as_str).collect::<Vec<_>>(),
+            "failed replace must not mutate the existing list"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_items_on_a_revoked_share_does_not_mutate() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+        repo.revoke(&created.id).await.unwrap();
+
+        assert_eq!(
+            repo.replace_items(&owner.to_string(), &created.id, &[])
+                .await
+                .unwrap(),
+            0,
+            "revoked share replaces nothing — route layer maps the state"
+        );
+        assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn replace_items_on_foreign_or_missing_share_is_zero() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let stranger = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.replace_items(&stranger.to_string(), &created.id, &[])
+                .await
+                .unwrap(),
+            0,
+            "foreign owner counts as not-found"
+        );
+        assert_eq!(
+            repo.replace_items(&owner.to_string(), "missing-id", &[])
+                .await
+                .unwrap(),
+            0
+        );
+        // Neither guard failure touched the real share.
+        assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
