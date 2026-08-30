@@ -152,11 +152,12 @@ function putVideoIds(fetchSpy: {
 
 function setupDialog(
   fetchImplementation: FetchHandler = editDialogFetch(),
+  addOnly = false,
 ): ReturnType<typeof renderWithProviders> & { onClose: ReturnType<typeof vi.fn> } {
   const onClose = vi.fn();
   const rendered = renderWithProviders(
     <>
-      <ShareEditDialog share={SHARE} onClose={onClose} />
+      <ShareEditDialog share={SHARE} addOnly={addOnly} onClose={onClose} />
       <SharesProbe />
     </>,
     { fetchImplementation },
@@ -404,5 +405,30 @@ describe("ShareEditDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  // --- add-only mode (share-manage-page task 005) ---
+
+  it("addOnly: members render checked and disabled; clicking a member cannot uncheck it", async () => {
+    setupDialog(editDialogFetch(), true);
+
+    const beta = await screen.findByLabelText("Beta clip");
+    expect(beta).toBeDisabled();
+    expect(beta).toBeChecked();
+
+    // Clicking the member's label is a no-op on the disabled checkbox.
+    fireEvent.click(screen.getByText("Beta clip"));
+    expect(screen.getByLabelText("Beta clip")).toBeChecked();
+  });
+
+  it("addOnly: save PUTs members + appended catalog picks (no removals possible)", async () => {
+    const { fetchSpy } = setupDialog(editDialogFetch(), true);
+
+    fireEvent.click(await screen.findByLabelText("Gamma clip"));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(putVideoIds(fetchSpy)).toEqual([["v2", "v1", "v3"]]),
+    );
   });
 });

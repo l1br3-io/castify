@@ -10,7 +10,7 @@
 // undo toasts.
 
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { ShareManagePage } from "./share-manage";
@@ -308,6 +308,83 @@ describe("ShareManagePage", () => {
     expect(screen.getByText(/removed 'beta clip'/i)).toBeInTheDocument();
     expect(screen.queryByText(/removed 'alpha clip'/i)).not.toBeInTheDocument();
   });
+
+  // --- Search + add-only picker (task 005) --------------------------------
+
+  it("filters the grid client-side as the owner types, and clears back to full order", async () => {
+    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "alpha" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Beta clip")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.queryByText("Gamma clip")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/search this share/i), {
+      target: { value: "" },
+    });
+    expect(await screen.findByText("Gamma clip")).toBeInTheDocument();
+    expect(screen.getByText("Alpha clip")).toBeInTheDocument();
+  });
+
+  it("renders an empty-match state for a query with no hits", async () => {
+    const state = { items: MEMBERS };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "zzz-no-match" },
+    });
+
+    expect(await screen.findByText(/no videos match/i)).toBeInTheDocument();
+    expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument();
+  });
+
+  it("Add items opens the add-only picker; saving appends and refetches the grid", async () => {
+    const state = { items: MEMBERS };
+    const handler = removalFetch(state);
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
+      </Routes>,
+      { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /add items/i }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    // Add-only: the current members are locked in (checked + disabled).
+    const alpha = within(dialog).getByLabelText("Alpha clip");
+    expect(alpha).toBeDisabled();
+    expect(alpha).toBeChecked();
+
+    fireEvent.click(await within(dialog).findByLabelText("Gamma clip"));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(handler.puts).toEqual([["v1", "v2", "v3"]]);
+    });
+    // The shared owned-items key (task 002) makes the page refetch with
+    // the dialog's invalidation — Gamma appears without a manual reload.
+    expect(await screen.findByText("Gamma clip")).toBeInTheDocument();
+  });
 });
 
 /** Stateful handler for removal-flow tests: GET serves the live array, PUT
@@ -338,6 +415,18 @@ function removalFetch(state: {
         .map((id) => UNIVERSE.find((v) => v.id === id))
         .filter((v): v is VideoSummaryDto => v !== undefined);
       return new Response(null, { status: 204 });
+    }
+    if (new URL(url, "http://localhost").pathname === "/api/videos") {
+      const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
+      const videos = UNIVERSE.filter((v) =>
+        v.name.toLowerCase().includes(q.toLowerCase()),
+      );
+      return jsonResponse({
+        videos,
+        total: videos.length,
+        page: 1,
+        limit: 200,
+      });
     }
     return jsonError(404, "unmocked");
   };

@@ -23,6 +23,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { PosterCard } from "../components/poster-card";
+import { ShareEditDialog } from "../components/share-edit-dialog";
 import { ShareItemMenu } from "../components/share-item-menu";
 import { StatusBadge } from "../components/shares-list";
 import { EmptyState } from "../components/ui/empty-state";
@@ -31,6 +32,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { replaceShareItems, type ShareDto } from "../api/shares";
 import type { VideoSummaryDto } from "../api/types";
 import { describeError } from "../lib/format";
+import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { shareItemsOwnedKey, useShareItemsOwned } from "../hooks/use-share-items";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { useToast } from "../hooks/use-toast";
@@ -41,6 +43,10 @@ const UNDO_TTL_MS = 6000;
 /** Last-item guard copy (task 004; server enforces non-empty with 400). */
 const LAST_ITEM_HINT =
   "A share needs at least one item — revoke the share instead.";
+
+/** Matches the dialog + browse SearchBar debounce — one filter per pause.
+ * The filter itself is client-side (no fetch): members are already loaded. */
+const SEARCH_DEBOUNCE_MS = 300;
 
 export function ShareManagePage() {
   const { id } = useParams<{ id: string }>();
@@ -192,6 +198,17 @@ function ShareDetail({ share }: { share: ShareDto }) {
   const count = items.data?.length ?? share.item_count;
   const canRemoveItems = (items.data?.length ?? 0) > 1;
 
+  // Task 005: client-side search over the loaded members. Filtering is
+  // render-only — removal targets, undo indices, and the last-item guard
+  // all read the unfiltered `items.data`.
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+  const [isAdding, setIsAdding] = useState(false);
+  const query = debouncedSearch.trim().toLowerCase();
+  const visibleItems = query
+    ? items.data?.filter((v) => v.name.toLowerCase().includes(query))
+    : items.data;
+
   return (
     <section className="mx-auto max-w-7xl space-y-4 px-4 py-10">
       <div>
@@ -236,8 +253,34 @@ function ShareDetail({ share }: { share: ShareDto }) {
       )}
 
       {items.data && items.data.length > 0 && (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {items.data.map((video) => {
+        <>
+          {share.status === "active" && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <input
+                type="search"
+                aria-label="Search this share"
+                placeholder="Search this share…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full max-w-xs rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              />
+              <button
+                type="button"
+                onClick={() => setIsAdding(true)}
+                className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              >
+                Add items
+              </button>
+            </div>
+          )}
+          {visibleItems && visibleItems.length === 0 && query && (
+            <EmptyState
+              title="No videos match."
+              body={`Nothing in this share matches “${debouncedSearch.trim()}”.`}
+            />
+          )}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            {visibleItems?.map((video) => {
             const isRemoving =
               remove.isPending && remove.variables?.video.id === video.id;
             return (
@@ -263,7 +306,12 @@ function ShareDetail({ share }: { share: ShareDto }) {
               </div>
             );
           })}
-        </div>
+          </div>
+        </>
+      )}
+
+      {isAdding && (
+        <ShareEditDialog share={share} addOnly onClose={() => setIsAdding(false)} />
       )}
 
       {remove.isError && removeError && (

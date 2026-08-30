@@ -59,10 +59,18 @@ const SEARCH_DEBOUNCE_MS = 300;
 export function ShareEditDialog({
   share,
   onClose,
+  addOnly = false,
 }: {
   /** The row being edited — the dialog only needs id + title. */
   share: Pick<ShareDto, "id" | "title">;
   onClose: () => void;
+  /**
+   * Add-only mode (share-manage-page task 005): the manage page owns
+   * removal, so when it mounts this dialog members render checked and
+   * disabled — the picker appends catalog picks only. Default false keeps
+   * the historical full-edit behavior.
+   */
+  addOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
@@ -205,6 +213,7 @@ export function ShareEditDialog({
                   name={v.name}
                   checked={checked.has(v.id)}
                   onToggle={() => toggle(v.id)}
+                  disabled={addOnly}
                 />
               ))}
             </fieldset>
@@ -291,22 +300,25 @@ export function ShareEditDialog({
 }
 
 /** One checkbox row — label wraps the input so the video name is the
- * checkbox's accessible name. */
+ * checkbox's accessible name. `disabled` locks members in add-only mode. */
 function PickerRow({
   name,
   checked,
   onToggle,
+  disabled = false,
 }: {
   name: string;
   checked: boolean;
   onToggle: () => void;
+  disabled?: boolean;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-3 rounded-[var(--radius-button)] px-2 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]">
+    <label className={`flex items-center gap-3 rounded-[var(--radius-button)] px-2 py-1.5 text-sm transition ${disabled ? "" : "cursor-pointer hover:bg-[var(--color-castify-accent-subtle)]"}`}>
       <input
         type="checkbox"
         checked={checked}
         onChange={onToggle}
+        disabled={disabled}
         className="h-4 w-4 accent-[var(--color-castify-accent)]"
       />
       <span className="truncate" title={name}>
