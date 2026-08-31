@@ -3,7 +3,8 @@
 //!
 //!   * `POST   /api/shares`     — create a share (see [`create`])
 //!   * `GET    /api/shares`     — management list (see [`list`])
-//!   * `DELETE /api/shares/{id}` — revoke (see [`revoke`])
+//!   * `DELETE /api/shares/{id}` — revoke, or purge with `?purge=true`
+//!     (see [`revoke`])
 //!   * `POST   /api/shares/{id}/items` — append to the item list (see
 //!     [`append_items`])
 //!   * `PUT    /api/shares/{id}/items` — replace the item list (see
@@ -27,7 +28,7 @@
 //!     resolves it against the current origin, so it stays correct behind
 //!     reverse proxies and when `CASTIFY_APP_BASE_URL` is unset.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
@@ -292,25 +293,59 @@ pub async fn list(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Js
     Ok(Json(dtos))
 }
 
-/// `DELETE /api/shares/{id}` — revoke a share (soft delete).
+/// Query of `DELETE /api/shares/{id}`: absent or `false` keeps the
+/// soft-delete (revoke) semantics; `true` hard-deletes the row instead.
+#[derive(Debug, Default, Deserialize)]
+pub struct PurgeParams {
+    pub purge: Option<bool>,
+}
+
+/// `DELETE /api/shares/{id}` — revoke a share (soft delete), or purge it
+/// with `?purge=true` (hard delete).
 ///
-/// Sets `revoked_at`; the row is never deleted, so the action is auditable
-/// and reversible only by creating a new share (by design). Idempotent by
-/// contract: revoking a revoked, foreign, or unknown share still returns
-/// 204 — the terminal state the caller asked for is the one that holds.
-/// Scoping by `owner_id` keeps the multi-owner seam honest even though
-/// this instance has exactly one.
+/// The default keeps the revoke semantics byte-for-byte: sets
+/// `revoked_at`; the row is never deleted, so the action is auditable and
+/// reversible only by creating a new share (by design) — the "kill the
+/// link, keep the record" case. `?purge=true` is the "remove everything"
+/// case: the `shares` row goes away and migration 0012's
+/// `ON DELETE CASCADE` takes the `share_items` with it.
+///
+/// Both variants are idempotent by contract: acting on an already-gone,
+/// foreign, or unknown share still returns 204 — the terminal state the
+/// caller asked for is the one that holds, and a foreign id stays
+/// indistinguishable from an unknown one (no existence leak, same shape
+/// as [`ShareRepository::revoke_owned`]). Purge works on revoked and
+/// expired rows too, not just active ones. Scoping by `owner_id` keeps
+/// the multi-owner seam honest even though this instance has exactly one.
+///
+/// Recipient-visible effect of a purge: the token-hash row is gone, so
+/// `fetch_by_token_hash` finds nothing and the recipient resolve route
+/// answers 404 "unknown" — a deleted share is indistinguishable from one
+/// that never existed. That is deliberately LESS information than
+/// revoke's 410 ("this existed but is dead"): purge is the owner saying
+/// the share should leave no trace (spec criterion 8,
+/// docs/specs/share-management). The landing page already renders both
+/// 404 and 410 as terminal, so recipients see the right card either way.
 pub async fn revoke(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(id): Path<String>,
+    Query(params): Query<PurgeParams>,
 ) -> ApiResult<StatusCode> {
     let owner_id = resolve_owner_id(&state, &jar).await?;
-    state
-        .share_repository()
-        .revoke_owned(&owner_id.to_string(), &id)
-        .await?;
-    tracing::info!(share_id = %id, "share revoked");
+    if params.purge.unwrap_or(false) {
+        state
+            .share_repository()
+            .purge_owned(&owner_id.to_string(), &id)
+            .await?;
+        tracing::info!(share_id = %id, "share purged");
+    } else {
+        state
+            .share_repository()
+            .revoke_owned(&owner_id.to_string(), &id)
+            .await?;
+        tracing::info!(share_id = %id, "share revoked");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

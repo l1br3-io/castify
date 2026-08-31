@@ -177,6 +177,26 @@ impl ShareRepository {
         Ok(result.rows_affected())
     }
 
+    /// Owner-scoped hard delete — the purge behind
+    /// `DELETE /api/shares/{id}?purge=true`. Removes the `shares` row;
+    /// migration 0012's `ON DELETE CASCADE` takes the `share_items` rows
+    /// with it, so one statement is the whole transaction. Works on any
+    /// past state (revoked, expired) — a cleanup that only accepted live
+    /// shares would keep listing the dead rows it was asked to remove.
+    ///
+    /// Returns rows affected — 0 means not found or not owned, which
+    /// callers treat as success (idempotent 204), so a foreign share id
+    /// stays indistinguishable from an unknown one (same no-leak shape as
+    /// [`ShareRepository::revoke_owned`]).
+    pub async fn purge_owned(&self, owner_id: &str, share_id: &str) -> ShareResult<u64> {
+        let result = sqlx::query("DELETE FROM shares WHERE id = ? AND owner_id = ?")
+            .bind(share_id)
+            .bind(owner_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Owner-scoped full-list swap. One transaction: guard on exists +
     /// owned + not revoked, delete every `share_items` row for the
     /// share, re-insert the caller's list with fresh `0..N` positions
@@ -871,6 +891,143 @@ mod tests {
         // None of the guard failures touched the real shares.
         assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
         assert_eq!(repo.list_items(&revoked.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn purge_owned_deletes_the_row_and_cascades_items() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), &created.id)
+                .await
+                .unwrap(),
+            1,
+            "purging a live share deletes exactly one row"
+        );
+
+        // The row, its items, and the token-hash mapping are all gone —
+        // nothing survives for the list or a recipient to find.
+        assert!(repo
+            .fetch_owned(&owner.to_string(), &created.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .fetch_by_token_hash(&created.token_hash)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo.list_items(&created.id).await.unwrap().is_empty());
+        assert!(repo
+            .list_by_owner(&owner.to_string())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_owned_removes_revoked_and_expired_rows_too() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+
+        let revoked = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+        repo.revoke(&revoked.id).await.unwrap();
+
+        // Past expiry seeded straight through the repo (the API refuses
+        // to create one).
+        let expired = repo
+            .create_share(&NewShare {
+                owner_id: &owner,
+                token_hash: &any_hash(),
+                password_hash: None,
+                title: "Past",
+                expires_at: Some("2000-01-01T00:00:00Z"),
+                video_ids: &videos,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), &revoked.id)
+                .await
+                .unwrap(),
+            1,
+            "purge works on revoked rows, not just active ones"
+        );
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), &expired.id)
+                .await
+                .unwrap(),
+            1,
+            "purge works on expired rows"
+        );
+        assert!(repo
+            .list_by_owner(&owner.to_string())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_owned_scopes_to_owner_and_is_idempotent() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let stranger = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        // A stranger's purge deletes nothing — 0 rows, share intact.
+        assert_eq!(
+            repo.purge_owned(&stranger.to_string(), &created.id)
+                .await
+                .unwrap(),
+            0,
+            "foreign owner deletes nothing"
+        );
+        assert!(repo
+            .fetch_owned(&owner.to_string(), &created.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
+
+        // The owner's purge lands, and repeating it (or a missing id) is
+        // a 0-row no-op the route maps to the same idempotent 204.
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), &created.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), &created.id)
+                .await
+                .unwrap(),
+            0,
+            "second purge finds nothing left"
+        );
+        assert_eq!(
+            repo.purge_owned(&owner.to_string(), "missing-id")
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]

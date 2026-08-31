@@ -632,6 +632,214 @@ async fn revoke_is_idempotent_and_returns_204() {
     assert!(revoked_at.is_some(), "revoked_at persisted");
 }
 
+// ------------------------------------------------------------------- purge
+
+/// CSRF-correct `DELETE` on the given URI (the caller appends any query
+/// string, e.g. `?purge=true`).
+async fn delete_share(app: &axum::Router, session: &str, uri: &str) -> (StatusCode, Value) {
+    let csrf = fetch_csrf(app, session).await;
+    request(
+        app.clone(),
+        "DELETE",
+        uri,
+        Some(session),
+        Some((&csrf, &csrf)),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn purge_without_session_is_unauthorized() {
+    let (app, _state, _session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "DELETE",
+        "/api/shares/whatever?purge=true",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn purge_without_csrf_is_forbidden() {
+    let (app, _state, session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "DELETE",
+        "/api/shares/whatever?purge=true",
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn purge_removes_the_row_its_items_and_the_list_entry() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(
+        &app,
+        &session,
+        json!({"title": "Doomed", "video_ids": videos}),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) =
+        delete_share(&app, &session, &format!("/api/shares/{id}?purge=true")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body = {body}");
+
+    // Hard delete: no shares row, no share_items rows (cascade), and the
+    // next management list omits it.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares WHERE id = ?")
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "purge removes the share row");
+    let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM share_items WHERE share_id = ?")
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    assert_eq!(items, 0, "cascade removes the item rows");
+
+    let (status, list) = request(app, "GET", "/api/shares", Some(&session), None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        list.as_array().unwrap().is_empty(),
+        "purged share omitted from the list"
+    );
+}
+
+#[tokio::test]
+async fn purge_false_and_absent_param_keep_soft_delete_semantics() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+
+    // Explicit false — the row survives with revoked_at set.
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let explicit = created["id"].as_str().unwrap().to_string();
+    let (status, _) = delete_share(
+        &app,
+        &session,
+        &format!("/api/shares/{explicit}?purge=false"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (revoked_at, items): (Option<String>, i64) = sqlx::query_as(
+        "SELECT revoked_at, (SELECT COUNT(*) FROM share_items WHERE share_id = shares.id) \
+         FROM shares WHERE id = ?",
+    )
+    .bind(&explicit)
+    .fetch_one(state.pool())
+    .await
+    .unwrap();
+    assert!(revoked_at.is_some(), "purge=false is the soft delete");
+    assert_eq!(items, 1, "soft delete keeps the historical items");
+
+    // Absent param (already covered by revoke_is_idempotent_and_returns_204,
+    // asserted here once more to pin the byte-for-byte contract side by
+    // side with the false case).
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let absent = created["id"].as_str().unwrap().to_string();
+    let (status, _) = delete_share(&app, &session, &format!("/api/shares/{absent}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let revoked_at: Option<String> =
+        sqlx::query_scalar("SELECT revoked_at FROM shares WHERE id = ?")
+            .bind(&absent)
+            .fetch_one(state.pool())
+            .await
+            .unwrap();
+    assert!(revoked_at.is_some());
+}
+
+#[tokio::test]
+async fn purge_works_on_revoked_and_expired_shares() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+
+    // Revoked through the API first (soft delete), then purged.
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let revoked_id = created["id"].as_str().unwrap().to_string();
+    let (status, _) = delete_share(&app, &session, &format!("/api/shares/{revoked_id}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Expired seeded straight through the repo (the API refuses to create
+    // a past expiry).
+    let expired_id = castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &owner_uuid(state.pool()).await,
+            token_hash: &hash_share_token("expired-purge-token"),
+            password_hash: None,
+            title: "Expired",
+            expires_at: Some("2000-01-01T00:00:00Z"),
+            video_ids: &videos,
+        })
+        .await
+        .unwrap()
+        .id;
+
+    for id in [revoked_id, expired_id] {
+        let (status, body) =
+            delete_share(&app, &session, &format!("/api/shares/{id}?purge=true")).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "id = {id}, body = {body}");
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares WHERE id = ?")
+            .bind(&id)
+            .fetch_one(state.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, 0, "id = {id}: past rows are purgeable too");
+    }
+}
+
+#[tokio::test]
+async fn purge_is_idempotent_and_leaves_foreign_rows_intact() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Purging twice: 204 both times — the second finds nothing and that
+    // is still the terminal state the caller asked for.
+    let (first, _) = delete_share(&app, &session, &format!("/api/shares/{id}?purge=true")).await;
+    assert_eq!(first, StatusCode::NO_CONTENT);
+    let (second, _) = delete_share(&app, &session, &format!("/api/shares/{id}?purge=true")).await;
+    assert_eq!(second, StatusCode::NO_CONTENT);
+
+    // A stranger's share id: 204 for this owner (no existence leak), row
+    // and items intact for the real owner.
+    let stranger_id = seed_stranger_share(state.pool(), &videos).await;
+    let (status, _) = delete_share(
+        &app,
+        &session,
+        &format!("/api/shares/{stranger_id}?purge=true"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shares WHERE id = ?")
+        .bind(&stranger_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows, 1,
+        "a foreign purge must not delete the stranger's row"
+    );
+    assert_eq!(
+        persisted_items(state.pool(), &stranger_id).await.len(),
+        2,
+        "a foreign purge must not touch the stranger's items"
+    );
+}
+
 // ----------------------------------------------------------- replace items
 
 /// CSRF-correct `PUT /api/shares/{id}/items` with the given video ids.

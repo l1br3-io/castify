@@ -190,6 +190,30 @@ async fn expired_share_is_410_share_unavailable() {
     assert_eq!(status, StatusCode::GONE);
 }
 
+// ------------------------------------------------- 404 (purged — task 004)
+
+#[tokio::test]
+async fn purged_share_is_404_unknown_for_recipient() {
+    // Spec criterion 8 (docs/specs/share-management): after a purge the
+    // token-hash row is gone, so the recipient resolve route answers 404
+    // "unknown" — a deleted share is indistinguishable from one that never
+    // existed. Deliberately LESS information than revoke's 410; the landing
+    // page already renders both as terminal.
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+    ShareRepository::new(state.pool().clone())
+        .purge_owned(&owner_uuid(state.pool()).await.to_string(), &share.id)
+        .await
+        .unwrap();
+
+    let (status, body) = get(app.clone(), &format!("/api/share/{}", share.token), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body = {body}");
+
+    let (status, body) = get(app, &format!("/api/share/{}/items", share.token), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body = {body}");
+}
+
 // ------------------------------------------------------------- 401 (locked)
 
 #[tokio::test]
@@ -1627,8 +1651,7 @@ async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
     );
 
     // Owner replaces the list, keeping only `kept`.
-    let status =
-        owner_replace_items(&app, &session, &share.id, std::slice::from_ref(&kept)).await;
+    let status = owner_replace_items(&app, &session, &share.id, std::slice::from_ref(&kept)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // After: the share itself is fine — resolve and items still serve,
