@@ -10,6 +10,11 @@
 // serve the pre-edit list to the next mount. Mutations that change
 // membership should `removeQueries(shareItemsOwnedKey(id))` (or invalidate
 // and drop) on success — see `share-edit-dialog.tsx`'s save flow.
+//
+// `enabled` (share-management task 003) lets a consumer hold the hook
+// unconditionally while nothing is selected — the ShareDialog's picker
+// passes a placeholder id gated on selection, so no empty-id query ever
+// fires.
 
 import { useQuery } from "@tanstack/react-query";
 import { fetchShareItemsOwned } from "../api/shares";
@@ -17,9 +22,10 @@ import { fetchShareItemsOwned } from "../api/shares";
 export const shareItemsOwnedKey = (shareId: string) =>
   ["share-items-owned", shareId] as const;
 
-export function useShareItemsOwned(shareId: string) {
+export function useShareItemsOwned(shareId: string, enabled = true) {
   return useQuery({
     queryKey: shareItemsOwnedKey(shareId),
     queryFn: () => fetchShareItemsOwned(shareId),
+    enabled,
   });
 }

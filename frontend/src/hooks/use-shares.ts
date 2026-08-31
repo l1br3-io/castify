@@ -4,6 +4,12 @@
 // owner acts (create/revoke), and those flows invalidate
 // `SHARES_QUERY_KEY` themselves. The creation dialogs (task 012) reuse the
 // same key.
+//
+// `enabled` (share-management task 003) lets a consumer observe the shared
+// cache without triggering a fetch — the ShareDialog's "Add to existing"
+// picker passes `mode === "existing"`, so the list is only fetched when
+// the picker is actually opened (a previously-cached Settings list still
+// shows instantly).
 
 import { useQuery } from "@tanstack/react-query";
 import { fetchShares } from "../api/shares";
@@ -16,9 +22,10 @@ export function absoluteShareUrl(path: string): string {
   return new URL(path, window.location.origin).toString();
 }
 
-export function useShares() {
+export function useShares(enabled = true) {
   return useQuery<ShareDto[]>({
     queryKey: SHARES_QUERY_KEY,
     queryFn: fetchShares,
+    enabled,
   });
 }

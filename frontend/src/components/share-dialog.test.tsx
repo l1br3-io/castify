@@ -1,5 +1,5 @@
 // Tests for the share-creation dialog (task 012, extended by
-// share-management task 001).
+// share-management tasks 001 and 003).
 //
 // Behavior under test, per the task acceptance criteria:
 //   * the title field opens prefilled with a generated name; a reroll
@@ -19,7 +19,16 @@
 //   * on success the dialog shows the absolute link exactly once with a
 //     copy button and a "created once" warning, and stores the link in the
 //     per-device IndexedDB store so Settings can re-copy it later;
-//   * a failed POST surfaces the error and stays on the form for retry.
+//   * a failed POST surfaces the error and stays on the form for retry;
+//   * "Add to existing" mode (share-management task 003) — the picker
+//     lists only active shares, filters by title substring client-side
+//     (zero extra requests), and after selecting a share surfaces the
+//     already-member overlap ("k of N already in this share"). Add POSTs
+//     exactly the fresh ids in one request, is disabled when nothing is
+//     new, surfaces errors inline for retry, and closes on success after
+//     invalidating the shares cache. Typed new-share fields survive a
+//     mode round-trip; Escape/backdrop stay guarded while the POST is
+//     pending (parity with creation).
 //
 // The IndexedDB link store is mocked at the module boundary (jsdom has no
 // IndexedDB); fetch is stubbed through renderWithProviders' fetchSpy.
@@ -37,6 +46,7 @@ import {
 import { setCsrfToken } from "../api/client";
 import { saveShareLink } from "../lib/share-links-db";
 import { generateShareName } from "../lib/share-names";
+import type { ShareDto } from "../api/shares";
 
 vi.mock("../lib/share-links-db", () => ({
   getShareLinkMap: vi.fn(),
@@ -350,5 +360,287 @@ describe("ShareDialog", () => {
     expect(
       await screen.findByText(/watch these 3 videos without an account/i),
     ).toBeInTheDocument();
+  });
+
+  // --- add-to-existing mode (share-management task 003) ---
+
+  function shareDto(
+    overrides: Partial<ShareDto> & Pick<ShareDto, "id" | "title" | "status">,
+  ): ShareDto {
+    return {
+      item_count: 0,
+      created_at: "2026-08-01T00:00:00Z",
+      expires_at: null,
+      revoked_at: null,
+      ...overrides,
+    };
+  }
+
+  const PICKER_SHARES: ShareDto[] = [
+    shareDto({ id: "s1", title: "Movie night", status: "active", item_count: 2 }),
+    shareDto({ id: "s2", title: "Grandma's visit", status: "active", item_count: 1 }),
+    shareDto({ id: "s3", title: "Old trip", status: "revoked" }),
+    shareDto({ id: "s4", title: "Stale", status: "expired" }),
+  ];
+
+  /** Fetch handler for the existing-mode surface: GET /api/shares, GET
+   * members per share id, POST append (204 unless overridden). */
+  function pickerFetch(opts: {
+    shares?: ShareDto[];
+    /** shareId -> member video ids. */
+    members?: Record<string, string[]>;
+    /** GET /api/shares/{id}/items override (e.g. a held response). */
+    membersResponse?: () => Response | Promise<Response>;
+    /** POST /api/shares/{id}/items override (default: 204). */
+    appendResponse?: () => Response | Promise<Response>;
+  }): FetchHandler {
+    const shares = opts.shares ?? PICKER_SHARES;
+    return (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/shares" && method === "GET") return jsonResponse(shares);
+      const items = url.match(/^\/api\/shares\/([^/]+)\/items$/);
+      if (items) {
+        const shareId = decodeURIComponent(items[1]!);
+        if (method === "GET") {
+          if (opts.membersResponse) return opts.membersResponse();
+          const ids = opts.members?.[shareId] ?? [];
+          return jsonResponse(ids.map((id) => ({ id })));
+        }
+        if (method === "POST") {
+          return opts.appendResponse ? opts.appendResponse() : new Response(null, { status: 204 });
+        }
+      }
+      return jsonError(404, `unmocked ${method} ${url}`);
+    };
+  }
+
+  function countRequests(
+    fetchSpy: { mock: { calls: [unknown, RequestInit?][] } },
+    predicate: (url: string, method: string) => boolean,
+  ): number {
+    return fetchSpy.mock.calls.filter(([input, init]) => {
+      const url = String(input);
+      const method = (init?.method as string | undefined) ?? "GET";
+      return predicate(url, method);
+    }).length;
+  }
+
+  function appendPostBodies(fetchSpy: {
+    mock: { calls: [unknown, RequestInit?][] };
+  }): { shareId: string; body: { video_ids?: string[] } }[] {
+    return fetchSpy.mock.calls
+      .map(([input, init]) => {
+        const url = String(input);
+        const method = (init?.method as string | undefined) ?? "GET";
+        const match = url.match(/^\/api\/shares\/([^/]+)\/items$/);
+        if (!match || method !== "POST") return null;
+        return {
+          shareId: decodeURIComponent(match[1]!),
+          body: JSON.parse(String(init?.body ?? "{}")) as { video_ids?: string[] },
+        };
+      })
+      .filter((c): c is { shareId: string; body: { video_ids?: string[] } } => c !== null);
+  }
+
+  async function openPicker(
+    fetchImplementation: FetchHandler,
+    videoIds = ["v1", "v2"],
+  ) {
+    const rendered = setupDialog(videoIds, fetchImplementation);
+    fireEvent.click(screen.getByRole("button", { name: "Add to existing" }));
+    return rendered;
+  }
+
+  async function selectShare(name: RegExp): Promise<void> {
+    fireEvent.click(await screen.findByRole("button", { name }));
+  }
+
+  it("defaults to the new-share form; the toggle switches modes", () => {
+    setupDialog(["v1"], pickerFetch({}));
+    expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/search shares/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to existing" }));
+    expect(screen.queryByLabelText(/title/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/search shares/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New share" }));
+    expect(screen.getByLabelText(/title/i)).toBeInTheDocument();
+  });
+
+  it("lists only active shares with title + item count", async () => {
+    await openPicker(pickerFetch({}));
+    await screen.findByRole("button", { name: /movie night/i });
+
+    expect(screen.getByRole("button", { name: /grandma's visit/i })).toBeInTheDocument();
+    expect(screen.queryByText(/old trip/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
+    // Per-row item counts (title + count render as one button label).
+    expect(screen.getByRole("button", { name: /movie night.*2 videos/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /grandma's visit.*1 video/i })).toBeInTheDocument();
+  });
+
+  it("filters by title substring case-insensitively, with zero extra requests", async () => {
+    const { fetchSpy } = await openPicker(pickerFetch({}));
+    await screen.findByRole("button", { name: /movie night/i });
+
+    fireEvent.change(screen.getByLabelText(/search shares/i), {
+      target: { value: "GRANDMA" },
+    });
+
+    expect(screen.getByRole("button", { name: /grandma's visit/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /movie night/i })).not.toBeInTheDocument();
+    // Client-side only: the shares list was fetched once, filtering added none.
+    expect(
+      countRequests(fetchSpy, (url, method) => url === "/api/shares" && method === "GET"),
+    ).toBe(1);
+  });
+
+  it("shows an empty state when no share matches the search", async () => {
+    await openPicker(pickerFetch({}));
+    await screen.findByRole("button", { name: /movie night/i });
+
+    fireEvent.change(screen.getByLabelText(/search shares/i), {
+      target: { value: "zzz" },
+    });
+
+    expect(screen.getByText(/no shares match/i)).toBeInTheDocument();
+  });
+
+  it("shows an empty state when the owner has no active shares", async () => {
+    await openPicker(
+      pickerFetch({
+        shares: [shareDto({ id: "s3", title: "Old trip", status: "revoked" })],
+      }),
+    );
+
+    expect(await screen.findByText(/no active shares/i)).toBeInTheDocument();
+  });
+
+  it("surfaces already-member videos and adds only the fresh ids in one POST", async () => {
+    const { fetchSpy, onClose } = await openPicker(
+      pickerFetch({ members: { s1: ["v9", "v1"] } }),
+    );
+    await selectShare(/movie night/i);
+
+    // v1 of {v1, v2} is already a member — the note says so.
+    expect(await screen.findByText(/1 of 2 already in this share/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to share" }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    const posts = appendPostBodies(fetchSpy);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].shareId).toBe("s1");
+    expect(posts[0].body.video_ids).toEqual(["v2"]);
+
+    // Success invalidates the still-active shares query — Settings sees
+    // the new item_count without another server-side nudge.
+    await waitFor(() =>
+      expect(
+        countRequests(fetchSpy, (url, method) => url === "/api/shares" && method === "GET"),
+      ).toBe(2),
+    );
+  });
+
+  it("keeps Add disabled until the selected share's members load", async () => {
+    let release: (value: Response) => void = () => {};
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const { fetchSpy } = await openPicker(
+      pickerFetch({ membersResponse: () => held }),
+    );
+    await selectShare(/movie night/i);
+
+    const add = screen.getByRole("button", { name: /add to share/i });
+    expect(add).toBeDisabled();
+
+    release(jsonResponse([{ id: "v9" }]));
+    // No overlap with {v1, v2} — both are fresh, so Add unlocks.
+    expect(
+      await screen.findByText(/not in this share yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add to share/i })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /add to share/i }));
+    await waitFor(() => expect(appendPostBodies(fetchSpy)).toHaveLength(1));
+  });
+
+  it("disables Add when every video is already a member", async () => {
+    const { fetchSpy } = await openPicker(
+      pickerFetch({ members: { s1: ["v1", "v2"] } }),
+    );
+    await selectShare(/movie night/i);
+
+    expect(await screen.findByText(/2 of 2 already in this share/i)).toBeInTheDocument();
+    const add = screen.getByRole("button", { name: /add to share/i });
+    expect(add).toBeDisabled();
+
+    fireEvent.click(add);
+    expect(appendPostBodies(fetchSpy)).toHaveLength(0);
+  });
+
+  it("surfaces an append error inline and stays open for retry", async () => {
+    let fails = true;
+    const { fetchSpy, onClose } = await openPicker(
+      pickerFetch({
+        members: { s1: ["v1"] },
+        appendResponse: () =>
+          fails ? jsonError(409, "share is revoked") : new Response(null, { status: 204 }),
+      }),
+    );
+    await selectShare(/movie night/i);
+    expect(await screen.findByText(/1 of 2 already in this share/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /add to share/i }));
+    expect(await screen.findByText(/share is revoked/i)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Retry from the same picker state succeeds.
+    fails = false;
+    fireEvent.click(screen.getByRole("button", { name: /add to share/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(appendPostBodies(fetchSpy)).toHaveLength(2);
+  });
+
+  it("preserves typed new-share fields across a mode round-trip", async () => {
+    setupDialog(["v1"], pickerFetch({}));
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: "my custom name" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add to existing" }));
+    await screen.findByLabelText(/search shares/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "New share" }));
+
+    expect(screen.getByLabelText(/title/i)).toHaveValue("my custom name");
+  });
+
+  it("ignores Escape while the append POST is in flight", async () => {
+    let release: (value: Response) => void = () => {};
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    const { onClose } = await openPicker(
+      pickerFetch({
+        members: { s1: ["v1"] },
+        appendResponse: () => held,
+      }),
+    );
+    await selectShare(/movie night/i);
+    expect(await screen.findByText(/1 of 2 already in this share/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /add to share/i }));
+    expect(await screen.findByRole("button", { name: /adding/i })).toBeDisabled();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The POST still completes — success closes the dialog.
+    release(new Response(null, { status: 204 }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 });

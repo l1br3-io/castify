@@ -1,4 +1,5 @@
-// Shares API client coverage (sharing tasks 002-004 contract).
+// Shares API client coverage (sharing tasks 002-004 contract, plus the
+// share-management append client, task 003).
 //
 // Asserts the exact paths/methods each client function hits (the share
 // surface is the security boundary — a wrong path silently changes which
@@ -9,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  appendToShare,
   createShare,
   fetchShareItems,
   fetchShareItemsOwned,
@@ -130,6 +132,28 @@ describe("shares owner client", () => {
     vi.stubGlobal("fetch", fetchSpy);
 
     await replaceShareItems("id/with/slash", ["v1"]);
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash/items");
+  });
+
+  it("appendToShare POSTs the fresh ids to /api/shares/{id}/items and resolves on 204", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await appendToShare("s1", ["v3", "v4"]);
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
+    expect(lastInit(fetchSpy).method).toBe("POST");
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({
+      video_ids: ["v3", "v4"],
+    });
+  });
+
+  it("appendToShare encodes the id", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await appendToShare("id/with/slash", ["v1"]);
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash/items");
   });

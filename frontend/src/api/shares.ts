@@ -106,6 +106,21 @@ export function replaceShareItems(shareId: string, videoIds: string[]): Promise<
 }
 
 /**
+ * `POST /api/shares/{id}/items` — append videos to a live share
+ * (share-management task 002). The caller sends only the not-yet-member
+ * ids in curation order; unlike the PUT, duplicates (in-request or
+ * already-member) are tolerated as idempotent no-ops — still 204. Only
+ * the empty request is a 400. Error contract otherwise mirrors the PUT:
+ * 404 unknown/foreign ids, 409 revoked/expired shares.
+ */
+export function appendToShare(shareId: string, videoIds: string[]): Promise<void> {
+  return apiFetch<void>(`/api/shares/${encodeURIComponent(shareId)}/items`, {
+    method: "POST",
+    body: { video_ids: videoIds },
+  });
+}
+
+/**
  * `GET /api/shares/{id}/items` — the current members for the edit dialog to
  * pre-check. Session-gated owner route: the recipient endpoint is
  * token-scoped and the raw token may not exist on this device (the server
