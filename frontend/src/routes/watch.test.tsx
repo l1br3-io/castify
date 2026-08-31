@@ -401,7 +401,10 @@ describe("WatchPage", () => {
       await screen.findByRole("heading", { name: "Share cat.mp4" }),
     ).toBeInTheDocument();
 
-    // Create → exactly one POST for this item with defaults omitted.
+    // Create → exactly one POST for this item with defaults omitted. The
+    // generated-name prefill is cleared first — title semantics live in
+    // share-dialog.test.tsx; this test targets the page flow.
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
     let posts: [unknown, RequestInit?][] = [];
     await waitFor(() => {

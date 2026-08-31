@@ -9,7 +9,12 @@
 // Form contract (mirrors the server's `POST /api/shares` validation; the
 // server remains the enforcer — this is UX, not security):
 //   * title   — optional, trimmed, ≤200 chars (`maxLength` guards typing;
-//               empty-after-trim is omitted from the body);
+//               empty-after-trim is omitted from the body). The field is
+//               prefilled with a generated name (`lib/share-names.ts`) on
+//               open — once per mount, via the useState initializer, so
+//               rerenders never fight the user's typing; the reroll button
+//               replaces the value with a fresh draw; clearing it restores
+//               the title-less body (server `DEFAULT_TITLE` backstop);
 //   * password — optional, 8..=256 characters when non-empty;
 //   * expiry  — preset select: 1 day / 7 days / 30 days / never. Presets
 //               become an RFC3339 `expires_at` at submit time; "never"
@@ -35,6 +40,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { createShare, type CreatedShareDto } from "../api/shares";
 import { describeError } from "../lib/format";
+import { generateShareName } from "../lib/share-names";
 import { saveShareLink } from "../lib/share-links-db";
 import { absoluteShareUrl, SHARES_QUERY_KEY } from "../hooks/use-shares";
 import { CopyLinkButton } from "./copy-link-button";
@@ -79,7 +85,9 @@ export function ShareDialog({
   itemLabel: string;
   onClose: () => void;
 }) {
-  const [title, setTitle] = useState("");
+  // Lazy initializer = one draw per mount; rerenders (typing, expiry
+  // changes, pending state) reuse the state, never redraw over the user.
+  const [title, setTitle] = useState(() => generateShareName());
   const [password, setPassword] = useState("");
   const [expiry, setExpiry] = useState<ExpiryPreset>("never");
   const [created, setCreated] = useState<CreatedShareDto | null>(null);
@@ -165,15 +173,30 @@ export function ShareDialog({
               {" "}without an account.
             </p>
 
-            <label className="block space-y-1 text-sm">
-              <span className="opacity-70">Title (optional)</span>
-              <input
-                value={title}
-                maxLength={TITLE_MAX}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-              />
-            </label>
+            <div className="space-y-1 text-sm">
+              <label htmlFor="share-dialog-title-input" className="block opacity-70">
+                Title (optional)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="share-dialog-title-input"
+                  value={title}
+                  maxLength={TITLE_MAX}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="min-w-0 flex-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+                />
+                {/* Reroll sits outside the label so its click targets the
+                    button, not the input's label-forwarding. */}
+                <button
+                  type="button"
+                  aria-label="Reroll name"
+                  onClick={() => setTitle(generateShareName())}
+                  className="shrink-0 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]"
+                >
+                  Reroll
+                </button>
+              </div>
+            </div>
 
             <label className="block space-y-1 text-sm">
               <span className="opacity-70">Password (optional)</span>

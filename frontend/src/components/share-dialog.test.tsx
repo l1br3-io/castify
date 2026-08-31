@@ -1,6 +1,12 @@
-// Tests for the share-creation dialog (task 012).
+// Tests for the share-creation dialog (task 012, extended by
+// share-management task 001).
 //
 // Behavior under test, per the task acceptance criteria:
+//   * the title field opens prefilled with a generated name; a reroll
+//     control replaces it with a fresh draw; the prefill runs once per
+//     mount and never fights the user's typing (share-management task
+//     001 — the generator itself is unit-tested in lib/share-names.test,
+//     and is mocked here so dialog behavior is decoupled from RNG draws);
 //   * password field enforces the 8..=256 policy client-side — an invalid
 //     password shows an inline error and blocks the POST entirely (the
 //     server remains the enforcer; this is UX, not security);
@@ -8,10 +14,11 @@
 //     video ids (curation order preserved), trimmed title, password, and
 //     an RFC3339 expires_at computed from the chosen preset;
 //   * omitting optional fields sends them omitted — no empty strings, no
-//     never-expiry timestamp;
+//     never-expiry timestamp; clearing the prefilled title restores that
+//     omission (server default backstop unchanged);
 //   * on success the dialog shows the absolute link exactly once with a
-//     copy button and a "created once" warning, and stores the link in
-//     the per-device IndexedDB store so Settings can re-copy it later;
+//     copy button and a "created once" warning, and stores the link in the
+//     per-device IndexedDB store so Settings can re-copy it later;
 //   * a failed POST surfaces the error and stays on the form for retry.
 //
 // The IndexedDB link store is mocked at the module boundary (jsdom has no
@@ -29,11 +36,16 @@ import {
 } from "../test/utils";
 import { setCsrfToken } from "../api/client";
 import { saveShareLink } from "../lib/share-links-db";
+import { generateShareName } from "../lib/share-names";
 
 vi.mock("../lib/share-links-db", () => ({
   getShareLinkMap: vi.fn(),
   saveShareLink: vi.fn(),
   deleteShareLink: vi.fn(),
+}));
+
+vi.mock("../lib/share-names", () => ({
+  generateShareName: vi.fn(),
 }));
 
 const CREATED_BODY = {
@@ -87,12 +99,58 @@ describe("ShareDialog", () => {
   beforeEach(() => {
     setCsrfToken("csrf-test");
     vi.mocked(saveShareLink).mockResolvedValue(undefined);
+    // Deterministic prefill for every test; reroll tests layer
+    // mockReturnValueOnce sequences on top after resetting.
+    vi.mocked(generateShareName).mockReturnValue("quiet-harbor-42");
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
       configurable: true,
     });
   });
   afterEach(() => setCsrfToken(null));
+
+  // --- generated-name prefill + reroll (share-management task 001) ---
+
+  it("opens with the title prefilled by the generator", () => {
+    setupDialog(["v1"], createShareFetch());
+
+    expect(screen.getByLabelText(/title/i)).toHaveValue("quiet-harbor-42");
+  });
+
+  it("keeps the user's edit — prefill never fights typing on rerender", () => {
+    setupDialog(["v1"], createShareFetch());
+
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: "quiet-harbor-42!" },
+    });
+    // Force an unrelated rerender; the title must survive it.
+    fireEvent.change(screen.getByLabelText(/expires/i), {
+      target: { value: "7" },
+    });
+    expect(screen.getByLabelText(/title/i)).toHaveValue("quiet-harbor-42!");
+  });
+
+  it("reroll replaces the prefilled name with a fresh draw", () => {
+    vi.mocked(generateShareName)
+      .mockReset()
+      .mockReturnValueOnce("quiet-harbor-42")
+      .mockReturnValueOnce("amber-lantern-07");
+    setupDialog(["v1"], createShareFetch());
+
+    fireEvent.click(screen.getByRole("button", { name: /reroll/i }));
+
+    expect(screen.getByLabelText(/title/i)).toHaveValue("amber-lantern-07");
+  });
+
+  it("submits the prefilled title as-is", async () => {
+    const { fetchSpy } = setupDialog(["v1"], createShareFetch());
+
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+
+    await screen.findByText(/only once/i);
+    const calls = postCalls(fetchSpy);
+    expect(calls[0].body.title).toBe("quiet-harbor-42");
+  });
 
   // --- client-side password policy (8..=256) ---
 
@@ -160,9 +218,12 @@ describe("ShareDialog", () => {
     expect(expiresAt.getTime()).toBeLessThanOrEqual(expectedMax);
   });
 
-  it("omits title, password, and expires_at when left at defaults", async () => {
+  it("omits title, password, and expires_at when the prefill is cleared", async () => {
     const { fetchSpy } = setupDialog(["v1"], createShareFetch());
 
+    // Clearing the generated name restores the title-less body — the
+    // server's DEFAULT_TITLE backstop applies, exactly as before prefill.
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
 
     await screen.findByText(/only once/i);

@@ -1181,6 +1181,10 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
     expect(
       await screen.findByRole("heading", { name: "Share 2 videos" }),
     ).toBeInTheDocument();
+    // Create → one POST in click order. The generated-name prefill is
+    // cleared first — title semantics live in share-dialog.test.tsx; this
+    // test targets the page flow.
+    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
 
     let posts: [unknown, RequestInit?][] = [];
