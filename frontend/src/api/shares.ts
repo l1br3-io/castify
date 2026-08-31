@@ -2,10 +2,10 @@
 //
 // Two halves of one feature:
 //
-//   * Owner client — session-gated `/api/shares` (create/list/revoke) and
-//     `/api/shares/{id}/items` (replace/fetch members for the edit dialog,
-//     docs/specs/mutable-share-list) for the Settings management page
-//     (task 011) and creation dialogs (task 012). Mutations ride the
+//   * Owner client — session-gated `/api/shares` (create/list/revoke/purge)
+//     and `/api/shares/{id}/items` (replace/fetch members for the edit
+//     dialog, docs/specs/mutable-share-list) for the Settings management
+//     page (task 011) and creation dialogs (task 012). Mutations ride the
 //     normal CSRF flow in `apiFetch`.
 //   * Recipient client — pre-auth `/api/share/{token}/...` (resolve/items/
 //     unlock) for the public landing page (task 009). The HttpOnly unlock
@@ -89,6 +89,20 @@ export function revokeShare(shareId: string): Promise<void> {
   return apiFetch<void>(`/api/shares/${encodeURIComponent(shareId)}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * `DELETE /api/shares/{id}?purge=true` — purge (hard delete,
+ * share-management task 004). Where `revokeShare` keeps the record (the
+ * row survives with a revoked status), this removes it entirely: the
+ * refetched list no longer includes the share and the recipient link
+ * 404s instead of revoke's 410. Idempotent for unknown ids.
+ */
+export function deleteShare(shareId: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/shares/${encodeURIComponent(shareId)}?purge=true`,
+    { method: "DELETE" },
+  );
 }
 
 /**

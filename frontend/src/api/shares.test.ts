@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   appendToShare,
   createShare,
+  deleteShare,
   fetchShareItems,
   fetchShareItemsOwned,
   fetchShares,
@@ -112,6 +113,25 @@ describe("shares owner client", () => {
     await revokeShare("id/with/slash");
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash");
+  });
+
+  it("deleteShare DELETEs with purge=true and resolves on 204", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await deleteShare("s1");
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1?purge=true");
+    expect(lastInit(fetchSpy).method).toBe("DELETE");
+  });
+
+  it("deleteShare encodes the id", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await deleteShare("id/with/slash");
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash?purge=true");
   });
 
   it("replaceShareItems PUTs the full replacement list and resolves on 204", async () => {

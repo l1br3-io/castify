@@ -16,14 +16,19 @@
 //
 // Manage: active rows get a "Manage" button (share-manage-page task 003)
 // that navigates to `/settings/shares/:id` — the detail page owns removal
-// (task 004) and adding (task 005). Revoked/expired rows render status
-// only.
+// (task 004) and adding (task 005).
+//
+// Delete (share-management task 005): every row, any status. Revoke is
+// "kill the link, keep the record" — the row flips to revoked in place.
+// Delete is `DELETE /api/shares/{id}?purge=true` — the row leaves the
+// list on refetch and the recipient link 404s. Both confirm first and
+// drop the per-device IndexedDB link entry on success.
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { revokeShare, type ShareDto } from "../api/shares";
+import { deleteShare, revokeShare, type ShareDto } from "../api/shares";
 import { describeError, formatDate } from "../lib/format";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
@@ -122,6 +127,15 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
     },
   });
 
+  const del = useMutation({
+    mutationFn: () => deleteShare(share.id),
+    onSuccess: () => {
+      // Refetch rather than patching locally — the server owns the list.
+      void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
+      void deleteShareLink(share.id);
+    },
+  });
+
   function handleRevoke(): void {
     if (
       window.confirm(
@@ -129,6 +143,17 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       )
     ) {
       revoke.mutate();
+    }
+  }
+
+  function handleDelete(): void {
+    if (
+      window.confirm(
+        `Delete "${share.title}"? Recipients with the link immediately ` +
+          `lose access, and the share is removed permanently from this list.`,
+      )
+    ) {
+      del.mutate();
     }
   }
 
@@ -171,9 +196,22 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
             </button>
           </>
         )}
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={del.isPending}
+          className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+        >
+          {del.isPending ? "Deleting…" : "Delete"}
+        </button>
         {revoke.isError && (
           <p className="text-xs text-[var(--color-castify-accent-dim)]">
             {describeError(revoke.error)}
+          </p>
+        )}
+        {del.isError && (
+          <p className="text-xs text-[var(--color-castify-accent-dim)]">
+            {describeError(del.error)}
           </p>
         )}
       </div>

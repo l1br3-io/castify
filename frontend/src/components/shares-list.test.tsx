@@ -13,6 +13,11 @@
 //     render status only — matches the server's 409), opens the edit
 //     dialog for that share, and a saved edit flows back into the row's
 //     item count via the shares-query invalidation the dialog fires.
+//   * delete (share-management task 005) renders on every status: confirm
+//     → one DELETE with `purge=true` → the row disappears after the
+//     refetch (the server owns the list), the per-device IndexedDB link
+//     entry is dropped, the button disables while in flight, and a
+//     failure surfaces inline without dropping the row.
 //
 // The IndexedDB link store is mocked at the module boundary (jsdom has no
 // IndexedDB); fetch is stubbed through renderWithProviders' fetchSpy.
@@ -337,6 +342,145 @@ describe("SharesSection", () => {
         );
       }),
     ).toHaveLength(0);
+
+    confirmSpy.mockRestore();
+  });
+
+  it("renders Delete on active, expired, and revoked rows", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
+    });
+
+    await screen.findByText("Trip footage");
+    expect(
+      screen.getAllByRole("button", { name: /^delete$/i }),
+    ).toHaveLength(3);
+  });
+
+  it("deletes after confirmation: purge DELETE, refetch drops the row, link entry removed", async () => {
+    vi.mocked(getShareLinkMap).mockResolvedValue({ s1: "/share/tok_abc" });
+    // Holder the fetch dispatch reads per call, so the post-delete GET
+    // serves the server's purged (empty) list — the row must vanish via
+    // refetch, not local patching.
+    let current = [ACTIVE];
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/shares" && method === "GET")
+          return jsonResponse(current);
+        if (url === "/api/shares/s1?purge=true" && method === "DELETE") {
+          current = [];
+          return new Response(null, { status: 204 });
+        }
+        return jsonError(404, `unmocked ${method} ${url}`);
+      },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    // The confirm copy must be distinct from revoke's soft-delete wording.
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining("removed permanently from this list"),
+    );
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.some(([input, init]) => {
+          const url = String(input);
+          return (
+            url === "/api/shares/s1?purge=true" &&
+            (init?.method ?? "GET") === "DELETE"
+          );
+        }),
+      ).toBe(true);
+    });
+
+    // Row disappears after the refetch — the server owns the list.
+    await waitFor(() =>
+      expect(screen.queryByText("Trip footage")).not.toBeInTheDocument(),
+    );
+    // The dead link is dropped from the local store.
+    await waitFor(() =>
+      expect(deleteShareLink).toHaveBeenCalledWith("s1"),
+    );
+
+    confirmSpy.mockRestore();
+  });
+
+  it("disables Delete while the purge is in flight", async () => {
+    let current = [ACTIVE];
+    let resolveDelete: ((response: Response) => void) | undefined;
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/shares" && method === "GET")
+          return jsonResponse(current);
+        if (url === "/api/shares/s1?purge=true" && method === "DELETE")
+          return new Promise<Response>((resolve) => {
+            resolveDelete = resolve;
+          });
+        return jsonError(404, `unmocked ${method} ${url}`);
+      },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    expect(
+      await screen.findByRole("button", { name: /deleting/i }),
+    ).toBeDisabled();
+
+    current = [];
+    resolveDelete!(new Response(null, { status: 204 }));
+    await waitFor(() =>
+      expect(screen.queryByText("Trip footage")).not.toBeInTheDocument(),
+    );
+
+    confirmSpy.mockRestore();
+  });
+
+  it("does not purge when the delete confirm dialog is cancelled", async () => {
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(
+      fetchSpy.mock.calls.filter(([input, init]) => {
+        const url = String(input);
+        return (
+          String(url).includes("purge=true") &&
+          (init?.method ?? "GET") === "DELETE"
+        );
+      }),
+    ).toHaveLength(0);
+
+    confirmSpy.mockRestore();
+  });
+
+  it("surfaces a delete failure inline without dropping the row", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/shares" && method === "GET")
+          return jsonResponse([ACTIVE]);
+        if (url === "/api/shares/s1?purge=true" && method === "DELETE")
+          return jsonError(500, "purge failed");
+        return jsonError(404, `unmocked ${method} ${url}`);
+      },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+
+    expect(await screen.findByText(/purge failed/i)).toBeInTheDocument();
+    expect(screen.getByText("Trip footage")).toBeInTheDocument();
 
     confirmSpy.mockRestore();
   });
