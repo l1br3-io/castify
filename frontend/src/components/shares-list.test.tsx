@@ -18,12 +18,18 @@
 //     refetch (the server owns the list), the per-device IndexedDB link
 //     entry is dropped, the button disables while in flight, and a
 //     failure surfaces inline without dropping the row.
+//   * search + status chips (share-management task 006): the list mounts
+//     with the Active chip applied (past shares hidden until asked for);
+//     title search is a case-insensitive substring ANDed with the chip;
+//     chip counts are scoped to the current query; filtering is entirely
+//     client-side over the cached list, so the fetch-call count must stay
+//     at the single mount GET across every filter interaction.
 //
 // The IndexedDB link store is mocked at the module boundary (jsdom has no
 // IndexedDB); fetch is stubbed through renderWithProviders' fetchSpy.
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { SharesSection } from "./shares-list";
@@ -150,13 +156,151 @@ describe("SharesSection", () => {
 
     expect(await screen.findByText("Trip footage")).toBeInTheDocument();
     expect(screen.getByText(/3 items/)).toBeInTheDocument();
+    // Default view (Active chip): two active rows, the revoked one hidden.
     expect(screen.getAllByText("Active")).toHaveLength(2);
+    expect(screen.queryByText("Old share")).not.toBeInTheDocument();
+
+    // All reveals past shares, preserving the server's newest-first order.
+    fireEvent.click(screen.getByRole("button", { name: /^all/i }));
+    expect(screen.getByText("Old share")).toBeInTheDocument();
     expect(screen.getByText("Revoked")).toBeInTheDocument();
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
+    ).toEqual(["Trip footage", "Wedding cut", "Old share"]);
 
     // Single GET on mount, no polling.
     await waitFor(() =>
       expect(countShareListCalls(fetchSpy)).toBe(1),
     );
+  });
+
+  it("mounts with the Active chip applied — past shares invisible until asked for", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
+    });
+
+    await screen.findByText("Trip footage");
+    expect(
+      screen.getByRole("button", { name: /^active/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^all/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.queryByText("Old share")).not.toBeInTheDocument();
+    expect(screen.queryByText("Stale share")).not.toBeInTheDocument();
+
+    // One chip at a time: pressing All drops Active's pressed state.
+    fireEvent.click(screen.getByRole("button", { name: /^all/i }));
+    expect(screen.getByText("Old share")).toBeInTheDocument();
+    expect(screen.getByText("Stale share")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^active/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    // …and the Revoked chip narrows to revoked rows only.
+    fireEvent.click(screen.getByRole("button", { name: /^revoked/i }));
+    expect(screen.getByText("Old share")).toBeInTheDocument();
+    expect(screen.queryByText("Trip footage")).not.toBeInTheDocument();
+    expect(screen.queryByText("Stale share")).not.toBeInTheDocument();
+  });
+
+  it("searches by case-insensitive title substring, ANDed with the chip", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
+    });
+
+    const search = await screen.findByRole("searchbox", {
+      name: /search shares/i,
+    });
+
+    fireEvent.change(search, { target: { value: "TRIP" } });
+    expect(screen.getByText("Trip footage")).toBeInTheDocument();
+    expect(screen.queryByText("Old share")).not.toBeInTheDocument();
+
+    // A query matching only past shares empties the Active view…
+    fireEvent.change(search, { target: { value: "share" } });
+    expect(screen.queryByText("Trip footage")).not.toBeInTheDocument();
+    expect(screen.getByText(/no shares match/i)).toBeInTheDocument();
+
+    // …but the same query under the Revoked chip shows the revoked row.
+    fireEvent.click(screen.getByRole("button", { name: /^revoked/i }));
+    expect(screen.getByText("Old share")).toBeInTheDocument();
+    expect(screen.queryByText("Stale share")).not.toBeInTheDocument();
+  });
+
+  it("issues zero network requests across search and chip interactions", async () => {
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
+    });
+
+    await screen.findByText("Trip footage");
+    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
+      target: { value: "share" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^expired/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^all/i }));
+    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^active/i }));
+
+    expect(await screen.findByText("Trip footage")).toBeInTheDocument();
+    // Filtering is client-side over the cached list: still exactly the
+    // single mount GET.
+    expect(countShareListCalls(fetchSpy)).toBe(1);
+  });
+
+  it("scopes chip counts to the current search query", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([
+        ACTIVE,
+        OTHER_DEVICE,
+        REVOKED,
+        EXPIRED,
+      ]),
+    });
+
+    await screen.findByText("Trip footage");
+    expect(
+      screen.getByRole("button", { name: "Active 2" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Expired 1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Revoked 1" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All 4" })).toBeInTheDocument();
+
+    // "share" matches only the two past shares — counts follow the query.
+    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
+      target: { value: "share" },
+    });
+    expect(
+      screen.getByRole("button", { name: "Active 0" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All 2" })).toBeInTheDocument();
+  });
+
+  it("shows the no-match empty state for a non-matching search", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    await screen.findByText("Trip footage");
+    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
+      target: { value: "nonexistent" },
+    });
+
+    // Filter-excluded, not share-less — a distinct empty state, and the
+    // controls stay up so the filter can be cleared.
+    expect(screen.getByText(/no shares match/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no shares yet/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("searchbox", { name: /search shares/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows an empty state when the owner has no shares", async () => {
@@ -290,10 +434,14 @@ describe("SharesSection", () => {
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
+    // Reveal every status: the row must survive the revoke flip in view —
+    // under the default Active chip it would (correctly) vanish instead.
+    fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
+
     fireEvent.click(
       await screen.findByRole("button", { name: /copy link/i }),
     ); // ensure the row rendered with a link
-    fireEvent.click(screen.getByRole("button", { name: /revoke/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
 
     expect(confirmSpy).toHaveBeenCalled();
     await waitFor(() => {
@@ -307,10 +455,11 @@ describe("SharesSection", () => {
       ).toBe(true);
     });
 
-    // Row stays in the list and flips to the revoked state in place.
-    expect(await screen.findByText("Trip footage")).toBeInTheDocument();
+    // Row stays in the list and flips to the revoked state in place
+    // (scoped to the row — the status chips also say "Revoked").
+    const row = (await screen.findByText("Trip footage")).closest("li")!;
     await waitFor(() =>
-      expect(screen.getByText(/revoked/i)).toBeInTheDocument(),
+      expect(within(row).getByText(/revoked/i)).toBeInTheDocument(),
     );
     expect(
       screen.queryByRole("button", { name: /copy link/i }),
@@ -330,7 +479,7 @@ describe("SharesSection", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     fireEvent.click(
-      await screen.findByRole("button", { name: /revoke/i }),
+      await screen.findByRole("button", { name: /^revoke$/i }),
     );
 
     expect(confirmSpy).toHaveBeenCalled();
@@ -351,7 +500,10 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
     });
 
-    await screen.findByText("Trip footage");
+    // All statuses on screen at once (the default Active chip would hide
+    // the past rows — that hiding is covered by its own test above).
+    fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
+
     expect(
       screen.getAllByRole("button", { name: /^delete$/i }),
     ).toHaveLength(3);
@@ -490,7 +642,9 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
     });
 
-    await screen.findByText("Trip footage");
+    // All rows visible so this tests the status gating, not the filter.
+    fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
+
     expect(
       screen.getAllByRole("link", { name: /manage/i }),
     ).toHaveLength(1);

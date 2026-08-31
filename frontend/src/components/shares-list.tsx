@@ -23,6 +23,14 @@
 // Delete is `DELETE /api/shares/{id}?purge=true` — the row leaves the
 // list on refetch and the recipient link 404s. Both confirm first and
 // drop the per-device IndexedDB link entry on success.
+//
+// Search + status chips (share-management task 006): everything is a
+// synchronous client-side pass over the cached `useShares` data — zero
+// network requests, and the server's newest-first order is preserved
+// (filtering never re-sorts). The status chips default to Active: past
+// shares stay hidden until their chip (or All) is asked for. Chip counts
+// are scoped to the current search so they double as "how many of each
+// the query still finds".
 
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -36,6 +44,16 @@ import { CopyLinkButton } from "./copy-link-button";
 import { StatusBadge } from "./status-badge";
 import { ErrorState } from "./ui/error-state";
 import { Skeleton } from "./ui/skeleton";
+
+/** Chip values: the three server statuses plus "all". */
+type StatusFilter = ShareDto["status"] | "all";
+
+const STATUS_FILTERS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
+  { value: "active", label: "Active" },
+  { value: "expired", label: "Expired" },
+  { value: "revoked", label: "Revoked" },
+  { value: "all", label: "All" },
+];
 
 export function SharesSection() {
   return (
@@ -56,6 +74,10 @@ export function SharesSection() {
 
 function SharesList() {
   const query = useShares();
+
+  // Default Active (spec decision: past shares hide until asked for).
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Local link map, read once on mount — it only changes when this browser
   // creates or revokes a share.
@@ -101,16 +123,77 @@ function SharesList() {
     );
   }
 
+  // No debounce: this is a synchronous in-memory pass over the cached
+  // list — nothing async happens, so there is nothing to wait for (unlike
+  // the edit dialog's debounced search, which fronts a fetch-backed
+  // picker). Filter (search AND chip), never re-sort — the server's
+  // newest-first order stands.
+  const needle = searchQuery.trim().toLowerCase();
+  const searched = needle
+    ? shares.filter((s) => s.title.toLowerCase().includes(needle))
+    : shares;
+  const visible =
+    statusFilter === "all"
+      ? searched
+      : searched.filter((s) => s.status === statusFilter);
+  const countFor = (filter: StatusFilter): number =>
+    filter === "all"
+      ? searched.length
+      : searched.filter((s) => s.status === filter).length;
+
   return (
-    <ul className="space-y-3">
-      {shares.map((share) => (
-        <ShareRow
-          key={share.id}
-          share={share}
-          linkPath={linkMap?.[share.id] ?? null}
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div
+          role="group"
+          aria-label="Filter by status"
+          className="flex flex-wrap gap-1"
+        >
+          {STATUS_FILTERS.map(({ value, label }) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={statusFilter === value}
+              onClick={() => setStatusFilter(value)}
+              className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+                statusFilter === value
+                  ? "keycap-active"
+                  : "keycap-inactive"
+              }`}
+            >
+              {label} {countFor(value)}
+            </button>
+          ))}
+        </div>
+        <input
+          type="search"
+          aria-label="Search shares by title"
+          placeholder="Search shares…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-44 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
         />
-      ))}
-    </ul>
+      </div>
+
+      {visible.length === 0 ? (
+        <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
+          <p className="font-medium">No shares match</p>
+          <p className="mt-2 text-sm opacity-60">
+            Try a different search or status filter.
+          </p>
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {visible.map((share) => (
+            <ShareRow
+              key={share.id}
+              share={share}
+              linkPath={linkMap?.[share.id] ?? null}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
