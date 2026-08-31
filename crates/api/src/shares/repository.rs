@@ -7,6 +7,7 @@
 
 use chrono::Utc;
 use sqlx::SqlitePool;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::shares::ShareResult;
@@ -222,6 +223,69 @@ impl ShareRepository {
         tx.commit().await?;
 
         Ok(deleted + video_ids.len() as u64)
+    }
+
+    /// Owner-scoped append. One transaction: guard on exists + owned +
+    /// not revoked, load the existing member ids, dedupe the request
+    /// (both in-request and against current members), and insert the
+    /// remainder at `MAX(position)+1..` in request order — existing
+    /// members keep both their membership and their positions. A bogus
+    /// video id trips the FK and rolls the whole append back, so the
+    /// list survives intact (same atomicity shape as
+    /// [`ShareRepository::replace_items`]).
+    ///
+    /// Returns the item rows inserted. `Ok(0)` means either the guard
+    /// rejected the write (not found, not owned, or revoked — routes
+    /// call [`ShareRepository::fetch_owned`] first to map 404 vs 409) or
+    /// every requested id was already a member (an idempotent no-op, a
+    /// success at the route layer).
+    pub async fn append_items(
+        &self,
+        owner_id: &str,
+        share_id: &str,
+        video_ids: &[String],
+    ) -> ShareResult<u64> {
+        let mut tx = self.pool.begin().await?;
+        let live: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM shares WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+        )
+        .bind(share_id)
+        .bind(owner_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if live.is_none() {
+            // Dropping the tx rolls back — nothing was written.
+            return Ok(0);
+        }
+        let members: Vec<String> =
+            sqlx::query_scalar("SELECT video_id FROM share_items WHERE share_id = ?")
+                .bind(share_id)
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut seen: HashSet<&str> = members.iter().map(String::as_str).collect();
+        let mut position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM share_items WHERE share_id = ?",
+        )
+        .bind(share_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let mut written = 0u64;
+        for video_id in video_ids {
+            if !seen.insert(video_id) {
+                continue; // in-request or membership duplicate — skip
+            }
+            sqlx::query("INSERT INTO share_items (share_id, video_id, position) VALUES (?, ?, ?)")
+                .bind(share_id)
+                .bind(video_id)
+                .bind(position)
+                .execute(&mut *tx)
+                .await?;
+            position += 1;
+            written += 1;
+        }
+        tx.commit().await?;
+
+        Ok(written)
     }
 
     /// Membership guard — every mirror route's authorization check
@@ -692,6 +756,121 @@ mod tests {
         );
         // Neither guard failure touched the real share.
         assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_items_appends_after_existing_in_request_order() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4", "c.mp4", "d.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos[..2]))
+            .await
+            .unwrap();
+
+        // Request [c, a, d]: `a` is already a member, the rest append in
+        // request order after the existing tail.
+        let request = vec![videos[2].clone(), videos[0].clone(), videos[3].clone()];
+        let written = repo
+            .append_items(&owner.to_string(), &created.id, &request)
+            .await
+            .unwrap();
+        assert_eq!(written, 2, "only the non-member ids write rows");
+
+        let items = repo.list_items(&created.id).await.unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| i.video_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                videos[0].as_str(),
+                videos[1].as_str(),
+                videos[2].as_str(),
+                videos[3].as_str()
+            ],
+            "existing members keep their positions; new ids append in request order"
+        );
+        assert_eq!(
+            items.iter().map(|i| i.position).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "positions stay contiguous"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_items_where_every_id_is_already_a_member_writes_nothing() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        // Reversed on purpose: an all-duplicate append must not reorder.
+        let request = vec![videos[1].clone(), videos[0].clone(), videos[1].clone()];
+        assert_eq!(
+            repo.append_items(&owner.to_string(), &created.id, &request)
+                .await
+                .unwrap(),
+            0,
+            "an all-member request writes no rows"
+        );
+        assert_eq!(
+            repo.list_items(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|i| i.video_id.as_str())
+                .collect::<Vec<_>>(),
+            videos.iter().map(String::as_str).collect::<Vec<_>>(),
+            "membership and order are untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_items_on_foreign_missing_or_revoked_share_is_zero() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let stranger = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4", "b.mp4"]).await;
+        let created = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos[..1]))
+            .await
+            .unwrap();
+        let revoked = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos[..1]))
+            .await
+            .unwrap();
+        repo.revoke(&revoked.id).await.unwrap();
+
+        assert_eq!(
+            repo.append_items(&stranger.to_string(), &created.id, &videos[1..])
+                .await
+                .unwrap(),
+            0,
+            "foreign owner counts as not-found"
+        );
+        assert_eq!(
+            repo.append_items(&owner.to_string(), "missing-id", &videos[1..])
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            repo.append_items(&owner.to_string(), &revoked.id, &videos[1..])
+                .await
+                .unwrap(),
+            0,
+            "revoked share appends nothing — route layer maps the state"
+        );
+        // None of the guard failures touched the real shares.
+        assert_eq!(repo.list_items(&created.id).await.unwrap().len(), 1);
+        assert_eq!(repo.list_items(&revoked.id).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

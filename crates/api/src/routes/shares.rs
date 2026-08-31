@@ -4,6 +4,8 @@
 //!   * `POST   /api/shares`     — create a share (see [`create`])
 //!   * `GET    /api/shares`     — management list (see [`list`])
 //!   * `DELETE /api/shares/{id}` — revoke (see [`revoke`])
+//!   * `POST   /api/shares/{id}/items` — append to the item list (see
+//!     [`append_items`])
 //!   * `PUT    /api/shares/{id}/items` — replace the item list (see
 //!     [`replace_items`])
 //!   * `GET    /api/shares/{id}/items` — members for the edit dialog (see
@@ -65,6 +67,15 @@ pub struct CreateShareRequest {
 /// in curation order. Same shape rules as `CreateShareRequest::video_ids`.
 #[derive(Debug, Deserialize)]
 pub struct ReplaceItemsRequest {
+    pub video_ids: Vec<String>,
+}
+
+/// Body of `POST /api/shares/{id}/items`: the ids to append, in the
+/// order they should join the list's tail. Same shape as
+/// [`ReplaceItemsRequest`] except duplicates are tolerated (see
+/// [`append_items`]).
+#[derive(Debug, Deserialize)]
+pub struct AppendItemsRequest {
     pub video_ids: Vec<String>,
 }
 
@@ -366,6 +377,72 @@ pub async fn replace_items(
         share_id = %id,
         item_count = req.video_ids.len(),
         "share items replaced"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/shares/{id}/items` — append catalog videos to a live
+/// share's list.
+///
+/// Validation mirrors [`replace_items`], ordered cheap-first: request
+/// shape (non-empty) → owner/terminal check (`fetch_owned` 404,
+/// `derive_status` 409) → catalog existence (400) → one transactional
+/// write. Appending never rewrites existing membership or positions —
+/// new ids join at `MAX(position)+1..` in request order, so the
+/// handed-out link keeps working and serves the grown list on the
+/// recipient's next request.
+///
+/// DIVERGENCE from the PUT, on purpose: duplicate ids in the request
+/// are **tolerated**, not rejected. An id appearing twice in the request
+/// or already in the membership is skipped — an idempotent no-op that
+/// still returns 204. (The PUT rejects duplicates with 400 because a
+/// replacement list with dupes is ambiguous curation; an append has no
+/// such ambiguity — the first occurrence wins, later ones are already
+/// there.) Only the empty request is 400.
+pub async fn append_items(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(id): Path<String>,
+    Json(req): Json<AppendItemsRequest>,
+) -> ApiResult<StatusCode> {
+    let owner_id: Uuid = resolve_owner_id(&state, &jar).await?;
+
+    if req.video_ids.is_empty() {
+        return Err(ApiError::Validation {
+            detail: "video_ids must contain at least 1 item".to_string(),
+        });
+    }
+
+    let row = state
+        .share_repository()
+        .fetch_owned(&owner_id.to_string(), &id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let status = derive_status(
+        row.revoked_at.as_deref(),
+        row.expires_at.as_deref(),
+        Utc::now(),
+    );
+    if status != ShareStatus::Active {
+        return Err(ApiError::Conflict(format!("share is {}", status.as_str())));
+    }
+
+    for video_id in &req.video_ids {
+        if !state.catalog_repository().video_exists(video_id).await? {
+            return Err(ApiError::Validation {
+                detail: format!("video {video_id} does not exist in the catalog"),
+            });
+        }
+    }
+
+    state
+        .share_repository()
+        .append_items(&owner_id.to_string(), &id, &req.video_ids)
+        .await?;
+    tracing::info!(
+        share_id = %id,
+        requested = req.video_ids.len(),
+        "share items appended"
     );
     Ok(StatusCode::NO_CONTENT)
 }

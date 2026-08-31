@@ -1502,15 +1502,9 @@ async fn owner_session(app: &axum::Router) -> String {
         .expect("login sets a session cookie")
 }
 
-/// CSRF-correct `PUT /api/shares/{id}/items` — same double-submit shape
-/// as the SPA. Returns only the status (204 on success).
-async fn owner_replace_items(
-    app: &axum::Router,
-    session: &str,
-    share_id: &str,
-    video_ids: &[String],
-) -> StatusCode {
-    let csrf_response = app
+/// Fetch a CSRF token with the owner session (mirrors the SPA's boot flow).
+async fn csrf_token(app: &axum::Router, session: &str) -> String {
+    let response = app
         .clone()
         .oneshot(
             Request::builder()
@@ -1522,23 +1516,30 @@ async fn owner_replace_items(
         )
         .await
         .unwrap();
-    assert_eq!(csrf_response.status(), StatusCode::OK);
-    let bytes = csrf_response
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    let csrf: String = serde_json::from_slice::<Value>(&bytes).unwrap()["token"]
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice::<Value>(&bytes).unwrap()["token"]
         .as_str()
         .expect("csrf token")
-        .to_string();
+        .to_string()
+}
 
+/// CSRF-correct `PUT`/`POST /api/shares/{id}/items` — same double-submit
+/// shape as the SPA (PUT replaces, POST appends). Returns only the status
+/// (204 on success).
+async fn owner_mutate_items(
+    app: &axum::Router,
+    method: &str,
+    session: &str,
+    share_id: &str,
+    video_ids: &[String],
+) -> StatusCode {
+    let csrf = csrf_token(app, session).await;
     let response = app
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
+                .method(method)
                 .uri(format!("/api/shares/{share_id}/items"))
                 .header("cookie", format!("{session}; castify_csrf={csrf}"))
                 .header("x-csrf-token", &csrf)
@@ -1551,6 +1552,16 @@ async fn owner_replace_items(
         .await
         .unwrap();
     response.status()
+}
+
+/// CSRF-correct `PUT /api/shares/{id}/items` (replace).
+async fn owner_replace_items(
+    app: &axum::Router,
+    session: &str,
+    share_id: &str,
+    video_ids: &[String],
+) -> StatusCode {
+    owner_mutate_items(app, "PUT", session, share_id, video_ids).await
 }
 
 #[tokio::test]
@@ -1616,7 +1627,8 @@ async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
     );
 
     // Owner replaces the list, keeping only `kept`.
-    let status = owner_replace_items(&app, &session, &share.id, &[kept.clone()]).await;
+    let status =
+        owner_replace_items(&app, &session, &share.id, std::slice::from_ref(&kept)).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
     // After: the share itself is fine — resolve and items still serve,
@@ -1668,4 +1680,46 @@ async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
     .await;
     assert_eq!(status, StatusCode::OK, "kept video still serves: {body}");
     assert_eq!(body["strategy"], "cached");
+}
+
+// ------------------ append visibility (share management, task 002)
+
+#[tokio::test]
+async fn recipient_items_reflect_an_owner_append_immediately() {
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4", "d.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos[..2]).await;
+    let session = owner_session(&app).await;
+
+    // Append [c, a, d]: `a` is already a member (skipped, keeps its
+    // position), c and d join the tail in request order.
+    let append = vec![videos[2].clone(), videos[0].clone(), videos[3].clone()];
+    let status = owner_mutate_items(&app, "POST", &session, &share.id, &append).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The recipient's very next items read reflects the appended order —
+    // no cache, no propagation delay, by design.
+    let (status, body) = get(
+        app.clone(),
+        &format!("/api/share/{}/items", share.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    let ids: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        videos.iter().map(String::as_str).collect::<Vec<_>>(),
+        "appended order is visible to the recipient immediately"
+    );
+
+    // Resolve agrees on the grown count.
+    let (status, body) = get(app, &format!("/api/share/{}", share.token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["item_count"], 4);
 }

@@ -906,6 +906,242 @@ async fn replace_items_rejects_non_catalog_id_and_keeps_old_list() {
     );
 }
 
+// ----------------------------------------------------------- append items
+
+/// CSRF-correct `POST /api/shares/{id}/items` with the given video ids.
+async fn append_items(
+    app: &axum::Router,
+    session: &str,
+    share_id: &str,
+    video_ids: Vec<String>,
+) -> (StatusCode, Value) {
+    let csrf = fetch_csrf(app, session).await;
+    request(
+        app.clone(),
+        "POST",
+        &format!("/api/shares/{share_id}/items"),
+        Some(session),
+        Some((&csrf, &csrf)),
+        Some(json!({"video_ids": video_ids})),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn append_items_without_session_is_unauthorized() {
+    let (app, _state, _session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "POST",
+        "/api/shares/whatever/items",
+        None,
+        None,
+        Some(json!({"video_ids": ["x"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn append_items_without_csrf_is_forbidden() {
+    let (app, _state, session, _guard) = boot().await;
+    let (status, _) = request(
+        app,
+        "POST",
+        "/api/shares/whatever/items",
+        Some(&session),
+        None,
+        Some(json!({"video_ids": ["x"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn append_items_appends_new_ids_and_skips_duplicates() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4", "d.mp4"]).await;
+    let (_, created) = create_share(
+        &app,
+        &session,
+        json!({"title": "Trip", "video_ids": [&videos[0], &videos[1]]}),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // [c, a, d]: `a` is a member (skipped, keeps its position), c and d
+    // append in request order after the existing tail.
+    let (status, body) = append_items(
+        &app,
+        &session,
+        &id,
+        vec![videos[2].clone(), videos[0].clone(), videos[3].clone()],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body = {body}");
+
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "existing members keep their positions; new ids append in request order"
+    );
+
+    // The management list reflects the grown list (item_count is
+    // server-owned).
+    let (_, list) = request(app, "GET", "/api/shares", Some(&session), None, None).await;
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id.as_str())
+        .expect("share listed");
+    assert_eq!(entry["item_count"], 4);
+}
+
+#[tokio::test]
+async fn append_items_with_only_existing_members_is_204_and_writes_nothing() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // All-duplicate (in-request dupes included) is tolerated: 204, not 400.
+    let (status, body) = append_items(
+        &app,
+        &session,
+        &id,
+        vec![videos[1].clone(), videos[0].clone(), videos[1].clone()],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body = {body}");
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "an all-duplicate append must not reorder or duplicate"
+    );
+}
+
+#[tokio::test]
+async fn append_items_rejects_empty_list() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = append_items(&app, &session, &id, vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(body["message"].as_str().unwrap_or("").contains("item"));
+}
+
+#[tokio::test]
+async fn append_items_rejects_non_catalog_id_and_keeps_old_list() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let bogus = vec![videos[0].clone(), "not-a-video".to_string()];
+    let (status, body) = append_items(&app, &session, &id, bogus).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "a failed append must leave the old list intact"
+    );
+}
+
+#[tokio::test]
+async fn append_items_on_unknown_or_foreign_share_is_not_found() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+
+    // Unknown id: plain 404.
+    let (status, _) = append_items(
+        &app,
+        &session,
+        "00000000-0000-0000-0000-000000000000",
+        videos.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Foreign id: also plain 404 — no existence leak across owners.
+    let stranger_id = seed_stranger_share(state.pool(), &videos).await;
+    let (status, _) = append_items(&app, &session, &stranger_id, videos.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        persisted_items(state.pool(), &stranger_id).await,
+        videos,
+        "a foreign append must not touch the stranger's list"
+    );
+}
+
+#[tokio::test]
+async fn append_items_on_revoked_share_conflicts() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let csrf = fetch_csrf(&app, &session).await;
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/shares/{id}"),
+        Some(&session),
+        Some((&csrf, &csrf)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = append_items(&app, &session, &id, videos.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("share is revoked"),
+        "body = {body}"
+    );
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        videos,
+        "a rejected append must not touch the old list"
+    );
+}
+
+#[tokio::test]
+async fn append_items_on_expired_share_conflicts() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+
+    // The API refuses to create an already-expired share, so seed the row
+    // straight through the repository.
+    let id = castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &owner_uuid(state.pool()).await,
+            token_hash: &hash_share_token("expired-append-token"),
+            password_hash: None,
+            title: "Expired",
+            expires_at: Some("2000-01-01T00:00:00Z"),
+            video_ids: &videos[..1],
+        })
+        .await
+        .unwrap()
+        .id;
+
+    let (status, body) = append_items(&app, &session, &id, videos[1..].to_vec()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("share is expired"),
+        "body = {body}"
+    );
+}
+
 // --------------------------------------------------------------- get items
 
 #[tokio::test]
