@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
-use crate::crypto::{TokenBundle, TokenKey};
+use crate::crypto::{Credential, TokenKey};
 use crate::model::{
     DiscoveredFile, FileEntry, FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry,
     FolderFileEntry, FolderNode, FolderVideoEntry, NewConnection, NewVideo, PlaybackProgress,
@@ -178,7 +178,7 @@ impl CatalogRepository {
     ) -> CatalogResult<ProviderConnection> {
         let id = Uuid::new_v4().to_string();
         let now = iso_now();
-        let token_bytes = conn.token_bundle.encrypt_to_bytes(&self.token_key)?;
+        let token_bytes = conn.credential.encrypt_to_bytes(&self.token_key)?;
 
         sqlx::query(
             "INSERT INTO provider_connections \
@@ -387,11 +387,8 @@ impl CatalogRepository {
         Ok(result.rows_affected())
     }
 
-    /// Fetch and decrypt the token bundle for a connection.
-    pub async fn fetch_token_bundle(
-        &self,
-        connection_id: &str,
-    ) -> CatalogResult<Option<TokenBundle>> {
+    /// Fetch and decrypt the credential for a connection.
+    pub async fn fetch_credential(&self, connection_id: &str) -> CatalogResult<Option<Credential>> {
         let row = sqlx::query_scalar::<_, Option<Vec<u8>>>(
             "SELECT token_bundle FROM provider_connections WHERE id = ?",
         )
@@ -401,20 +398,20 @@ impl CatalogRepository {
 
         match row.flatten() {
             None => Ok(None),
-            Some(bytes) => Ok(Some(TokenBundle::decrypt_from_bytes(
+            Some(bytes) => Ok(Some(Credential::decrypt_from_bytes(
                 &self.token_key,
                 &bytes,
             )?)),
         }
     }
 
-    /// Re-encrypt and store a refreshed token bundle.
-    pub async fn update_token_bundle(
+    /// Re-encrypt and store a rotated credential.
+    pub async fn update_credential(
         &self,
         connection_id: &str,
-        bundle: &TokenBundle,
+        credential: &Credential,
     ) -> CatalogResult<()> {
-        let token_bytes = bundle.encrypt_to_bytes(&self.token_key)?;
+        let token_bytes = credential.encrypt_to_bytes(&self.token_key)?;
         sqlx::query("UPDATE provider_connections SET token_bundle = ? WHERE id = ?")
             .bind(&token_bytes)
             .bind(connection_id)
@@ -2277,7 +2274,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::crypto::{TokenBundle, TokenKey};
+    use crate::crypto::{Credential, TokenBundle, TokenKey};
 
     fn test_key() -> TokenKey {
         TokenKey::from_bytes(vec![42u8; 32]).unwrap()
@@ -2317,6 +2314,10 @@ mod tests {
         pool
     }
 
+    fn sample_credential() -> Credential {
+        Credential::OAuth(sample_bundle())
+    }
+
     fn sample_bundle() -> TokenBundle {
         TokenBundle {
             access_token: "ya29.test".into(),
@@ -2335,7 +2336,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("acct-1".into()),
                 provider_account_email: Some("user@example.com".into()),
             })
@@ -2360,16 +2361,51 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::Dropbox,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("db-acct".into()),
                 provider_account_email: None,
             })
             .await
             .unwrap();
 
-        let bundle = repo.fetch_token_bundle(&conn.id).await.unwrap().unwrap();
+        let credential = repo.fetch_credential(&conn.id).await.unwrap().unwrap();
+        let bundle = credential
+            .as_oauth()
+            .expect("stored OAuth credential must decode as OAuth");
         assert_eq!(bundle.access_token, "ya29.test");
         assert_eq!(bundle.refresh_token.as_deref(), Some("refresh"));
+    }
+
+    /// S3 credentials ride the same encrypted column and round-trip through
+    /// the repository unchanged.
+    #[tokio::test]
+    async fn s3_credentials_encrypt_and_decrypt() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn = repo
+            .create_connection(&NewConnection {
+                provider: Provider::Dropbox,
+                credential: Credential::S3(crate::crypto::S3Credentials {
+                    endpoint: "https://minio.local:9000".into(),
+                    region: "us-east-1".into(),
+                    bucket: "media".into(),
+                    access_key_id: "minioadmin".into(),
+                    secret_access_key: "minioadmin".into(),
+                }),
+                provider_account_id: Some("s3-acct".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+
+        let credential = repo.fetch_credential(&conn.id).await.unwrap().unwrap();
+        let crate::crypto::Credential::S3(s3) = credential else {
+            panic!("stored S3 credential must decode as S3");
+        };
+        assert_eq!(s3.endpoint, "https://minio.local:9000");
+        assert_eq!(s3.bucket, "media");
+        assert_eq!(s3.secret_access_key, "minioadmin");
     }
 
     #[tokio::test]
@@ -2379,7 +2415,7 @@ mod tests {
 
         repo.create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("a1".into()),
             provider_account_email: None,
         })
@@ -2389,7 +2425,7 @@ mod tests {
         let conn2 = repo
             .create_connection(&NewConnection {
                 provider: Provider::Dropbox,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a2".into()),
                 provider_account_email: None,
             })
@@ -2411,7 +2447,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("acct-active".into()),
                 provider_account_email: None,
             })
@@ -2439,7 +2475,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("acct-revive".into()),
                 provider_account_email: None,
             })
@@ -2480,7 +2516,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("acct-revive-2".into()),
                 provider_account_email: None,
             })
@@ -2686,7 +2722,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::OneDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("ms-1".into()),
                 provider_account_email: None,
             })
@@ -2726,7 +2762,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a1".into()),
                 provider_account_email: None,
             })
@@ -2766,7 +2802,7 @@ mod tests {
         let conn1 = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a1".into()),
                 provider_account_email: None,
             })
@@ -2775,7 +2811,7 @@ mod tests {
         let conn2 = repo
             .create_connection(&NewConnection {
                 provider: Provider::Dropbox,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a2".into()),
                 provider_account_email: None,
             })
@@ -2840,7 +2876,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a1".into()),
                 provider_account_email: None,
             })
@@ -2918,7 +2954,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a1".into()),
                 provider_account_email: None,
             })
@@ -2964,7 +3000,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a1".into()),
                 provider_account_email: None,
             })
@@ -3351,7 +3387,7 @@ mod tests {
         let db_conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::Dropbox,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("a2".into()),
                 provider_account_email: None,
             })

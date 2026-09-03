@@ -6,7 +6,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use castify_catalog::{NewConnection, Provider, TokenBundle};
+use castify_catalog::{Credential, NewConnection, Provider, TokenBundle};
 
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -435,6 +435,10 @@ async fn list_rejects_unauthenticated() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+fn sample_credential() -> Credential {
+    Credential::OAuth(sample_bundle())
+}
+
 fn sample_bundle() -> TokenBundle {
     TokenBundle {
         access_token: "ya29.test".into(),
@@ -450,7 +454,7 @@ async fn seed_connection(
 ) -> castify_catalog::ProviderConnection {
     repo.create_connection(&NewConnection {
         provider: Provider::GoogleDrive,
-        token_bundle: sample_bundle(),
+        credential: sample_credential(),
         provider_account_id: Some("acct-1".into()),
         provider_account_email: Some("user@example.com".into()),
     })
@@ -629,7 +633,7 @@ async fn find_active_connection_by_account_returns_none_when_seeded_account_id_i
     let (_app, _cookie, repo, _guard) = boot_and_setup().await;
     repo.create_connection(&NewConnection {
         provider: Provider::GoogleDrive,
-        token_bundle: sample_bundle(),
+        credential: sample_credential(),
         provider_account_id: None,
         provider_account_email: Some("user@example.com".into()),
     })
@@ -690,7 +694,7 @@ async fn reconnect_revives_soft_deleted_connection_preserving_identity() {
     let conn = repo
         .create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("acct-revive".into()),
             provider_account_email: Some("user@example.com".into()),
         })
@@ -742,7 +746,7 @@ async fn reconnect_revives_soft_deleted_connection_preserving_identity() {
         repo.revive_connection(&found.id).await.unwrap(),
         "revive_connection reports a soft-deleted row was revived"
     );
-    repo.update_token_bundle(&found.id, &sample_bundle())
+    repo.update_credential(&found.id, &sample_credential())
         .await
         .unwrap();
     // Rescan: the provider lists the same files again. ON CONFLICT DO

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::crypto::TokenBundle;
+use crate::crypto::Credential;
 use crate::model::{DiscoveredSubtitle, NewVideo, Provider, ScanState, ScanStatus};
 use crate::provider::{ProviderError, ProviderFactory};
 use crate::providers::common::{infer_subtitle_format, subtitle_base_name, video_base_name};
@@ -91,8 +91,8 @@ async fn run_scan_inner(
     provider_type: Provider,
     factory: &dyn ProviderFactory,
 ) -> Result<i64, String> {
-    let mut token = repo
-        .fetch_token_bundle(connection_id)
+    let mut credential = repo
+        .fetch_credential(connection_id)
         .await
         .map_err(|e| format!("failed to load token: {e}"))?
         .ok_or("connection not found")?;
@@ -122,7 +122,11 @@ async fn run_scan_inner(
         }
 
         let provider = factory
-            .create(&token)
+            .create(
+                credential
+                    .as_oauth()
+                    .ok_or("connection credential does not use OAuth tokens")?,
+            )
             .await
             .map_err(|e| format!("failed to create provider: {e}"))?;
 
@@ -164,19 +168,27 @@ async fn run_scan_inner(
             }
             Err(ProviderError::Unauthorized) if !refreshed => {
                 tracing::info!(connection_id = connection_id, "token expired, refreshing");
-                token = factory.refresh_token(&token).await.map_err(|e| match e {
-                    ProviderError::ReauthRequired => {
-                        // The provider's refresh grant itself is dead
-                        // (invalid_grant). Surface a clear, actionable
-                        // message — `docs/providers.md` documents this
-                        // exact recovery path.
-                        "provider authorization expired or was revoked; \
+                // GOTCHA: only OAuth credentials expire; static-credential
+                // providers never hit this arm (they don't return
+                // `Unauthorized` from a missing refresh grant).
+                let bundle = credential
+                    .as_oauth()
+                    .ok_or("connection credential does not use OAuth tokens")?;
+                let refreshed_bundle =
+                    factory.refresh_token(bundle).await.map_err(|e| match e {
+                        ProviderError::ReauthRequired => {
+                            // The provider's refresh grant itself is dead
+                            // (invalid_grant). Surface a clear, actionable
+                            // message — `docs/providers.md` documents this
+                            // exact recovery path.
+                            "provider authorization expired or was revoked; \
                              disconnect and reconnect the connection"
-                            .to_string()
-                    }
-                    other => format!("token refresh failed: {other}"),
-                })?;
-                repo.update_token_bundle(connection_id, &token)
+                                .to_string()
+                        }
+                        other => format!("token refresh failed: {other}"),
+                    })?;
+                credential = Credential::OAuth(refreshed_bundle);
+                repo.update_credential(connection_id, &credential)
                     .await
                     .map_err(|e| format!("failed to store refreshed token: {e}"))?;
                 refreshed = true;
@@ -211,7 +223,7 @@ async fn run_scan_inner(
     }
 
     // Dedup pass: compute prefix hashes for unhashed videos.
-    run_dedup_pass(repo, connection_id, provider_type, factory, &token).await;
+    run_dedup_pass(repo, connection_id, provider_type, factory, &credential).await;
 
     // Subtitle pass: match sidecar subtitles to videos by base name.
     run_subtitle_pass(repo, connection_id, &all_subtitles).await;
@@ -275,9 +287,16 @@ async fn run_dedup_pass(
     connection_id: &str,
     provider_type: Provider,
     factory: &dyn ProviderFactory,
-    token: &TokenBundle,
+    credential: &Credential,
 ) {
-    let provider = match factory.create(token).await {
+    let bundle = match credential.as_oauth() {
+        Some(bundle) => bundle,
+        None => {
+            tracing::warn!("skipped dedup pass: credential does not use OAuth tokens");
+            return;
+        }
+    };
+    let provider = match factory.create(bundle).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "skipped dedup pass: failed to create provider");
@@ -378,7 +397,7 @@ fn iso_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{TokenBundle, TokenKey};
+    use crate::crypto::{Credential, TokenBundle, TokenKey};
     use crate::model::{DiscoveredFile, DiscoveredVideo, FileKind, ListPage, Provider};
     use crate::provider::{ProviderResult, StreamResponse, ThumbnailData};
     use crate::repository::CatalogRepository;
@@ -417,6 +436,10 @@ mod tests {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
         pool
+    }
+
+    fn sample_credential() -> Credential {
+        Credential::OAuth(sample_bundle())
     }
 
     fn sample_bundle() -> TokenBundle {
@@ -567,7 +590,7 @@ mod tests {
         let conn = repo
             .create_connection(&crate::model::NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some("acct-1".into()),
                 provider_account_email: None,
             })

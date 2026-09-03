@@ -14,7 +14,8 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use castify_catalog::{
-    CatalogRepository, NewConnection, NewTranscodeEntry, NewVideo, Provider, TokenBundle,
+    CatalogRepository, Credential, NewConnection, NewTranscodeEntry, NewVideo, Provider,
+    TokenBundle,
 };
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -116,13 +117,13 @@ async fn seed_video(repo: &CatalogRepository) -> String {
     let conn = repo
         .create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: TokenBundle {
+            credential: Credential::OAuth(TokenBundle {
                 access_token: "ya29.test".into(),
                 refresh_token: Some("refresh".into()),
                 expires_at: None,
                 token_type: "Bearer".into(),
                 scope: None,
-            },
+            }),
             provider_account_id: Some(next_id("acct")),
             provider_account_email: None,
         })

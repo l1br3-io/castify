@@ -9,7 +9,7 @@ pub mod repository;
 pub mod scanner;
 pub mod transcode_cache;
 
-pub use crypto::{decrypt, encrypt, TokenBundle, TokenKey};
+pub use crypto::{decrypt, encrypt, Credential, S3Credentials, TokenBundle, TokenKey};
 pub use model::{
     DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, EmbeddedSubtitleTrack, FileEntry,
     FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry, FolderFileEntry, FolderNode,

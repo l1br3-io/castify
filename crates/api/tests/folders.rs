@@ -10,10 +10,15 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use castify_catalog::{
-    CatalogRepository, DiscoveredFile, FileKind, NewConnection, NewVideo, Provider, TokenBundle,
+    CatalogRepository, Credential, DiscoveredFile, FileKind, NewConnection, NewVideo, Provider,
+    TokenBundle,
 };
 
 mod common;
+
+fn sample_credential() -> Credential {
+    Credential::OAuth(sample_bundle())
+}
 
 fn sample_bundle() -> TokenBundle {
     TokenBundle {
@@ -74,7 +79,7 @@ async fn seed_connection(repo: &CatalogRepository, provider: Provider) -> String
     let conn = repo
         .create_connection(&NewConnection {
             provider,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("acct".into()),
             provider_account_email: None,
         })

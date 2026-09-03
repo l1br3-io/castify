@@ -30,8 +30,8 @@ use castify_catalog::provider::{
     ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
 };
 use castify_catalog::{
-    DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, NewConnection,
-    Provider, TokenBundle,
+    Credential, DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage,
+    NewConnection, Provider, TokenBundle,
 };
 
 use crate::error::{ApiError, ApiResult};
@@ -1212,7 +1212,7 @@ pub async fn seed_connection(
         if existing.disconnected_at.is_some() {
             repo.revive_connection(&existing.id).await?;
         }
-        repo.update_token_bundle(&existing.id, &token_bundle)
+        repo.update_credential(&existing.id, &Credential::OAuth(token_bundle))
             .await?;
         return Ok(Json(SeedConnectionResponse {
             id: existing.id,
@@ -1223,7 +1223,7 @@ pub async fn seed_connection(
     let conn = repo
         .create_connection(&NewConnection {
             provider,
-            token_bundle,
+            credential: Credential::OAuth(token_bundle),
             provider_account_id: Some(provider_account_id),
             provider_account_email: body.account_email,
         })

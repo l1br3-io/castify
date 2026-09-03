@@ -138,6 +138,59 @@ impl TokenBundle {
     }
 }
 
+/// Static credentials for S3-compatible object storage. One credential = one
+/// bucket on one endpoint; the pair identifies the connection for the
+/// `(provider, provider_account_id)` uniqueness constraint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3Credentials {
+    /// Service endpoint, e.g. `https://<account>.r2.cloudflarestorage.com`.
+    pub endpoint: String,
+    /// Region string; R2 uses `"auto"`, MinIO commonly `us-east-1`.
+    pub region: String,
+    pub bucket: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+}
+
+/// The secret a connection authenticates with, stored encrypted in
+/// `provider_connections.token_bundle` (the column predates non-OAuth
+/// providers; the name is historical).
+///
+/// Serialized **untagged**: the variant field sets are disjoint
+/// (`TokenBundle` requires `access_token` + `token_type`; `S3Credentials`
+/// requires `endpoint` + `bucket` + keys), so each JSON payload matches
+/// exactly one variant. That is what lets rows written before this enum
+/// existed — plain `TokenBundle` JSON — still decode as `Credential::OAuth`
+/// with no migration step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Credential {
+    OAuth(TokenBundle),
+    S3(S3Credentials),
+}
+
+impl Credential {
+    /// The OAuth token bundle, if this credential is OAuth-backed.
+    pub fn as_oauth(&self) -> Option<&TokenBundle> {
+        match self {
+            Credential::OAuth(bundle) => Some(bundle),
+            Credential::S3(_) => None,
+        }
+    }
+
+    /// Serialize to JSON, then encrypt.
+    pub fn encrypt_to_bytes(&self, key: &TokenKey) -> CryptoResult<Vec<u8>> {
+        let json = serde_json::to_vec(self)?;
+        encrypt(key, &json)
+    }
+
+    /// Decrypt bytes, then deserialize from JSON.
+    pub fn decrypt_from_bytes(key: &TokenKey, data: &[u8]) -> CryptoResult<Self> {
+        let json = decrypt(key, data)?;
+        Ok(serde_json::from_slice(&json)?)
+    }
+}
+
 fn decode_or_raw(raw: &str) -> Vec<u8> {
     if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(raw) {
         return decoded;
@@ -217,6 +270,83 @@ mod tests {
         assert_eq!(recovered.access_token, bundle.access_token);
         assert_eq!(recovered.refresh_token, bundle.refresh_token);
         assert_eq!(recovered.token_type, bundle.token_type);
+    }
+
+    fn sample_s3_credentials() -> S3Credentials {
+        S3Credentials {
+            endpoint: "https://acct.r2.cloudflarestorage.com".into(),
+            region: "auto".into(),
+            bucket: "media".into(),
+            access_key_id: "key-id".into(),
+            secret_access_key: "secret".into(),
+        }
+    }
+
+    #[test]
+    fn credential_oauth_round_trips() {
+        let key = test_key();
+        let credential = Credential::OAuth(TokenBundle {
+            access_token: "ya29.test".into(),
+            refresh_token: Some("1//refresh".into()),
+            expires_at: None,
+            token_type: "Bearer".into(),
+            scope: None,
+        });
+        let encrypted = credential.encrypt_to_bytes(&key).unwrap();
+        let recovered = Credential::decrypt_from_bytes(&key, &encrypted).unwrap();
+        assert!(matches!(recovered, Credential::OAuth(_)));
+        assert_eq!(recovered.as_oauth().unwrap().access_token, "ya29.test");
+    }
+
+    #[test]
+    fn credential_s3_round_trips() {
+        let key = test_key();
+        let credential = Credential::S3(sample_s3_credentials());
+        let encrypted = credential.encrypt_to_bytes(&key).unwrap();
+        let recovered = Credential::decrypt_from_bytes(&key, &encrypted).unwrap();
+        let Credential::S3(s3) = recovered else {
+            panic!("expected S3 variant");
+        };
+        assert_eq!(s3.endpoint, "https://acct.r2.cloudflarestorage.com");
+        assert_eq!(s3.region, "auto");
+        assert_eq!(s3.bucket, "media");
+        assert_eq!(s3.access_key_id, "key-id");
+        assert_eq!(s3.secret_access_key, "secret");
+    }
+
+    /// Rows written before `Credential` existed hold plain `TokenBundle`
+    /// JSON. Untagged serde must decode them as `Credential::OAuth` — this
+    /// is the no-migration contract.
+    #[test]
+    fn credential_decodes_legacy_token_bundle_json() {
+        let key = test_key();
+        // Hand-build the legacy payload exactly as `TokenBundle` serialized it.
+        let legacy_json = br#"{"access_token":"legacy-token","refresh_token":"legacy-refresh","expires_at":null,"token_type":"Bearer","scope":null}"#;
+        let legacy_bytes = encrypt(&key, legacy_json).unwrap();
+
+        let recovered = Credential::decrypt_from_bytes(&key, &legacy_bytes).unwrap();
+        let bundle = recovered
+            .as_oauth()
+            .expect("legacy row must decode as OAuth");
+        assert_eq!(bundle.access_token, "legacy-token");
+        assert_eq!(bundle.refresh_token.as_deref(), Some("legacy-refresh"));
+    }
+
+    /// The untagged variants must be unambiguous in both directions: a
+    /// serialized `Credential` also parses as a plain `TokenBundle` only
+    /// when it is the OAuth variant.
+    #[test]
+    fn credential_variant_disambiguation() {
+        let key = test_key();
+        let s3 = Credential::S3(sample_s3_credentials());
+        let encrypted = s3.encrypt_to_bytes(&key).unwrap();
+        let json = decrypt(&key, &encrypted).unwrap();
+        // The raw JSON must NOT parse as a TokenBundle (no access_token).
+        assert!(serde_json::from_slice::<TokenBundle>(&json).is_err());
+        // And OAuth JSON must not parse as S3Credentials (no endpoint/bucket).
+        let oauth_json =
+            br#"{"access_token":"a","refresh_token":null,"expires_at":null,"token_type":"Bearer","scope":null}"#;
+        assert!(serde_json::from_slice::<S3Credentials>(oauth_json).is_err());
     }
 
     #[test]

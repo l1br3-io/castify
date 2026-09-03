@@ -19,15 +19,34 @@ use tokio_util::io::ReaderStream;
 use tracing::Span;
 
 use castify_catalog::{
-    BodyStream, CatalogRepository, FolderCount, NewTranscodeEntry, PlaybackProgress, Provider,
-    ProviderError, ProviderFactory, StreamResponse, StreamUrl, SubtitleTrack, ThumbnailData,
-    TokenBundle, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoStreamInfo,
+    BodyStream, CatalogRepository, Credential, FolderCount, NewTranscodeEntry, PlaybackProgress,
+    Provider, ProviderError, ProviderFactory, StreamResponse, StreamUrl, SubtitleTrack,
+    ThumbnailData, TokenBundle, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoStreamInfo,
     VideoThumbnailInfo,
 };
 
 use crate::auth::resolve_owner;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+
+/// Load a connection's credential and require the OAuth variant.
+///
+/// Static-credential providers (S3-compatible storage) never feed the
+/// token-refresh paths this helper serves; a non-OAuth credential here
+/// means a call path grew without Credential-aware factory methods.
+async fn require_oauth_bundle(
+    repo: &CatalogRepository,
+    connection_id: &str,
+) -> ApiResult<TokenBundle> {
+    repo.fetch_credential(connection_id)
+        .await?
+        .ok_or(ApiError::NotFound)?
+        .as_oauth()
+        .cloned()
+        .ok_or_else(|| ApiError::Validation {
+            detail: "connection does not use OAuth credentials".into(),
+        })
+}
 
 #[derive(Debug, Deserialize)]
 pub struct VideoQueryParams {
@@ -332,10 +351,7 @@ pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Res
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = repo
-        .fetch_token_bundle(&info.connection_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -394,7 +410,7 @@ async fn fetch_thumbnail_with_refresh(
                 "token expired, refreshing for thumbnail"
             );
             let new_bundle = factory.refresh_token(bundle).await?;
-            repo.update_token_bundle(&info.connection_id, &new_bundle)
+            repo.update_credential(&info.connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
                 .map_err(|e| {
                     ProviderError::Other(format!("failed to store refreshed token: {e}"))
@@ -527,10 +543,7 @@ pub(crate) async fn open_stream_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = repo
-        .fetch_token_bundle(&info.connection_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -548,7 +561,7 @@ pub(crate) async fn open_stream_with_refresh(
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, &info.connection_id, conn.provider))?;
-            repo.update_token_bundle(&info.connection_id, &new_bundle)
+            repo.update_credential(&info.connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory
@@ -909,10 +922,7 @@ async fn fetch_probe_bytes(
         .fetch_connection(connection_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("connection not found: {connection_id}"))?;
-    let bundle = repo
-        .fetch_token_bundle(connection_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("token bundle not found: {connection_id}"))?;
+    let bundle = require_oauth_bundle(repo, connection_id).await?;
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| anyhow::anyhow!("provider not configured: {}", conn.provider))?;
@@ -924,7 +934,8 @@ async fn fetch_probe_bytes(
         Err(castify_catalog::ProviderError::Unauthorized) => {
             tracing::info!(%connection_id, "probe: token expired, refreshing");
             let new_bundle = factory.refresh_token(&bundle).await?;
-            repo.update_token_bundle(connection_id, &new_bundle).await?;
+            repo.update_credential(connection_id, &Credential::OAuth(new_bundle.clone()))
+                .await?;
             let provider = factory.create(&new_bundle).await?;
             provider.open_stream(provider_file_id, Some(range)).await?
         }
@@ -1004,10 +1015,7 @@ async fn resolve_stream_url_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = repo
-        .fetch_token_bundle(&info.connection_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -1025,7 +1033,7 @@ async fn resolve_stream_url_with_refresh(
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, &info.connection_id, conn.provider))?;
-            repo.update_token_bundle(&info.connection_id, &new_bundle)
+            repo.update_credential(&info.connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory
@@ -1680,10 +1688,7 @@ async fn fetch_subtitle_content_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = repo
-        .fetch_token_bundle(connection_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let bundle = require_oauth_bundle(repo, connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -1701,7 +1706,7 @@ async fn fetch_subtitle_content_with_refresh(
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, connection_id, conn.provider))?;
-            repo.update_token_bundle(connection_id, &new_bundle)
+            repo.update_credential(connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory

@@ -92,7 +92,7 @@ impl ProviderConnection {
 #[derive(Debug, Clone)]
 pub struct NewConnection {
     pub provider: Provider,
-    pub token_bundle: crate::crypto::TokenBundle,
+    pub credential: crate::crypto::Credential,
     pub provider_account_id: Option<String>,
     pub provider_account_email: Option<String>,
 }

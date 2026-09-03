@@ -450,12 +450,16 @@ fn map_transcode_row(row: sqlx::sqlite::SqliteRow) -> TranscodeCacheEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{TokenBundle, TokenKey};
+    use crate::crypto::{Credential, TokenBundle, TokenKey};
     use crate::model::{NewConnection, NewVideo, Provider};
     use sqlx::SqlitePool;
 
     fn test_key() -> TokenKey {
         TokenKey::from_bytes(vec![42u8; 32]).unwrap()
+    }
+
+    fn sample_credential() -> Credential {
+        Credential::OAuth(sample_bundle())
     }
 
     fn sample_bundle() -> TokenBundle {
@@ -504,7 +508,7 @@ mod tests {
         let conn = repo
             .create_connection(&NewConnection {
                 provider: Provider::GoogleDrive,
-                token_bundle: sample_bundle(),
+                credential: sample_credential(),
                 provider_account_id: Some(format!("acct-{}", uuid::Uuid::new_v4())),
                 provider_account_email: None,
             })

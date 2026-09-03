@@ -17,7 +17,9 @@ use axum::Json;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
-use castify_catalog::{redirect_uri, NewConnection, OAuthStateEntry, PkceChallenge, Provider};
+use castify_catalog::{
+    redirect_uri, Credential, NewConnection, OAuthStateEntry, PkceChallenge, Provider,
+};
 
 use crate::auth::resolve_owner;
 use crate::error::{ApiError, ApiResult};
@@ -300,6 +302,8 @@ async fn callback_inner(
         return Err(ACCOUNT_ID_MISSING.into());
     }
 
+    let credential = Credential::OAuth(token_bundle);
+
     let repo = state.catalog_repository();
 
     // Reconnect path: if the same `(provider, account_id)` is already
@@ -321,7 +325,7 @@ async fn callback_inner(
                 %account_id,
                 "reconnect: rotating token on existing connection"
             );
-            repo.update_token_bundle(&existing.id, &token_bundle)
+            repo.update_credential(&existing.id, &credential)
                 .await
                 .map_err(|e| format!("failed to update token: {e}"))?;
             // A reconnect invalidates any cached provider-side metadata
@@ -357,7 +361,7 @@ async fn callback_inner(
                 repo.revive_connection(&existing.id)
                     .await
                     .map_err(|e| format!("failed to revive connection: {e}"))?;
-                repo.update_token_bundle(&existing.id, &token_bundle)
+                repo.update_credential(&existing.id, &credential)
                     .await
                     .map_err(|e| format!("failed to update token: {e}"))?;
                 spawn_scan(state, &existing.id, provider);
@@ -371,7 +375,7 @@ async fn callback_inner(
         .catalog_repository()
         .create_connection(&NewConnection {
             provider,
-            token_bundle,
+            credential,
             provider_account_id: account_id,
             provider_account_email: account_email,
         })
@@ -394,9 +398,11 @@ pub async fn disconnect(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    if let Some(bundle) = repo.fetch_token_bundle(&id).await? {
-        if let Some(factory) = state.provider_registry().factory_for(conn.provider) {
-            let _ = factory.revoke(&bundle).await;
+    if let Some(credential) = repo.fetch_credential(&id).await? {
+        if let Some(bundle) = credential.as_oauth() {
+            if let Some(factory) = state.provider_registry().factory_for(conn.provider) {
+                let _ = factory.revoke(bundle).await;
+            }
         }
     }
 

@@ -6,7 +6,9 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use castify_catalog::{CatalogRepository, NewConnection, NewVideo, Provider, TokenBundle};
+use castify_catalog::{
+    CatalogRepository, Credential, NewConnection, NewVideo, Provider, TokenBundle,
+};
 
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -90,6 +92,10 @@ async fn get_thumbnail_bytes(
     (status, bytes.to_vec(), content_type)
 }
 
+fn sample_credential() -> Credential {
+    Credential::OAuth(sample_bundle())
+}
+
 fn sample_bundle() -> TokenBundle {
     TokenBundle {
         access_token: "ya29.test".into(),
@@ -125,7 +131,7 @@ async fn returns_videos_with_pagination() {
     let conn = repo
         .create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("acct-1".into()),
             provider_account_email: None,
         })
@@ -168,7 +174,7 @@ async fn dedup_groups_duplicates() {
     let conn1 = repo
         .create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("a1".into()),
             provider_account_email: None,
         })
@@ -177,7 +183,7 @@ async fn dedup_groups_duplicates() {
     let conn2 = repo
         .create_connection(&NewConnection {
             provider: Provider::Dropbox,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("a2".into()),
             provider_account_email: None,
         })
@@ -233,7 +239,7 @@ async fn provider_filter_works() {
     let conn1 = repo
         .create_connection(&NewConnection {
             provider: Provider::GoogleDrive,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("a1".into()),
             provider_account_email: None,
         })
@@ -242,7 +248,7 @@ async fn provider_filter_works() {
     let conn2 = repo
         .create_connection(&NewConnection {
             provider: Provider::Dropbox,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("a2".into()),
             provider_account_email: None,
         })
@@ -377,7 +383,7 @@ async fn seed_connection(repo: &CatalogRepository, provider: Provider) -> String
     let conn = repo
         .create_connection(&NewConnection {
             provider,
-            token_bundle: sample_bundle(),
+            credential: sample_credential(),
             provider_account_id: Some("acct".into()),
             provider_account_email: None,
         })

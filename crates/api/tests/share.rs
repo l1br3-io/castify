@@ -969,18 +969,18 @@ async fn seed_streamable_videos(
     provider: castify_catalog::Provider,
     names: &[&str],
 ) -> Vec<String> {
-    use castify_catalog::{NewConnection, TokenBundle};
+    use castify_catalog::{Credential, NewConnection, TokenBundle};
     let conn = state
         .catalog_repository()
         .create_connection(&NewConnection {
             provider,
-            token_bundle: TokenBundle {
+            credential: Credential::OAuth(TokenBundle {
                 access_token: "ya29.test".into(),
                 refresh_token: Some("refresh".into()),
                 expires_at: None,
                 token_type: "Bearer".into(),
                 scope: None,
-            },
+            }),
             provider_account_id: Some(uuid::Uuid::new_v4().to_string()),
             provider_account_email: None,
         })
