@@ -55,7 +55,9 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 
 ## Milestones
 
-> **Last shipped: Sharing** — read-only links for family and friends: curated item lists, optional argon2id password gate, expiry/revocation, full playback pipeline (direct + transcode/HLS) through share-scoped mirrors, zero recipient accounts or server writes. See [`docs/specs/sharing/spec.md`](./specs/sharing/spec.md).
+> **Last shipped: Share management** — generated share names, searchable/filtered
+> shares list, add-to-existing from the share dialog, and hard-delete (purge).
+> See [`docs/specs/share-management/spec.md`](./specs/share-management/spec.md).
 
 | Milestone | State |
 |-----------|-------|
@@ -72,6 +74,11 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 | Lossless Reconnect | Shipped (corrective) |
 | Sharing | Shipped |
 | M9 — Redesign the home page | Shipped |
+| Reset password | Shipped |
+| Identity pass | Shipped |
+| Mutable share list | Shipped |
+| Share manage page | Shipped |
+| Share management | Shipped |
 
 Dependency sequencing for the self-hosted arc: M3.5 → M4 → M5 → M6 (needs M4+M5) →
 {M7, M8} (each needs M6; M7 and M8 are independent of each other).
