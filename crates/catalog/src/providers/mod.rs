@@ -111,7 +111,15 @@ mod tests {
         let factory = reg
             .factory_for(Provider::GoogleDrive)
             .expect("google configured");
-        let url = factory.authorization_url("https://example.com/cb", "state", "challenge");
+        assert_eq!(factory.name(), "google_drive");
+        let url = match factory.connect_flow() {
+            crate::provider::ConnectFlow::OAuth(flow) => {
+                flow.authorization_url("https://example.com/cb", "state", "challenge")
+            }
+            crate::provider::ConnectFlow::Credentials(_) => {
+                panic!("google_drive must connect via OAuth")
+            }
+        };
         assert!(url.contains("client_id=g-id"));
     }
 

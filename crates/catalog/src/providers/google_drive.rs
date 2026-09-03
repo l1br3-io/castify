@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
-use crate::crypto::TokenBundle;
+use crate::crypto::{Credential, TokenBundle};
 use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{
-    ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+    ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
 };
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
@@ -1097,13 +1097,16 @@ impl GoogleDriveFactory {
     }
 }
 
-/// OAuth connect-flow for Google Drive. Delegates to the factory's existing
-/// methods; the call direction flips when the old `ProviderFactory`
-/// surface is removed.
+/// OAuth connect-flow for Google Drive: authorization URL, code exchange,
+/// token refresh (with refresh-token carry-forward), and account-info lookup.
 #[async_trait::async_trait]
 impl crate::provider::OAuthFlow for GoogleDriveFactory {
     fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
-        ProviderFactory::authorization_url(self, redirect_uri, state, challenge)
+        GoogleDriveClient::new(self.config.clone()).authorization_url(
+            redirect_uri,
+            state,
+            challenge,
+        )
     }
 
     async fn exchange_code(
@@ -1112,29 +1115,8 @@ impl crate::provider::OAuthFlow for GoogleDriveFactory {
         verifier: &str,
         redirect_uri: &str,
     ) -> ProviderResult<TokenBundle> {
-        ProviderFactory::exchange_code(self, code, verifier, redirect_uri).await
-    }
-
-    async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle> {
-        ProviderFactory::refresh_token(self, token_bundle).await
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::provider::ProviderFactory for GoogleDriveFactory {
-    fn connect_flow(&self) -> crate::provider::ConnectFlow {
-        crate::provider::ConnectFlow::OAuth(Box::new(GoogleDriveFactory::new(self.config.clone())))
-    }
-
-    async fn create(
-        &self,
-        token_bundle: &TokenBundle,
-    ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
-        Ok(Box::new(GoogleDriveProvider {
-            client: GoogleDriveClient::new(self.config.clone()),
-            token: token_bundle.clone(),
-            folder_cache: Mutex::new(HashMap::new()),
-        }))
+        let client = GoogleDriveClient::new(self.config.clone());
+        client.exchange_code(code, verifier, redirect_uri).await
     }
 
     async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle> {
@@ -1155,29 +1137,6 @@ impl crate::provider::ProviderFactory for GoogleDriveFactory {
         Ok(bundle)
     }
 
-    async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
-        let client = GoogleDriveClient::new(self.config.clone());
-        client.revoke_token(&token_bundle.access_token).await
-    }
-
-    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
-        GoogleDriveClient::new(self.config.clone()).authorization_url(
-            redirect_uri,
-            state,
-            challenge,
-        )
-    }
-
-    async fn exchange_code(
-        &self,
-        code: &str,
-        verifier: &str,
-        redirect_uri: &str,
-    ) -> ProviderResult<TokenBundle> {
-        let client = GoogleDriveClient::new(self.config.clone());
-        client.exchange_code(code, verifier, redirect_uri).await
-    }
-
     async fn fetch_user_info(
         &self,
         token_bundle: &TokenBundle,
@@ -1185,6 +1144,33 @@ impl crate::provider::ProviderFactory for GoogleDriveFactory {
         let client = GoogleDriveClient::new(self.config.clone());
         let info = client.fetch_user_info(&token_bundle.access_token).await?;
         Ok((Some(info.id), info.email))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::provider::ProviderFactory for GoogleDriveFactory {
+    fn name(&self) -> &'static str {
+        "google_drive"
+    }
+
+    fn connect_flow(&self) -> crate::provider::ConnectFlow {
+        crate::provider::ConnectFlow::OAuth(Box::new(GoogleDriveFactory::new(self.config.clone())))
+    }
+
+    async fn create(
+        &self,
+        credential: &Credential,
+    ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+        let token_bundle = credential.as_oauth().ok_or_else(|| {
+            ProviderError::Other(
+                "google_drive connects via OAuth; static credentials are not supported".into(),
+            )
+        })?;
+        Ok(Box::new(GoogleDriveProvider {
+            client: GoogleDriveClient::new(self.config.clone()),
+            token: token_bundle.clone(),
+            folder_cache: Mutex::new(HashMap::new()),
+        }))
     }
 }
 
@@ -1539,8 +1525,33 @@ mod tests {
             scope: None,
         };
 
-        let provider = factory.create(&bundle).await.unwrap();
+        let provider = factory
+            .create(&Credential::OAuth(bundle))
+            .await
+            .unwrap();
         assert_eq!(provider.name(), "google_drive");
+    }
+
+    /// Static credentials are rejected up front — Google Drive only
+    /// connects via OAuth.
+    #[tokio::test]
+    async fn factory_rejects_static_credential() {
+        use crate::crypto::S3Credentials;
+        let factory = GoogleDriveFactory::new(test_config());
+        let result = factory
+            .create(&Credential::S3(S3Credentials {
+                endpoint: "https://e".into(),
+                region: "auto".into(),
+                bucket: "b".into(),
+                access_key_id: "k".into(),
+                secret_access_key: "s".into(),
+            }))
+            .await;
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("static credential must be rejected"),
+        };
+        assert!(matches!(err, crate::provider::ProviderError::Other(_)));
     }
 
     #[tokio::test]

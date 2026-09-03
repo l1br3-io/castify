@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::crypto::TokenBundle;
+use crate::crypto::{Credential, TokenBundle};
 use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
 use crate::provider::{
-    ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+    ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
 };
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
@@ -703,13 +703,12 @@ impl DropboxFactory {
     }
 }
 
-/// OAuth connect-flow for Dropbox. Delegates to the factory's existing
-/// methods; the call direction flips when the old `ProviderFactory`
-/// surface is removed.
+/// OAuth connect-flow for Dropbox: authorization URL, code exchange, token
+/// refresh (with refresh-token carry-forward), and account-info lookup.
 #[async_trait::async_trait]
 impl crate::provider::OAuthFlow for DropboxFactory {
     fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
-        ProviderFactory::authorization_url(self, redirect_uri, state, challenge)
+        DropboxClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
     }
 
     async fn exchange_code(
@@ -718,28 +717,8 @@ impl crate::provider::OAuthFlow for DropboxFactory {
         verifier: &str,
         redirect_uri: &str,
     ) -> ProviderResult<TokenBundle> {
-        ProviderFactory::exchange_code(self, code, verifier, redirect_uri).await
-    }
-
-    async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle> {
-        ProviderFactory::refresh_token(self, token_bundle).await
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::provider::ProviderFactory for DropboxFactory {
-    fn connect_flow(&self) -> crate::provider::ConnectFlow {
-        crate::provider::ConnectFlow::OAuth(Box::new(DropboxFactory::new(self.config.clone())))
-    }
-
-    async fn create(
-        &self,
-        token_bundle: &TokenBundle,
-    ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
-        Ok(Box::new(DropboxProvider {
-            client: DropboxClient::new(self.config.clone()),
-            token: token_bundle.clone(),
-        }))
+        let client = DropboxClient::new(self.config.clone());
+        client.exchange_code(code, verifier, redirect_uri).await
     }
 
     async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle> {
@@ -760,25 +739,6 @@ impl crate::provider::ProviderFactory for DropboxFactory {
         Ok(bundle)
     }
 
-    async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
-        let client = DropboxClient::new(self.config.clone());
-        client.revoke_token(&token_bundle.access_token).await
-    }
-
-    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
-        DropboxClient::new(self.config.clone()).authorization_url(redirect_uri, state, challenge)
-    }
-
-    async fn exchange_code(
-        &self,
-        code: &str,
-        verifier: &str,
-        redirect_uri: &str,
-    ) -> ProviderResult<TokenBundle> {
-        let client = DropboxClient::new(self.config.clone());
-        client.exchange_code(code, verifier, redirect_uri).await
-    }
-
     async fn fetch_user_info(
         &self,
         token_bundle: &TokenBundle,
@@ -786,6 +746,32 @@ impl crate::provider::ProviderFactory for DropboxFactory {
         let client = DropboxClient::new(self.config.clone());
         let info = client.fetch_user_info(&token_bundle.access_token).await?;
         Ok((info.account_id, info.email))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::provider::ProviderFactory for DropboxFactory {
+    fn name(&self) -> &'static str {
+        "dropbox"
+    }
+
+    fn connect_flow(&self) -> crate::provider::ConnectFlow {
+        crate::provider::ConnectFlow::OAuth(Box::new(DropboxFactory::new(self.config.clone())))
+    }
+
+    async fn create(
+        &self,
+        credential: &Credential,
+    ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+        let token_bundle = credential.as_oauth().ok_or_else(|| {
+            ProviderError::Other(
+                "dropbox connects via OAuth; static credentials are not supported".into(),
+            )
+        })?;
+        Ok(Box::new(DropboxProvider {
+            client: DropboxClient::new(self.config.clone()),
+            token: token_bundle.clone(),
+        }))
     }
 }
 
@@ -1057,7 +1043,7 @@ mod tests {
             scope: None,
         };
 
-        let provider = factory.create(&bundle).await.unwrap();
+        let provider = factory.create(&Credential::OAuth(bundle)).await.unwrap();
         assert_eq!(provider.name(), "dropbox");
     }
 

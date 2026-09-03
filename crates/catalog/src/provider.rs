@@ -188,7 +188,15 @@ pub trait Provider: Send + Sync {
 
     /// Revoke the provider token (best-effort — network failure should not
     /// prevent local connection deletion).
-    async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()>;
+    ///
+    /// The default is a **documented no-op**: static-credential providers
+    /// (S3-compatible storage) have no grant to revoke server-side — access
+    /// keys rotate at the provider's console, outside Castify's control.
+    /// OAuth providers override this to call their token-revocation
+    /// endpoint.
+    async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {
+        Ok(())
+    }
 }
 
 /// Collect a streaming body into a `Vec<u8>`. Used by the default
@@ -226,6 +234,14 @@ pub trait OAuthFlow: Send + Sync {
 
     /// Refresh an expired access token using the refresh token.
     async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle>;
+
+    /// Fetch the authenticated user's account info. Returns
+    /// `(provider_account_id, provider_account_email)` — both optional since
+    /// providers differ on what they expose and whether the user has an email.
+    async fn fetch_user_info(
+        &self,
+        token_bundle: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)>;
 }
 
 /// One renderable field of a [`CredentialsSchema`] form.
@@ -256,63 +272,54 @@ pub enum ConnectFlow {
     Credentials(CredentialsSchema),
 }
 
-/// Builder that creates a boxed `Provider` instance from a token bundle and
+/// Builder that creates a boxed `Provider` instance from a credential and
 /// provider-specific configuration. Each provider registers its own builder.
 ///
-/// The factory owns the provider's full OAuth lifecycle: authorization URL
-/// construction, code exchange, user-info fetch, token refresh, and revocation.
-/// Shared code (e.g. `connections.rs`) dispatches through this trait rather
-/// than `match provider {}` blocks.
+/// The factory is the provider's **core**: its identity (`name`), how it
+/// connects (`connect_flow`), and how to build/validate an authenticated
+/// instance (`create`/`verify`). Connect-flow-specific operations live on
+/// [`OAuthFlow`] (obtained from [`ProviderFactory::connect_flow`]) — shared
+/// code (e.g. `connections.rs`) dispatches through this trait rather than
+/// `match provider {}` blocks.
 #[async_trait::async_trait]
 pub trait ProviderFactory: Send + Sync {
+    /// Machine identifier of the provider this factory builds (matches
+    /// `Provider::as_str`, e.g. "google_drive").
+    fn name(&self) -> &'static str;
+
     /// How this provider connects. Callers dispatch on the variant — OAuth
     /// methods live on [`OAuthFlow`], credential providers describe their
     /// form via [`CredentialsSchema`].
     fn connect_flow(&self) -> ConnectFlow;
 
-    /// Create a provider instance authenticated with the given token bundle.
-    async fn create(&self, token_bundle: &TokenBundle) -> ProviderResult<Box<dyn Provider>>;
+    /// Create a provider instance authenticated with the given credential.
+    /// OAuth factories reject static credentials; credential-based
+    /// factories reject OAuth bundles.
+    async fn create(&self, credential: &Credential) -> ProviderResult<Box<dyn Provider>>;
 
     /// Validate a fresh credential before persisting the connection.
     /// Returns `(provider_account_id, provider_account_email)` used by the
-    /// `(provider, account_id)` uniqueness constraint. The default handles
-    /// OAuth credentials via `fetch_user_info`; credential-based providers
-    /// override with their own reachability check.
+    /// `(provider, account_id)` uniqueness constraint. The default verifies
+    /// OAuth credentials via the provider's [`OAuthFlow`]; credential-based
+    /// providers override with their own reachability check.
     async fn verify(
         &self,
         credential: &Credential,
     ) -> ProviderResult<(Option<String>, Option<String>)> {
-        let bundle = credential.as_oauth().ok_or_else(|| {
-            ProviderError::Other(
-                "this provider connects via OAuth; static credentials are not supported".into(),
-            )
-        })?;
-        self.fetch_user_info(bundle).await
+        match self.connect_flow() {
+            ConnectFlow::OAuth(flow) => {
+                let bundle = credential.as_oauth().ok_or_else(|| {
+                    ProviderError::Other(
+                        "this provider connects via OAuth; static credentials are not supported"
+                            .into(),
+                    )
+                })?;
+                flow.fetch_user_info(bundle).await
+            }
+            ConnectFlow::Credentials(_) => Err(ProviderError::Other(
+                "this provider connects via a credentials form; OAuth verification not supported"
+                    .into(),
+            )),
+        }
     }
-
-    /// Refresh an expired access token using the refresh token.
-    async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle>;
-
-    /// Revoke the provider token (best-effort).
-    async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()>;
-
-    /// Build the OAuth authorization URL with PKCE. Infallible — pure string
-    /// construction from the configured client id.
-    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String;
-
-    /// Exchange the authorization code for a token bundle.
-    async fn exchange_code(
-        &self,
-        code: &str,
-        verifier: &str,
-        redirect_uri: &str,
-    ) -> ProviderResult<TokenBundle>;
-
-    /// Fetch the authenticated user's account info. Returns
-    /// `(provider_account_id, provider_account_email)` — both optional since
-    /// providers differ on what they expose and whether the user has an email.
-    async fn fetch_user_info(
-        &self,
-        token_bundle: &TokenBundle,
-    ) -> ProviderResult<(Option<String>, Option<String>)>;
 }

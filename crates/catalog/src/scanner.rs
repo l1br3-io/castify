@@ -122,11 +122,7 @@ async fn run_scan_inner(
         }
 
         let provider = factory
-            .create(
-                credential
-                    .as_oauth()
-                    .ok_or("connection credential does not use OAuth tokens")?,
-            )
+            .create(&credential)
             .await
             .map_err(|e| format!("failed to create provider: {e}"))?;
 
@@ -167,30 +163,42 @@ async fn run_scan_inner(
                 }
             }
             Err(ProviderError::Unauthorized) if !refreshed => {
-                tracing::info!(connection_id = connection_id, "token expired, refreshing");
-                // GOTCHA: only OAuth credentials expire; static-credential
-                // providers never hit this arm (they don't return
-                // `Unauthorized` from a missing refresh grant).
-                let bundle = credential
-                    .as_oauth()
-                    .ok_or("connection credential does not use OAuth tokens")?;
-                let refreshed_bundle =
-                    factory.refresh_token(bundle).await.map_err(|e| match e {
-                        ProviderError::ReauthRequired => {
-                            // The provider's refresh grant itself is dead
-                            // (invalid_grant). Surface a clear, actionable
-                            // message — `docs/providers.md` documents this
-                            // exact recovery path.
-                            "provider authorization expired or was revoked; \
-                             disconnect and reconnect the connection"
-                                .to_string()
+                tracing::info!(connection_id = connection_id, "credential rejected, refreshing");
+                if let Some(bundle) = credential.as_oauth() {
+                    let flow = match factory.connect_flow() {
+                        crate::provider::ConnectFlow::OAuth(flow) => flow,
+                        crate::provider::ConnectFlow::Credentials(_) => {
+                            return Err(format!(
+                                "connection holds an OAuth credential but {provider_type} \
+                                 connects via a credentials form"
+                            ));
                         }
-                        other => format!("token refresh failed: {other}"),
-                    })?;
-                credential = Credential::OAuth(refreshed_bundle);
-                repo.update_credential(connection_id, &credential)
-                    .await
-                    .map_err(|e| format!("failed to store refreshed token: {e}"))?;
+                    };
+                    let refreshed_bundle =
+                        flow.refresh_token(bundle).await.map_err(|e| match e {
+                            ProviderError::ReauthRequired => {
+                                // The provider's refresh grant itself is dead
+                                // (invalid_grant). Surface a clear, actionable
+                                // message — `docs/providers.md` documents this
+                                // exact recovery path.
+                                "provider authorization expired or was revoked; \
+                                 disconnect and reconnect the connection"
+                                    .to_string()
+                            }
+                            other => format!("token refresh failed: {other}"),
+                        })?;
+                    credential = Credential::OAuth(refreshed_bundle);
+                    repo.update_credential(connection_id, &credential)
+                        .await
+                        .map_err(|e| format!("failed to store refreshed token: {e}"))?;
+                }
+                // GOTCHA: `Credential::S3` short-circuits refresh to
+                // success-without-network — static access keys never expire,
+                // so there is nothing to refresh and no flow to call.
+                // Falling through with `refreshed = true` allows a single
+                // retry: a transient blip recovers, genuinely dead keys fail
+                // the retried call and land in the generic error arm (the
+                // `!refreshed` guard prevents any loop).
                 refreshed = true;
                 continue;
             }
@@ -289,14 +297,7 @@ async fn run_dedup_pass(
     factory: &dyn ProviderFactory,
     credential: &Credential,
 ) {
-    let bundle = match credential.as_oauth() {
-        Some(bundle) => bundle,
-        None => {
-            tracing::warn!("skipped dedup pass: credential does not use OAuth tokens");
-            return;
-        }
-    };
-    let provider = match factory.create(bundle).await {
+    let provider = match factory.create(credential).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "skipped dedup pass: failed to create provider");
@@ -458,6 +459,9 @@ mod tests {
         call_count: Arc<AtomicU32>,
         prefix_hashes: HashMap<String, String>,
         fail_prefix: bool,
+        /// First `list_videos` call returns `Unauthorized` (simulating an
+        /// expired token), subsequent calls return the canned pages.
+        fail_first_list_unauthorized: bool,
     }
 
     #[async_trait::async_trait]
@@ -468,7 +472,17 @@ mod tests {
 
         async fn list_videos(&self, cursor: Option<&str>) -> ProviderResult<ListPage> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst) as usize;
-            if idx >= self.pages.len() {
+            if self.fail_first_list_unauthorized && idx == 0 {
+                return Err(ProviderError::Unauthorized);
+            }
+            // The Unauthorized probe consumed a slot — page 0 is what the
+            // retried call should see.
+            let page_idx = if self.fail_first_list_unauthorized {
+                idx - 1
+            } else {
+                idx
+            };
+            if page_idx >= self.pages.len() {
                 return Ok(ListPage {
                     videos: vec![],
                     subtitles: vec![],
@@ -476,7 +490,7 @@ mod tests {
                     next_cursor: None,
                 });
             }
-            let page = &self.pages[idx];
+            let page = &self.pages[page_idx];
             let _ = cursor;
             Ok(ListPage {
                 videos: page.videos.clone(),
@@ -513,9 +527,6 @@ mod tests {
             ))
         }
 
-        async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
-            Ok(())
-        }
     }
 
     /// Mock factory that creates MockProvider instances.
@@ -524,12 +535,15 @@ mod tests {
         call_count: Arc<AtomicU32>,
         prefix_hashes: HashMap<String, String>,
         fail_prefix: bool,
+        fail_first_list_unauthorized: bool,
         refresh_count: Arc<AtomicU32>,
     }
 
     /// No-op OAuth flow for test factories — tests never drive a real
-    /// OAuth round-trip.
-    struct NoopFlow;
+    /// OAuth round-trip, only the refresh short-path.
+    struct NoopFlow {
+        refresh_count: Arc<AtomicU32>,
+    }
 
     #[async_trait::async_trait]
     impl crate::provider::OAuthFlow for NoopFlow {
@@ -548,45 +562,8 @@ mod tests {
         }
 
         async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
-            Ok(token.clone())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ProviderFactory for MockFactory {
-        fn connect_flow(&self) -> crate::provider::ConnectFlow {
-            crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
-        }
-
-        async fn create(
-            &self,
-            _token: &TokenBundle,
-        ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
-            Ok(Box::new(MockProvider {
-                pages: self.pages.clone(),
-                call_count: self.call_count.clone(),
-                prefix_hashes: self.prefix_hashes.clone(),
-                fail_prefix: self.fail_prefix,
-            }))
-        }
-
-        async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
             self.refresh_count.fetch_add(1, Ordering::SeqCst);
             Ok(token.clone())
-        }
-
-        async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
-            Ok(())
-        }
-
-        fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
-            String::new()
-        }
-
-        async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
-            Err(ProviderError::Other(
-                "mock: exchange_code not supported".into(),
-            ))
         }
 
         async fn fetch_user_info(
@@ -596,6 +573,67 @@ mod tests {
             Err(ProviderError::Other(
                 "mock: fetch_user_info not supported".into(),
             ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderFactory for MockFactory {
+        fn name(&self) -> &'static str {
+            "mock"
+        }
+
+        fn connect_flow(&self) -> crate::provider::ConnectFlow {
+            crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                refresh_count: Arc::clone(&self.refresh_count),
+            }))
+        }
+
+        async fn create(
+            &self,
+            _credential: &Credential,
+        ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+            Ok(Box::new(MockProvider {
+                pages: self.pages.clone(),
+                call_count: self.call_count.clone(),
+                prefix_hashes: self.prefix_hashes.clone(),
+                fail_prefix: self.fail_prefix,
+                fail_first_list_unauthorized: self.fail_first_list_unauthorized,
+            }))
+        }
+    }
+
+    /// S3-style factory: credentials flow (no OAuth machinery at all),
+    /// `create` accepts any credential kind. Proves the scanner's refresh
+    /// path short-circuits for static credentials without touching a flow.
+    struct CredentialsFlowFactory {
+        pages: Vec<ListPage>,
+        call_count: Arc<AtomicU32>,
+        fail_first_list_unauthorized: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderFactory for CredentialsFlowFactory {
+        fn name(&self) -> &'static str {
+            "mock-s3"
+        }
+
+        fn connect_flow(&self) -> crate::provider::ConnectFlow {
+            crate::provider::ConnectFlow::Credentials(crate::provider::CredentialsSchema {
+                fields: vec![],
+            })
+        }
+
+        async fn create(
+            &self,
+            _credential: &Credential,
+        ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+            Ok(Box::new(MockProvider {
+                pages: self.pages.clone(),
+                call_count: self.call_count.clone(),
+                prefix_hashes: HashMap::new(),
+                fail_prefix: true,
+                fail_first_list_unauthorized: self.fail_first_list_unauthorized,
+            }))
         }
     }
 
@@ -616,16 +654,116 @@ mod tests {
     }
 
     async fn setup_connection(repo: &CatalogRepository) -> String {
+        setup_connection_with(repo, sample_credential()).await
+    }
+
+    async fn setup_connection_with(repo: &CatalogRepository, credential: Credential) -> String {
         let conn = repo
             .create_connection(&crate::model::NewConnection {
                 provider: Provider::GoogleDrive,
-                credential: sample_credential(),
+                credential,
                 provider_account_id: Some("acct-1".into()),
                 provider_account_email: None,
             })
             .await
             .unwrap();
         conn.id
+    }
+
+    fn s3_credential() -> Credential {
+        Credential::S3(crate::crypto::S3Credentials {
+            endpoint: "https://minio.example.com".into(),
+            region: "us-east-1".into(),
+            bucket: "videos".into(),
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+        })
+    }
+
+    /// Task 003 (s3-compatible-storage): an expired OAuth token refreshes
+    /// through the factory's `connect_flow()` — the OAuthFlow trait, not
+    /// factory methods — and the scan recovers on the retry.
+    #[tokio::test]
+    async fn scan_refreshes_expired_oauth_token_via_flow_and_recovers() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        let refresh_count = Arc::new(AtomicU32::new(0));
+        let factory = MockFactory {
+            pages: vec![ListPage {
+                videos: vec![discovered("f1", "v1.mp4", 5000)],
+                subtitles: vec![],
+                files: vec![],
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            prefix_hashes: HashMap::new(),
+            fail_prefix: true,
+            fail_first_list_unauthorized: true,
+            refresh_count: Arc::clone(&refresh_count),
+        };
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(factory),
+        )
+        .await;
+
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 1);
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.status, ScanStatus::Idle);
+        assert_eq!(scan.videos_found, 1);
+        assert_eq!(
+            refresh_count.load(Ordering::SeqCst),
+            1,
+            "exactly one refresh, served by the OAuthFlow from connect_flow()"
+        );
+    }
+
+    /// Task 003 (s3-compatible-storage): a static `Credential::S3`
+    /// short-circuits the refresh path — no OAuth flow exists to call, no
+    /// network refresh happens — and the single Unauthorized retry still
+    /// lets a transient blip recover. Today this fails: the scanner rejects
+    /// any non-OAuth credential outright.
+    #[tokio::test]
+    async fn scan_with_s3_credential_short_circuits_refresh_and_recovers() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection_with(&repo, s3_credential()).await;
+
+        let factory = CredentialsFlowFactory {
+            pages: vec![ListPage {
+                videos: vec![discovered("f1", "v1.mp4", 5000)],
+                subtitles: vec![],
+                files: vec![],
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            fail_first_list_unauthorized: true,
+        };
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(factory),
+        )
+        .await;
+
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            1,
+            "the retried list page must still be consumed"
+        );
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(
+            scan.status,
+            ScanStatus::Idle,
+            "S3 refresh short-circuit must not error the scan"
+        );
     }
 
     #[tokio::test]
@@ -655,6 +793,7 @@ mod tests {
             call_count: Arc::new(AtomicU32::new(0)),
             prefix_hashes: HashMap::new(),
             fail_prefix: true, // skip prefix hashing (files < 4MB anyway)
+            fail_first_list_unauthorized: false,
             refresh_count: Arc::new(AtomicU32::new(0)),
         };
 
@@ -711,6 +850,7 @@ mod tests {
                 call_count: Arc::new(AtomicU32::new(0)),
                 prefix_hashes: HashMap::new(),
                 fail_prefix: true,
+                fail_first_list_unauthorized: false,
                 refresh_count: Arc::new(AtomicU32::new(0)),
             })
         };
@@ -784,6 +924,7 @@ mod tests {
             call_count: Arc::new(AtomicU32::new(0)),
             prefix_hashes: HashMap::new(),
             fail_prefix: true,
+            fail_first_list_unauthorized: false,
             refresh_count: Arc::new(AtomicU32::new(0)),
         };
 
@@ -813,38 +954,21 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ProviderFactory for FailingFactory {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+
             fn connect_flow(&self) -> crate::provider::ConnectFlow {
-                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
             }
 
             async fn create(
                 &self,
-                _: &TokenBundle,
+                _: &Credential,
             ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
                 Err(ProviderError::Other("factory failed".into()))
-            }
-            async fn refresh_token(&self, t: &TokenBundle) -> ProviderResult<TokenBundle> {
-                Ok(t.clone())
-            }
-            async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
-                Ok(())
-            }
-            fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
-                String::new()
-            }
-            async fn exchange_code(
-                &self,
-                _: &str,
-                _: &str,
-                _: &str,
-            ) -> ProviderResult<TokenBundle> {
-                Err(ProviderError::Other("mock".into()))
-            }
-            async fn fetch_user_info(
-                &self,
-                _: &TokenBundle,
-            ) -> ProviderResult<(Option<String>, Option<String>)> {
-                Err(ProviderError::Other("mock".into()))
             }
         }
 
@@ -880,6 +1004,7 @@ mod tests {
             call_count: Arc::new(AtomicU32::new(0)),
             prefix_hashes: HashMap::new(),
             fail_prefix: true,
+            fail_first_list_unauthorized: false,
             refresh_count: Arc::new(AtomicU32::new(0)),
         };
 
@@ -934,6 +1059,7 @@ mod tests {
             call_count: Arc::new(AtomicU32::new(0)),
             prefix_hashes,
             fail_prefix: false,
+            fail_first_list_unauthorized: false,
             refresh_count: Arc::new(AtomicU32::new(0)),
         };
 
@@ -1024,10 +1150,6 @@ mod tests {
             ) -> ProviderResult<StreamResponse> {
                 Err(ProviderError::Other("not supported".into()))
             }
-
-            async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
-                Ok(())
-            }
         }
 
         struct DisconnectingFactory {
@@ -1038,47 +1160,25 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ProviderFactory for DisconnectingFactory {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
             fn connect_flow(&self) -> crate::provider::ConnectFlow {
-                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
             }
 
             async fn create(
                 &self,
-                _: &TokenBundle,
+                _: &Credential,
             ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
                 Ok(Box::new(DisconnectingProvider {
                     repo: self.repo.clone(),
                     conn_id: self.conn_id.clone(),
                     page_sent: self.page_sent.clone(),
                 }))
-            }
-
-            async fn refresh_token(&self, t: &TokenBundle) -> ProviderResult<TokenBundle> {
-                Ok(t.clone())
-            }
-
-            async fn revoke(&self, _: &TokenBundle) -> ProviderResult<()> {
-                Ok(())
-            }
-
-            fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
-                String::new()
-            }
-
-            async fn exchange_code(
-                &self,
-                _: &str,
-                _: &str,
-                _: &str,
-            ) -> ProviderResult<TokenBundle> {
-                Err(ProviderError::Other("mock".into()))
-            }
-
-            async fn fetch_user_info(
-                &self,
-                _: &TokenBundle,
-            ) -> ProviderResult<(Option<String>, Option<String>)> {
-                Err(ProviderError::Other("mock".into()))
             }
         }
 
@@ -1151,6 +1251,7 @@ mod tests {
             call_count: Arc::new(AtomicU32::new(0)),
             prefix_hashes: HashMap::new(),
             fail_prefix: true,
+            fail_first_list_unauthorized: false,
             refresh_count: Arc::new(AtomicU32::new(0)),
         };
 

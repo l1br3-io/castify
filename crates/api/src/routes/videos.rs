@@ -19,10 +19,10 @@ use tokio_util::io::ReaderStream;
 use tracing::Span;
 
 use castify_catalog::{
-    BodyStream, CatalogRepository, Credential, FolderCount, NewTranscodeEntry, PlaybackProgress,
-    Provider, ProviderError, ProviderFactory, StreamResponse, StreamUrl, SubtitleTrack,
-    ThumbnailData, TokenBundle, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoStreamInfo,
-    VideoThumbnailInfo,
+    BodyStream, CatalogRepository, ConnectFlow, Credential, FolderCount, NewTranscodeEntry,
+    OAuthFlow, PlaybackProgress, Provider, ProviderError, ProviderFactory, StreamResponse,
+    StreamUrl, SubtitleTrack, ThumbnailData, TokenBundle, VideoDetail, VideoFilter, VideoPage,
+    VideoSort, VideoStreamInfo, VideoThumbnailInfo,
 };
 
 use crate::auth::resolve_owner;
@@ -31,21 +31,40 @@ use crate::state::AppState;
 
 /// Load a connection's credential and require the OAuth variant.
 ///
-/// Static-credential providers (S3-compatible storage) never feed the
-/// token-refresh paths this helper serves; a non-OAuth credential here
-/// means a call path grew without Credential-aware factory methods.
-async fn require_oauth_bundle(
+/// Returns the credential (for `ProviderFactory::create`) paired with its
+/// token bundle (for `OAuthFlow::refresh_token`). Static-credential
+/// providers (S3-compatible storage) never feed the token-refresh paths
+/// this helper serves; a non-OAuth credential here means a call path grew
+/// without Credential-aware factory methods.
+async fn require_oauth_pair(
     repo: &CatalogRepository,
     connection_id: &str,
-) -> ApiResult<TokenBundle> {
-    repo.fetch_credential(connection_id)
+) -> ApiResult<(Credential, TokenBundle)> {
+    let credential = repo
+        .fetch_credential(connection_id)
         .await?
-        .ok_or(ApiError::NotFound)?
+        .ok_or(ApiError::NotFound)?;
+    let bundle = credential
         .as_oauth()
         .cloned()
         .ok_or_else(|| ApiError::Validation {
             detail: "connection does not use OAuth credentials".into(),
-        })
+        })?;
+    Ok((credential, bundle))
+}
+
+/// The provider's [`OAuthFlow`], for token refresh. Callers have already
+/// established the connection uses an OAuth credential
+/// ([`require_oauth_pair`]); a credentials flow here means the factory
+/// and the stored credential diverged — an internal wiring bug, not a
+/// client error.
+fn require_oauth_flow(factory: &dyn ProviderFactory) -> ApiResult<Box<dyn OAuthFlow>> {
+    match factory.connect_flow() {
+        ConnectFlow::OAuth(flow) => Ok(flow),
+        ConnectFlow::Credentials(_) => Err(ApiError::Internal(anyhow::anyhow!(
+            "provider uses a credentials flow but the connection holds an OAuth credential"
+        ))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,15 +370,17 @@ pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Res
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
+    let bundle_pair = require_oauth_pair(repo, &info.connection_id).await?;
+    let (credential, bundle) = bundle_pair;
 
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| ApiError::ServiceUnavailable(format!("{} not configured", conn.provider)))?;
 
     // Fetch from the provider, refreshing the token once on 401.
-    let thumbnail = match fetch_thumbnail_with_refresh(&*factory, repo, &info, &bundle).await {
-        Ok(data) => data,
+    let thumbnail =
+        match fetch_thumbnail_with_refresh(&*factory, repo, &info, &credential, &bundle).await {
+            Ok(data) => data,
         Err(e) => {
             let is_not_found = matches!(e, ProviderError::NotFound(_));
             let status = if is_not_found {
@@ -399,9 +420,10 @@ async fn fetch_thumbnail_with_refresh(
     factory: &dyn ProviderFactory,
     repo: &CatalogRepository,
     info: &VideoThumbnailInfo,
+    credential: &Credential,
     bundle: &TokenBundle,
 ) -> Result<ThumbnailData, ProviderError> {
-    let provider = factory.create(bundle).await?;
+    let provider = factory.create(credential).await?;
     match provider.fetch_thumbnail(&info.provider_file_id).await {
         Ok(data) => Ok(data),
         Err(ProviderError::Unauthorized) => {
@@ -409,13 +431,15 @@ async fn fetch_thumbnail_with_refresh(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for thumbnail"
             );
-            let new_bundle = factory.refresh_token(bundle).await?;
+            let flow = require_oauth_flow(factory)
+                .map_err(|e| ProviderError::Other(e.to_string()))?;
+            let new_bundle = flow.refresh_token(bundle).await?;
             repo.update_credential(&info.connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
                 .map_err(|e| {
                     ProviderError::Other(format!("failed to store refreshed token: {e}"))
                 })?;
-            let provider = factory.create(&new_bundle).await?;
+            let provider = factory.create(&Credential::OAuth(new_bundle)).await?;
             provider.fetch_thumbnail(&info.provider_file_id).await
         }
         Err(e) => Err(e),
@@ -543,13 +567,16 @@ pub(crate) async fn open_stream_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
+    let (credential, bundle) = require_oauth_pair(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| ApiError::ServiceUnavailable(format!("{} not configured", conn.provider)))?;
 
-    let provider = factory.create(&bundle).await.map_err(ApiError::Provider)?;
+    let provider = factory
+        .create(&credential)
+        .await
+        .map_err(ApiError::Provider)?;
     match provider.open_stream(&info.provider_file_id, range).await {
         Ok(resp) => Ok(resp),
         Err(ProviderError::Unauthorized) => {
@@ -557,7 +584,7 @@ pub(crate) async fn open_stream_with_refresh(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for stream"
             );
-            let new_bundle = factory
+            let new_bundle = require_oauth_flow(&*factory)?
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, &info.connection_id, conn.provider))?;
@@ -565,7 +592,7 @@ pub(crate) async fn open_stream_with_refresh(
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory
-                .create(&new_bundle)
+                .create(&Credential::OAuth(new_bundle))
                 .await
                 .map_err(ApiError::Provider)?;
             provider
@@ -922,21 +949,21 @@ async fn fetch_probe_bytes(
         .fetch_connection(connection_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("connection not found: {connection_id}"))?;
-    let bundle = require_oauth_bundle(repo, connection_id).await?;
+    let (credential, bundle) = require_oauth_pair(repo, connection_id).await?;
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| anyhow::anyhow!("provider not configured: {}", conn.provider))?;
-    let provider = factory.create(&bundle).await?;
+    let provider = factory.create(&credential).await?;
 
     let range = "bytes=0-1048575"; // 1 MB
     let response = match provider.open_stream(provider_file_id, Some(range)).await {
         Ok(r) => r,
         Err(castify_catalog::ProviderError::Unauthorized) => {
             tracing::info!(%connection_id, "probe: token expired, refreshing");
-            let new_bundle = factory.refresh_token(&bundle).await?;
+            let new_bundle = require_oauth_flow(&*factory)?.refresh_token(&bundle).await?;
             repo.update_credential(connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await?;
-            let provider = factory.create(&new_bundle).await?;
+            let provider = factory.create(&Credential::OAuth(new_bundle)).await?;
             provider.open_stream(provider_file_id, Some(range)).await?
         }
         Err(e) => return Err(e.into()),
@@ -1015,13 +1042,16 @@ async fn resolve_stream_url_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = require_oauth_bundle(repo, &info.connection_id).await?;
+    let (credential, bundle) = require_oauth_pair(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| ApiError::ServiceUnavailable(format!("{} not configured", conn.provider)))?;
 
-    let provider = factory.create(&bundle).await.map_err(ApiError::Provider)?;
+    let provider = factory
+        .create(&credential)
+        .await
+        .map_err(ApiError::Provider)?;
     match provider.open_stream_url(&info.provider_file_id).await {
         Ok(url) => Ok(url),
         Err(ProviderError::Unauthorized) => {
@@ -1029,7 +1059,7 @@ async fn resolve_stream_url_with_refresh(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for stream-url"
             );
-            let new_bundle = factory
+            let new_bundle = require_oauth_flow(&*factory)?
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, &info.connection_id, conn.provider))?;
@@ -1037,7 +1067,7 @@ async fn resolve_stream_url_with_refresh(
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory
-                .create(&new_bundle)
+                .create(&Credential::OAuth(new_bundle))
                 .await
                 .map_err(ApiError::Provider)?;
             provider
@@ -1688,13 +1718,16 @@ async fn fetch_subtitle_content_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle = require_oauth_bundle(repo, connection_id).await?;
+    let (credential, bundle) = require_oauth_pair(repo, connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| ApiError::ServiceUnavailable(format!("{} not configured", conn.provider)))?;
 
-    let provider = factory.create(&bundle).await.map_err(ApiError::Provider)?;
+    let provider = factory
+        .create(&credential)
+        .await
+        .map_err(ApiError::Provider)?;
     match provider.fetch_subtitle_content(provider_file_id).await {
         Ok(bytes) => Ok(bytes),
         Err(ProviderError::Unauthorized) => {
@@ -1702,7 +1735,7 @@ async fn fetch_subtitle_content_with_refresh(
                 connection_id = connection_id,
                 "token expired, refreshing for subtitle"
             );
-            let new_bundle = factory
+            let new_bundle = require_oauth_flow(&*factory)?
                 .refresh_token(&bundle)
                 .await
                 .map_err(|e| map_refresh_error(e, connection_id, conn.provider))?;
@@ -1710,7 +1743,7 @@ async fn fetch_subtitle_content_with_refresh(
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
             let provider = factory
-                .create(&new_bundle)
+                .create(&Credential::OAuth(new_bundle))
                 .await
                 .map_err(ApiError::Provider)?;
             provider

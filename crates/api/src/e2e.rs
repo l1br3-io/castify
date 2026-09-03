@@ -809,10 +809,6 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
         })
     }
 
-    async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {
-        Ok(())
-    }
-
     async fn fetch_subtitle_content(&self, file_id: &str) -> ProviderResult<Vec<u8>> {
         if file_id.starts_with("no-subs-") {
             return Err(ProviderError::NotFound(file_id.into()));
@@ -1047,6 +1043,10 @@ impl E2eMockFactory {
 
 #[async_trait]
 impl ProviderFactory for E2eMockFactory {
+    fn name(&self) -> &'static str {
+        "e2e-mock"
+    }
+
     fn connect_flow(&self) -> ConnectFlow {
         // The e2e stack never drives a real OAuth round-trip (connections
         // are seeded via `POST /api/__e2e/seed-connection`), so the flow
@@ -1056,7 +1056,7 @@ impl ProviderFactory for E2eMockFactory {
 
     async fn create(
         &self,
-        _token: &TokenBundle,
+        _credential: &Credential,
     ) -> ProviderResult<Box<dyn castify_catalog::provider::Provider>> {
         Ok(Box::new(E2eMockProvider {
             provider: self.provider,
@@ -1067,33 +1067,10 @@ impl ProviderFactory for E2eMockFactory {
             refresh_state: self.refresh_state.clone(),
         }))
     }
-
-    async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
-        Ok(token.clone())
-    }
-
-    async fn revoke(&self, _token: &TokenBundle) -> ProviderResult<()> {
-        Ok(())
-    }
-
-    fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
-        String::new()
-    }
-
-    async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
-        Err(ProviderError::Other("e2e mock: no OAuth flow".into()))
-    }
-
-    async fn fetch_user_info(
-        &self,
-        _: &TokenBundle,
-    ) -> ProviderResult<(Option<String>, Option<String>)> {
-        Ok((Some("e2e-account".into()), Some("e2e@example.com".into())))
-    }
 }
 
-/// OAuth flow stub for the e2e mock factory — mirrors the factory's own
-/// no-op OAuth methods.
+/// OAuth flow stub for the e2e mock factory — mirrors the factory's
+/// no-op OAuth behavior.
 struct E2eMockFlow;
 
 #[async_trait]
@@ -1108,6 +1085,13 @@ impl castify_catalog::provider::OAuthFlow for E2eMockFlow {
 
     async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
         Ok(token.clone())
+    }
+
+    async fn fetch_user_info(
+        &self,
+        _: &TokenBundle,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        Ok((Some("e2e-account".into()), Some("e2e@example.com".into())))
     }
 }
 
@@ -1363,13 +1347,13 @@ mod tests {
         for provider in [Provider::GoogleDrive, Provider::Dropbox, Provider::OneDrive] {
             let factory = E2eMockFactory::new(provider);
             let provider_inst = factory
-                .create(&TokenBundle {
+                .create(&Credential::OAuth(TokenBundle {
                     access_token: "mock".into(),
                     refresh_token: None,
                     expires_at: None,
                     token_type: "Bearer".into(),
                     scope: None,
-                })
+                }))
                 .await
                 .expect("mock provider creates without OAuth");
             let page = provider_inst.list_videos(None).await.expect("listing");
@@ -1404,13 +1388,13 @@ mod tests {
     async fn mock_drive_sidecar_is_dual_represented() {
         let factory = E2eMockFactory::new(Provider::GoogleDrive);
         let provider_inst = factory
-            .create(&TokenBundle {
+            .create(&Credential::OAuth(TokenBundle {
                 access_token: "mock".into(),
                 refresh_token: None,
                 expires_at: None,
                 token_type: "Bearer".into(),
                 scope: None,
-            })
+            }))
             .await
             .unwrap();
         let page = provider_inst.list_videos(None).await.unwrap();

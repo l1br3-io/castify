@@ -18,7 +18,8 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use castify_catalog::{
-    redirect_uri, Credential, NewConnection, OAuthStateEntry, PkceChallenge, Provider,
+    redirect_uri, ConnectFlow, Credential, NewConnection, OAuthStateEntry, PkceChallenge,
+    Provider,
 };
 
 use crate::auth::resolve_owner;
@@ -148,11 +149,23 @@ pub async fn start(
 
     let owner = resolve_owner(&state, &jar).await?;
 
+    // OAuth round-trips only exist for OAuth providers; a credentials-flow
+    // provider hitting `/start` is a client bug (the frontend submits the
+    // credentials form endpoint instead).
+    let flow = match factory.connect_flow() {
+        ConnectFlow::OAuth(flow) => flow,
+        ConnectFlow::Credentials(_) => {
+            return Err(ApiError::Validation {
+                detail: format!("{provider} connects via a credentials form, not OAuth"),
+            });
+        }
+    };
+
     let pkce = PkceChallenge::generate();
     let state_param = castify_catalog::oauth::generate_state();
     let redir = redirect_uri(base_url, &provider);
 
-    let auth_url = factory.authorization_url(&redir, &state_param, &pkce.challenge);
+    let auth_url = flow.authorization_url(&redir, &state_param, &pkce.challenge);
 
     let return_to = sanitize_return_to(params.return_to);
 
@@ -281,12 +294,22 @@ async fn callback_inner(
         .provider_registry()
         .factory_for(provider)
         .ok_or_else(|| format!("{provider} credentials no longer configured"))?;
-    let token_bundle = factory
+    let flow = match factory.connect_flow() {
+        ConnectFlow::OAuth(flow) => flow,
+        ConnectFlow::Credentials(_) => {
+            return Err(format!("{provider} connects via a credentials form, not OAuth"));
+        }
+    };
+    let token_bundle = flow
         .exchange_code(code, &entry.pkce_verifier, &redir)
         .await
         .map_err(|e| format!("token exchange failed: {e}"))?;
+    let credential = Credential::OAuth(token_bundle);
+    // `verify` resolves the account identity through the provider's OAuth
+    // flow — the same entry point the credentials-form endpoint uses for
+    // static credentials (docs/specs/s3-compatible-storage, task 007).
     let (account_id, account_email) = factory
-        .fetch_user_info(&token_bundle)
+        .verify(&credential)
         .await
         .map_err(|e| format!("failed to fetch user info: {e}"))?;
 
@@ -301,8 +324,6 @@ async fn callback_inner(
     if account_id.is_none() {
         return Err(ACCOUNT_ID_MISSING.into());
     }
-
-    let credential = Credential::OAuth(token_bundle);
 
     let repo = state.catalog_repository();
 
@@ -399,9 +420,16 @@ pub async fn disconnect(
         .ok_or(ApiError::NotFound)?;
 
     if let Some(credential) = repo.fetch_credential(&id).await? {
-        if let Some(bundle) = credential.as_oauth() {
-            if let Some(factory) = state.provider_registry().factory_for(conn.provider) {
-                let _ = factory.revoke(bundle).await;
+        // Only OAuth credentials carry a revocable grant. Static
+        // credentials (S3-compatible storage) have nothing to revoke —
+        // keys rotate at the provider's console — and `Provider::revoke`'s
+        // default is a documented no-op for exactly that case.
+        if let (Some(bundle), Some(factory)) = (
+            credential.as_oauth(),
+            state.provider_registry().factory_for(conn.provider),
+        ) {
+            if let Ok(provider) = factory.create(&credential).await {
+                let _ = provider.revoke(bundle).await;
             }
         }
     }
