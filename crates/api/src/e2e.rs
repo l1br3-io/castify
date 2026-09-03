@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use castify_catalog::provider::{
-    ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+    ConnectFlow, ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl,
+    ThumbnailData,
 };
 use castify_catalog::{
     Credential, DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage,
@@ -1046,6 +1047,13 @@ impl E2eMockFactory {
 
 #[async_trait]
 impl ProviderFactory for E2eMockFactory {
+    fn connect_flow(&self) -> ConnectFlow {
+        // The e2e stack never drives a real OAuth round-trip (connections
+        // are seeded via `POST /api/__e2e/seed-connection`), so the flow
+        // only needs to exist, not work.
+        ConnectFlow::OAuth(Box::new(E2eMockFlow))
+    }
+
     async fn create(
         &self,
         _token: &TokenBundle,
@@ -1081,6 +1089,25 @@ impl ProviderFactory for E2eMockFactory {
         _: &TokenBundle,
     ) -> ProviderResult<(Option<String>, Option<String>)> {
         Ok((Some("e2e-account".into()), Some("e2e@example.com".into())))
+    }
+}
+
+/// OAuth flow stub for the e2e mock factory — mirrors the factory's own
+/// no-op OAuth methods.
+struct E2eMockFlow;
+
+#[async_trait]
+impl castify_catalog::provider::OAuthFlow for E2eMockFlow {
+    fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+        String::new()
+    }
+
+    async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
+        Err(ProviderError::Other("e2e mock: no OAuth flow".into()))
+    }
+
+    async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
+        Ok(token.clone())
     }
 }
 

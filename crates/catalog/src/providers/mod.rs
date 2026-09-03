@@ -130,4 +130,71 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn all_factories_expose_oauth_connect_flow() {
+        let reg = ProviderRegistry::new(
+            Some(google_cfg()),
+            Some(dropbox_cfg()),
+            Some(onedrive_cfg()),
+        );
+        for p in [Provider::GoogleDrive, Provider::Dropbox, Provider::OneDrive] {
+            let factory = reg.factory_for(p).expect("configured");
+            assert!(
+                matches!(
+                    factory.connect_flow(),
+                    crate::provider::ConnectFlow::OAuth(_)
+                ),
+                "{p:?} must connect via OAuth"
+            );
+        }
+    }
+
+    /// The credentials schema is data the frontend renders generically; its
+    /// JSON shape is therefore a contract. Assert the exact serialized form
+    /// so adding a field is a deliberate, visible change.
+    #[test]
+    fn credentials_schema_serializes_snake_case() {
+        let schema = crate::provider::CredentialsSchema {
+            fields: vec![crate::provider::CredentialField {
+                key: "endpoint".into(),
+                label: "Endpoint".into(),
+                secret: false,
+                placeholder: Some("https://…".into()),
+            }],
+        };
+        let json = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "fields": [{
+                    "key": "endpoint",
+                    "label": "Endpoint",
+                    "secret": false,
+                    "placeholder": "https://…",
+                }]
+            })
+        );
+    }
+
+    /// The default `verify` rejects static credentials for OAuth-only
+    /// providers before any network call.
+    #[tokio::test]
+    async fn verify_rejects_non_oauth_credential() {
+        let reg = ProviderRegistry::new(Some(google_cfg()), None, None);
+        let factory = reg.factory_for(Provider::GoogleDrive).unwrap();
+        let err = factory
+            .verify(&crate::crypto::Credential::S3(
+                crate::crypto::S3Credentials {
+                    endpoint: "https://e".into(),
+                    region: "auto".into(),
+                    bucket: "b".into(),
+                    access_key_id: "k".into(),
+                    secret_access_key: "s".into(),
+                },
+            ))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::provider::ProviderError::Other(_)));
+    }
 }

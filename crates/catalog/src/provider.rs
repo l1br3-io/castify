@@ -2,8 +2,9 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 
-use crate::crypto::TokenBundle;
+use crate::crypto::{Credential, TokenBundle};
 use crate::model::ListPage;
 
 /// Error returned by provider API operations.
@@ -201,6 +202,60 @@ async fn collect_body(mut body: BodyStream) -> ProviderResult<Vec<u8>> {
     Ok(bytes)
 }
 
+/// OAuth connect-flow operations. Implemented by providers that connect
+/// through an OAuth authorization-code round-trip (Google Drive, Dropbox,
+/// OneDrive).
+///
+/// Obtained via [`ProviderFactory::connect_flow`] returning
+/// [`ConnectFlow::OAuth`]. Split out of `ProviderFactory` so
+/// credential-based providers (S3-compatible storage) don't have to stub
+/// OAuth methods — see `docs/specs/s3-compatible-storage/extending-providers.md`.
+#[async_trait::async_trait]
+pub trait OAuthFlow: Send + Sync {
+    /// Build the OAuth authorization URL with PKCE. Infallible — pure string
+    /// construction from the configured client id.
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String;
+
+    /// Exchange the authorization code for a token bundle.
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle>;
+
+    /// Refresh an expired access token using the refresh token.
+    async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle>;
+}
+
+/// One renderable field of a [`CredentialsSchema`] form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialField {
+    /// Machine key the API layer expects in the submitted form (snake_case).
+    pub key: String,
+    /// Human label for the form input.
+    pub label: String,
+    /// Mask the input (password-style) — true for secrets.
+    pub secret: bool,
+    /// Optional placeholder hint.
+    pub placeholder: Option<String>,
+}
+
+/// Declarative description of the credential form a credential-based
+/// provider needs. The frontend renders this generically; adding a field
+/// (or a whole credential provider) requires zero frontend code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CredentialsSchema {
+    pub fields: Vec<CredentialField>,
+}
+
+/// How a provider connects: an OAuth round-trip or a submitted credential
+/// form. Returned by [`ProviderFactory::connect_flow`].
+pub enum ConnectFlow {
+    OAuth(Box<dyn OAuthFlow>),
+    Credentials(CredentialsSchema),
+}
+
 /// Builder that creates a boxed `Provider` instance from a token bundle and
 /// provider-specific configuration. Each provider registers its own builder.
 ///
@@ -210,8 +265,30 @@ async fn collect_body(mut body: BodyStream) -> ProviderResult<Vec<u8>> {
 /// than `match provider {}` blocks.
 #[async_trait::async_trait]
 pub trait ProviderFactory: Send + Sync {
+    /// How this provider connects. Callers dispatch on the variant — OAuth
+    /// methods live on [`OAuthFlow`], credential providers describe their
+    /// form via [`CredentialsSchema`].
+    fn connect_flow(&self) -> ConnectFlow;
+
     /// Create a provider instance authenticated with the given token bundle.
     async fn create(&self, token_bundle: &TokenBundle) -> ProviderResult<Box<dyn Provider>>;
+
+    /// Validate a fresh credential before persisting the connection.
+    /// Returns `(provider_account_id, provider_account_email)` used by the
+    /// `(provider, account_id)` uniqueness constraint. The default handles
+    /// OAuth credentials via `fetch_user_info`; credential-based providers
+    /// override with their own reachability check.
+    async fn verify(
+        &self,
+        credential: &Credential,
+    ) -> ProviderResult<(Option<String>, Option<String>)> {
+        let bundle = credential.as_oauth().ok_or_else(|| {
+            ProviderError::Other(
+                "this provider connects via OAuth; static credentials are not supported".into(),
+            )
+        })?;
+        self.fetch_user_info(bundle).await
+    }
 
     /// Refresh an expired access token using the refresh token.
     async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle>;

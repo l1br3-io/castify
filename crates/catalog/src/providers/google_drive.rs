@@ -7,7 +7,9 @@ use tokio::sync::Mutex;
 use crate::crypto::TokenBundle;
 use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
+use crate::provider::{
+    ProviderError, ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+};
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
     has_subtitle_extension, has_video_extension, infer_image_mime, is_mpeg_ts_name,
@@ -1095,8 +1097,35 @@ impl GoogleDriveFactory {
     }
 }
 
+/// OAuth connect-flow for Google Drive. Delegates to the factory's existing
+/// methods; the call direction flips when the old `ProviderFactory`
+/// surface is removed.
+#[async_trait::async_trait]
+impl crate::provider::OAuthFlow for GoogleDriveFactory {
+    fn authorization_url(&self, redirect_uri: &str, state: &str, challenge: &str) -> String {
+        ProviderFactory::authorization_url(self, redirect_uri, state, challenge)
+    }
+
+    async fn exchange_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> ProviderResult<TokenBundle> {
+        ProviderFactory::exchange_code(self, code, verifier, redirect_uri).await
+    }
+
+    async fn refresh_token(&self, token_bundle: &TokenBundle) -> ProviderResult<TokenBundle> {
+        ProviderFactory::refresh_token(self, token_bundle).await
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::provider::ProviderFactory for GoogleDriveFactory {
+    fn connect_flow(&self) -> crate::provider::ConnectFlow {
+        crate::provider::ConnectFlow::OAuth(Box::new(GoogleDriveFactory::new(self.config.clone())))
+    }
+
     async fn create(
         &self,
         token_bundle: &TokenBundle,

@@ -527,8 +527,37 @@ mod tests {
         refresh_count: Arc<AtomicU32>,
     }
 
+    /// No-op OAuth flow for test factories — tests never drive a real
+    /// OAuth round-trip.
+    struct NoopFlow;
+
+    #[async_trait::async_trait]
+    impl crate::provider::OAuthFlow for NoopFlow {
+        fn authorization_url(&self, _: &str, _: &str, _: &str) -> String {
+            String::new()
+        }
+
+        async fn exchange_code(&self, _: &str, _: &str, _: &str) -> ProviderResult<TokenBundle> {
+            Ok(crate::crypto::TokenBundle {
+                access_token: "mock".into(),
+                refresh_token: None,
+                expires_at: None,
+                token_type: "Bearer".into(),
+                scope: None,
+            })
+        }
+
+        async fn refresh_token(&self, token: &TokenBundle) -> ProviderResult<TokenBundle> {
+            Ok(token.clone())
+        }
+    }
+
     #[async_trait::async_trait]
     impl ProviderFactory for MockFactory {
+        fn connect_flow(&self) -> crate::provider::ConnectFlow {
+            crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
+        }
+
         async fn create(
             &self,
             _token: &TokenBundle,
@@ -784,6 +813,10 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ProviderFactory for FailingFactory {
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
+            }
+
             async fn create(
                 &self,
                 _: &TokenBundle,
@@ -1005,6 +1038,10 @@ mod tests {
 
         #[async_trait::async_trait]
         impl ProviderFactory for DisconnectingFactory {
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow))
+            }
+
             async fn create(
                 &self,
                 _: &TokenBundle,
