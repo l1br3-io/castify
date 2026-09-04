@@ -677,6 +677,7 @@ mod tests {
             bucket: "videos".into(),
             access_key_id: "key".into(),
             secret_access_key: "secret".into(),
+            prefix: None,
         })
     }
 

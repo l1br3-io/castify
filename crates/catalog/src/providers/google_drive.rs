@@ -1545,6 +1545,7 @@ mod tests {
                 bucket: "b".into(),
                 access_key_id: "k".into(),
                 secret_access_key: "s".into(),
+                prefix: None,
             }))
             .await;
         let err = match result {

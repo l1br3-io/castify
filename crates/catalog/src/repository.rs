@@ -2392,6 +2392,7 @@ mod tests {
                     bucket: "media".into(),
                     access_key_id: "minioadmin".into(),
                     secret_access_key: "minioadmin".into(),
+                    prefix: None,
                 }),
                 provider_account_id: Some("s3-acct".into()),
                 provider_account_email: None,

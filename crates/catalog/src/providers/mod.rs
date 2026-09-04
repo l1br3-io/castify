@@ -11,12 +11,14 @@ pub mod common;
 pub mod dropbox;
 pub mod google_drive;
 pub mod onedrive;
+pub mod s3;
 
 use crate::model::Provider;
 use crate::provider::{AuthMode, ProviderFactory};
 use dropbox::{DropboxConfig, DropboxFactory};
 use google_drive::{GoogleDriveConfig, GoogleDriveFactory};
 use onedrive::{OneDriveConfig, OneDriveFactory};
+use s3::S3Factory;
 
 /// Registry of configured provider factories. Built once at app startup from
 /// the resolved `Config`; cloned cheaply into handlers via `AppState`.
@@ -82,11 +84,9 @@ impl ProviderRegistry {
                 .onedrive
                 .clone()
                 .map(|cfg| Box::new(OneDriveFactory::new(cfg)) as Box<dyn ProviderFactory>),
-            // The S3 factory arrives with the provider module (task 005 of
-            // the s3-compatible-storage effort). Until then S3 reports
-            // configured (above) but cannot build a factory — nothing can
-            // attempt a connection, so the gap is unreachable in practice.
-            Provider::S3Compatible => None,
+            // Credential-based: no server-level config to gate on (OQ-3),
+            // so the factory is always available.
+            Provider::S3Compatible => Some(Box::new(S3Factory) as Box<dyn ProviderFactory>),
         }
     }
 }
@@ -142,14 +142,24 @@ mod tests {
         assert_eq!(reg.auth_mode(Provider::S3Compatible), AuthMode::Credentials);
     }
 
-    /// Interim boundary of task 004: S3 reports configured (so the UI shows
-    /// the card) but has no factory until the provider module lands in
-    /// task 005. Connecting is impossible until then, so nothing can hold
-    /// the missing factory against us.
+    /// Task 005 closed the interim gap: the credential-form factory is
+    /// registered, so a default (empty) registry still dispatches S3 to a
+    /// real factory exposing `ConnectFlow::Credentials`.
     #[test]
-    fn s3_has_no_factory_until_task_005_registers_it() {
+    fn s3_builds_credentials_factory_on_default_registry() {
         let reg = ProviderRegistry::default();
-        assert!(reg.factory_for(Provider::S3Compatible).is_none());
+        let factory = reg
+            .factory_for(Provider::S3Compatible)
+            .expect("s3 factory is always available");
+        assert_eq!(factory.name(), "s3");
+        match factory.connect_flow() {
+            crate::provider::ConnectFlow::Credentials(schema) => {
+                assert!(schema.fields.iter().any(|f| f.key == "endpoint"));
+            }
+            crate::provider::ConnectFlow::OAuth(_) => {
+                panic!("s3 must connect via a credentials form")
+            }
+        }
     }
 
     #[test]
@@ -248,6 +258,7 @@ mod tests {
                     bucket: "b".into(),
                     access_key_id: "k".into(),
                     secret_access_key: "s".into(),
+                    prefix: None,
                 },
             ))
             .await

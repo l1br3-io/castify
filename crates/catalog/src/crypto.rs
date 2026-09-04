@@ -150,6 +150,11 @@ pub struct S3Credentials {
     pub bucket: String,
     pub access_key_id: String,
     pub secret_access_key: String,
+    /// Optional key-prefix the scan restricts itself to (OQ-2 — buckets
+    /// that hold non-media objects). `#[serde(default)]` keeps blobs
+    /// written before the field existed decodable as `prefix: None`.
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 /// The secret a connection authenticates with, stored encrypted in
@@ -279,6 +284,7 @@ mod tests {
             bucket: "media".into(),
             access_key_id: "key-id".into(),
             secret_access_key: "secret".into(),
+            prefix: None,
         }
     }
 
@@ -312,6 +318,29 @@ mod tests {
         assert_eq!(s3.bucket, "media");
         assert_eq!(s3.access_key_id, "key-id");
         assert_eq!(s3.secret_access_key, "secret");
+    }
+
+    /// OQ-2: the optional key-prefix rides inside `S3Credentials` so it
+    /// persists with the connection (same encrypted BLOB) and survives
+    /// reconnects. `#[serde(default)]` keeps older S3 blobs decodable.
+    #[test]
+    fn credential_s3_prefix_round_trips_and_defaults_to_none() {
+        let key = test_key();
+        let mut creds = sample_s3_credentials();
+        let no_prefix = Credential::S3(creds.clone()).encrypt_to_bytes(&key).unwrap();
+        let Credential::S3(recovered) = Credential::decrypt_from_bytes(&key, &no_prefix).unwrap()
+        else {
+            panic!("expected S3 variant");
+        };
+        assert_eq!(recovered.prefix, None);
+
+        creds.prefix = Some("media/".into());
+        let with_prefix = Credential::S3(creds).encrypt_to_bytes(&key).unwrap();
+        let Credential::S3(recovered) = Credential::decrypt_from_bytes(&key, &with_prefix).unwrap()
+        else {
+            panic!("expected S3 variant");
+        };
+        assert_eq!(recovered.prefix.as_deref(), Some("media/"));
     }
 
     /// Rows written before `Credential` existed hold plain `TokenBundle`
