@@ -217,6 +217,10 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/__e2e/mock-cdn/{file_id}",
             axum::routing::get(crate::e2e::mock_cdn),
+        )
+        .route(
+            "/api/__e2e/s3-presign",
+            axum::routing::post(crate::e2e::set_s3_presign),
         );
 
     router

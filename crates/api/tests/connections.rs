@@ -1003,3 +1003,78 @@ async fn s3_connect_rejects_missing_secret_field() {
     .await;
     assert!(status.is_client_error(), "expected 4xx, got {status}");
 }
+
+// ── Task 009: streaming through the credentials-flow path ────────────
+
+/// An S3-credential connection's video resolves a stream URL WITHOUT the
+/// OAuth scaffolding: before the credential-kind fix, every streaming
+/// route hard-required an OAuth bundle and rejected `Credential::S3` with
+/// a 422 ("connection does not use OAuth credentials"). `stream-url` must
+/// return the direct strategy — a presigned URL from the real S3 factory
+/// (presigning is local SigV4 computation, no network), or the mock-cdn
+/// URL under the `e2e` feature.
+#[tokio::test]
+async fn stream_url_resolves_for_s3_credential_connection() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+
+    let conn = repo
+        .create_connection(&NewConnection {
+            provider: Provider::S3Compatible,
+            credential: Credential::S3(castify_catalog::S3Credentials {
+                endpoint: "http://127.0.0.1:9000".into(),
+                region: "us-east-1".into(),
+                bucket: "media".into(),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+                prefix: None,
+            }),
+            provider_account_id: Some("s3-stream-test".into()),
+            provider_account_email: None,
+        })
+        .await
+        .unwrap();
+
+    repo.upsert_video(
+        &conn.id,
+        Provider::S3Compatible,
+        &castify_catalog::NewVideo {
+            provider_file_id: "Movies/holiday.mp4".into(),
+            name: "holiday.mp4".into(),
+            path: Some("/Movies/holiday.mp4".into()),
+            size_bytes: 129_201,
+            mime_type: Some("video/mp4".into()),
+            duration_ms: Some(8_000),
+            width: Some(160),
+            height: Some(120),
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let video_id: String = sqlx::query_scalar(
+        "SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = ?",
+    )
+    .bind(&conn.id)
+    .bind("Movies/holiday.mp4")
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+
+    let (status, body) = get_json(
+        app,
+        &format!("/api/videos/{video_id}/stream-url"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["strategy"], "direct", "body: {body}");
+    let url = body["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("http://127.0.0.1:9000/media/Movies/holiday.mp4")
+            || url.starts_with("/api/__e2e/mock-cdn/"),
+        "unexpected stream url: {url}"
+    );
+}

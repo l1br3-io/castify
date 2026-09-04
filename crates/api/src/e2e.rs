@@ -842,10 +842,11 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
                 url: format!("/api/__e2e/mock-cdn/{file_id}"),
                 expires_at: None,
             }),
-            // Mirrors the real S3 provider's presigned-direct posture
-            // (task 005). The s3 e2e fixtures arrive with the browser
-            // suite in task 009; until then this arm exists only to keep
-            // the match exhaustive.
+            // Unreachable in practice: `AppState::factory_for` routes
+            // S3Compatible to the REAL provider in the e2e build (the
+            // browser suite plays the stack's MinIO through the real SDK
+            // client). The arm keeps the match exhaustive should a mock
+            // s3 connection ever be seeded.
             Provider::S3Compatible => Ok(StreamUrl::Direct {
                 url: format!("/api/__e2e/mock-cdn/{file_id}"),
                 expires_at: None,
@@ -919,9 +920,10 @@ impl E2eMockFactory {
                 7_000_000,
                 Some("hash-od-clip"),
             )],
-            // S3 fixtures arrive with the MinIO e2e suite (task 009 of the
-            // s3-compatible-storage effort); no e2e connection can exist
-            // before then.
+            // Unreachable in practice: `AppState::factory_for` routes
+            // S3Compatible to the REAL provider in the e2e build (the
+            // browser suite scans the stack's MinIO, seeded from
+            // e2e/fixtures/bucket/). See the `open_stream_url` S3 arm.
             Provider::S3Compatible => vec![],
         }
     }
@@ -1049,7 +1051,7 @@ impl E2eMockFactory {
                     FileKind::Other,
                 ),
             ],
-            // See `videos()`: S3 fixtures arrive with task 009.
+            // See `videos()`: the real S3 provider handles the e2e stack.
             Provider::S3Compatible => vec![],
         }
     }
@@ -1258,6 +1260,33 @@ pub async fn seed_connection(
         id: conn.id,
         provider: provider.to_string(),
     }))
+}
+
+// ── S3 presign kill-switch (s3-compatible-storage task 009) ────────
+
+/// Process-global presign switch, flipped by `POST /api/__e2e/s3-presign`.
+/// `true` (the boot default) preserves the real S3 provider's
+/// presigned-direct posture; `false` forces the proxy strategy so the
+/// browser suite can exercise the `/stream` fallback (Range/206 seeking)
+/// without a second stack or a provider rebuild.
+static S3_PRESIGN_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[derive(Debug, Deserialize)]
+pub struct S3PresignBody {
+    pub enabled: bool,
+}
+
+/// `POST /api/__e2e/s3-presign` — toggle S3 direct streaming off/on.
+/// Test-only (e2e feature); see `serve_stream_url` for the consumer.
+pub async fn set_s3_presign(Json(body): Json<S3PresignBody>) -> StatusCode {
+    S3_PRESIGN_ENABLED.store(body.enabled, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(enabled = body.enabled, "e2e: s3 presign switch set");
+    StatusCode::NO_CONTENT
+}
+
+/// Whether the e2e suite has disabled S3 presigned-direct streaming.
+pub fn s3_presign_disabled() -> bool {
+    !S3_PRESIGN_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ── Mock CDN endpoint ──────────────────────────────────────────────

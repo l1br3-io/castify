@@ -171,8 +171,18 @@ impl AppState {
     /// cargo feature this returns an `E2eMockFactory`; in production builds it
     /// delegates to the [`ProviderRegistry`]. Returns `None` when the provider
     /// is not configured (no OAuth credentials).
+    ///
+    /// GOTCHA: S3-compatible storage is the deliberate exception in the e2e
+    /// build — it runs the REAL provider (s3-compatible-storage task 009).
+    /// The browser suite connects through the real credentials form against
+    /// the stack's MinIO service and must scan/stream with the real SDK
+    /// client; the OAuth providers keep their mocks because CI cannot run
+    /// a real OAuth round-trip.
     #[cfg(feature = "e2e")]
     pub fn factory_for(&self, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
+        if provider == Provider::S3Compatible {
+            return self.inner.provider_registry.factory_for(provider);
+        }
         Some(Box::new(crate::e2e::E2eMockFactory::new(provider)))
     }
 

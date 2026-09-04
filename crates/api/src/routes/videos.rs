@@ -36,26 +36,27 @@ use crate::state::AppState;
 /// providers (S3-compatible storage) never feed the token-refresh paths
 /// this helper serves; a non-OAuth credential here means a call path grew
 /// without Credential-aware factory methods.
-async fn require_oauth_pair(
+/// Fetch the connection's stored credential, paired with its OAuth bundle
+/// when the connection uses OAuth. Credentials-flow connections (S3) get
+/// `None` — static keys never expire, so every refresh-retry site treats a
+/// missing bundle as "no retry possible" and surfaces the failure as
+/// reauth-required instead (the owner re-enters keys at the provider
+/// console).
+async fn require_credential(
     repo: &CatalogRepository,
     connection_id: &str,
-) -> ApiResult<(Credential, TokenBundle)> {
+) -> ApiResult<(Credential, Option<TokenBundle>)> {
     let credential = repo
         .fetch_credential(connection_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let bundle = credential
-        .as_oauth()
-        .cloned()
-        .ok_or_else(|| ApiError::Validation {
-            detail: "connection does not use OAuth credentials".into(),
-        })?;
+    let bundle = credential.as_oauth().cloned();
     Ok((credential, bundle))
 }
 
 /// The provider's [`OAuthFlow`], for token refresh. Callers have already
 /// established the connection uses an OAuth credential
-/// ([`require_oauth_pair`]); a credentials flow here means the factory
+/// ([`require_credential`]); a credentials flow here means the factory
 /// and the stored credential diverged — an internal wiring bug, not a
 /// client error.
 fn require_oauth_flow(factory: &dyn ProviderFactory) -> ApiResult<Box<dyn OAuthFlow>> {
@@ -370,8 +371,7 @@ pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Res
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let bundle_pair = require_oauth_pair(repo, &info.connection_id).await?;
-    let (credential, bundle) = bundle_pair;
+    let (credential, bundle) = require_credential(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -379,23 +379,25 @@ pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Res
 
     // Fetch from the provider, refreshing the token once on 401.
     let thumbnail =
-        match fetch_thumbnail_with_refresh(&*factory, repo, &info, &credential, &bundle).await {
+        match fetch_thumbnail_with_refresh(&*factory, repo, &info, &credential, bundle.as_ref())
+            .await
+        {
             Ok(data) => data,
-        Err(e) => {
-            let is_not_found = matches!(e, ProviderError::NotFound(_));
-            let status = if is_not_found {
-                "unsupported"
-            } else {
-                "failed"
-            };
-            let _ = repo.update_thumbnail_status(id, status).await;
-            return Err(if is_not_found {
-                ApiError::NotFound
-            } else {
-                map_post_refresh_error(e, &info.connection_id, info.provider)
-            });
-        }
-    };
+            Err(e) => {
+                let is_not_found = matches!(e, ProviderError::NotFound(_));
+                let status = if is_not_found {
+                    "unsupported"
+                } else {
+                    "failed"
+                };
+                let _ = repo.update_thumbnail_status(id, status).await;
+                return Err(if is_not_found {
+                    ApiError::NotFound
+                } else {
+                    map_post_refresh_error(e, &info.connection_id, info.provider)
+                });
+            }
+        };
 
     // Cache the thumbnail to disk.
     let dir = state.config().data_dir.join("thumbnails");
@@ -421,18 +423,23 @@ async fn fetch_thumbnail_with_refresh(
     repo: &CatalogRepository,
     info: &VideoThumbnailInfo,
     credential: &Credential,
-    bundle: &TokenBundle,
+    bundle: Option<&TokenBundle>,
 ) -> Result<ThumbnailData, ProviderError> {
     let provider = factory.create(credential).await?;
     match provider.fetch_thumbnail(&info.provider_file_id).await {
         Ok(data) => Ok(data),
         Err(ProviderError::Unauthorized) => {
+            // Credentials-flow connections have no bundle to refresh —
+            // promote straight to the reauth-required signal.
+            let Some(bundle) = bundle else {
+                return Err(ProviderError::ReauthRequired);
+            };
             tracing::info!(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for thumbnail"
             );
-            let flow = require_oauth_flow(factory)
-                .map_err(|e| ProviderError::Other(e.to_string()))?;
+            let flow =
+                require_oauth_flow(factory).map_err(|e| ProviderError::Other(e.to_string()))?;
             let new_bundle = flow.refresh_token(bundle).await?;
             repo.update_credential(&info.connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await
@@ -567,7 +574,7 @@ pub(crate) async fn open_stream_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let (credential, bundle) = require_oauth_pair(repo, &info.connection_id).await?;
+    let (credential, bundle) = require_credential(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -580,6 +587,15 @@ pub(crate) async fn open_stream_with_refresh(
     match provider.open_stream(&info.provider_file_id, range).await {
         Ok(resp) => Ok(resp),
         Err(ProviderError::Unauthorized) => {
+            // Credentials-flow connections have no bundle to refresh —
+            // the keys were rotated at the provider console.
+            let Some(bundle) = bundle else {
+                return Err(map_post_refresh_error(
+                    ProviderError::Unauthorized,
+                    &info.connection_id,
+                    conn.provider,
+                ));
+            };
             tracing::info!(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for stream"
@@ -752,6 +768,23 @@ pub(crate) async fn serve_stream_url(
     }
 
     let stream_url = resolve_stream_url_with_refresh(state, &stream_info).await?;
+
+    // E2E-only presign kill-switch (s3-compatible-storage task 009): the
+    // Playwright suite flips this off to prove the proxy fallback
+    // (`/api/videos/{id}/stream` → provider open_stream → Range/206) still
+    // works when direct streaming is unavailable. Compiled out of
+    // production builds.
+    #[cfg(feature = "e2e")]
+    let stream_url = if crate::e2e::s3_presign_disabled()
+        && stream_info.provider == castify_catalog::Provider::S3Compatible
+        && matches!(stream_url, StreamUrl::Direct { .. })
+    {
+        tracing::info!(video_id = %id, "e2e: presigning disabled; forcing proxy strategy");
+        StreamUrl::Proxied
+    } else {
+        stream_url
+    };
+
     let response = StreamUrlResponse::from_stream_url(&stream_url, &stream_info.id, scope_base);
 
     // M6: codec-based transcode trigger. If the video's codec is known
@@ -949,7 +982,7 @@ async fn fetch_probe_bytes(
         .fetch_connection(connection_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("connection not found: {connection_id}"))?;
-    let (credential, bundle) = require_oauth_pair(repo, connection_id).await?;
+    let (credential, bundle) = require_credential(repo, connection_id).await?;
     let factory = state
         .factory_for(conn.provider)
         .ok_or_else(|| anyhow::anyhow!("provider not configured: {}", conn.provider))?;
@@ -959,8 +992,16 @@ async fn fetch_probe_bytes(
     let response = match provider.open_stream(provider_file_id, Some(range)).await {
         Ok(r) => r,
         Err(castify_catalog::ProviderError::Unauthorized) => {
+            // Credentials-flow connections have no bundle to refresh; the
+            // probe is best-effort background work, so a hard auth failure
+            // just fails the probe.
+            let Some(bundle) = bundle else {
+                anyhow::bail!("credentials-flow connection failed auth during probe");
+            };
             tracing::info!(%connection_id, "probe: token expired, refreshing");
-            let new_bundle = require_oauth_flow(&*factory)?.refresh_token(&bundle).await?;
+            let new_bundle = require_oauth_flow(&*factory)?
+                .refresh_token(&bundle)
+                .await?;
             repo.update_credential(connection_id, &Credential::OAuth(new_bundle.clone()))
                 .await?;
             let provider = factory.create(&Credential::OAuth(new_bundle)).await?;
@@ -1042,7 +1083,7 @@ async fn resolve_stream_url_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let (credential, bundle) = require_oauth_pair(repo, &info.connection_id).await?;
+    let (credential, bundle) = require_credential(repo, &info.connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -1055,6 +1096,15 @@ async fn resolve_stream_url_with_refresh(
     match provider.open_stream_url(&info.provider_file_id).await {
         Ok(url) => Ok(url),
         Err(ProviderError::Unauthorized) => {
+            // Credentials-flow connections have no bundle to refresh —
+            // the keys were rotated at the provider console.
+            let Some(bundle) = bundle else {
+                return Err(map_post_refresh_error(
+                    ProviderError::Unauthorized,
+                    &info.connection_id,
+                    conn.provider,
+                ));
+            };
             tracing::info!(
                 connection_id = %info.connection_id,
                 "token expired, refreshing for stream-url"
@@ -1718,7 +1768,7 @@ async fn fetch_subtitle_content_with_refresh(
         .await?
         .ok_or(ApiError::NotFound)?;
 
-    let (credential, bundle) = require_oauth_pair(repo, connection_id).await?;
+    let (credential, bundle) = require_credential(repo, connection_id).await?;
 
     let factory = state
         .factory_for(conn.provider)
@@ -1731,6 +1781,15 @@ async fn fetch_subtitle_content_with_refresh(
     match provider.fetch_subtitle_content(provider_file_id).await {
         Ok(bytes) => Ok(bytes),
         Err(ProviderError::Unauthorized) => {
+            // Credentials-flow connections have no bundle to refresh —
+            // the keys were rotated at the provider console.
+            let Some(bundle) = bundle else {
+                return Err(map_post_refresh_error(
+                    ProviderError::Unauthorized,
+                    connection_id,
+                    conn.provider,
+                ));
+            };
             tracing::info!(
                 connection_id = connection_id,
                 "token expired, refreshing for subtitle"

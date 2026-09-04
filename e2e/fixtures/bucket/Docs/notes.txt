@@ -1,0 +1,4 @@
+MinIO e2e seed fixture — a plain text document in Docs/.
+
+Keyed at Docs/notes.txt so the S3 scan classifies it as a non-media
+Document file alongside the Movies/ videos and the sidecar .srt.
