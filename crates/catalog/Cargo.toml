@@ -32,5 +32,7 @@ tracing = "0.1.44"
 uuid = { version = "1.20.0", features = ["v4"] }
 
 [dev-dependencies]
+testcontainers = "0.23.1"
+testcontainers-modules = { version = "0.11.4", features = ["minio"] }
 tokio = { version = "1.52.3", features = ["macros", "rt"] }
 wiremock = "0.6.5"
