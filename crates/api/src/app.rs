@@ -37,6 +37,10 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::get(connections::available),
         )
         .route(
+            "/api/connections/s3",
+            axum::routing::post(connections::connect_s3),
+        )
+        .route(
             "/api/connections/{provider}/start",
             axum::routing::post(connections::start),
         )

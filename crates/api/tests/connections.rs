@@ -808,3 +808,149 @@ async fn reconnect_revives_soft_deleted_connection_preserving_identity() {
         "no duplicate video rows after revive rescan"
     );
 }
+
+// ── Task 007: POST /api/connections/s3 (credentials connect) ──────────
+
+/// `post_json`, but with a JSON body — the credentials form posts one.
+async fn post_json_body(
+    app: axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+    csrf_header: Option<&str>,
+    csrf_cookie: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json");
+    let mut cookie_parts: Vec<String> = Vec::new();
+    if let Some(c) = cookie {
+        cookie_parts.push(c.to_string());
+    }
+    if let Some(c) = csrf_cookie {
+        cookie_parts.push(c.to_string());
+    }
+    if !cookie_parts.is_empty() {
+        builder = builder.header("cookie", cookie_parts.join("; "));
+    }
+    if let Some(h) = csrf_header {
+        builder = builder.header("x-csrf-token", h);
+    }
+    let response = app
+        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+fn s3_connect_body(endpoint: &str) -> Value {
+    serde_json::json!({
+        "endpoint": endpoint,
+        "region": "us-east-1",
+        "bucket": "media",
+        "access_key_id": "minioadmin",
+        "secret_access_key": "minioadmin"
+    })
+}
+
+#[tokio::test]
+async fn s3_connect_rejects_unauthenticated() {
+    let (state, _guard, _path) = common::fresh_state().await;
+    let app = castify_api::app::build_app(state);
+    let (status, _) = post_json_body(
+        app,
+        "/api/connections/s3",
+        None,
+        None,
+        None,
+        s3_connect_body("http://127.0.0.1:9000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn s3_connect_requires_csrf_token() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _) = post_json_body(
+        app,
+        "/api/connections/s3",
+        Some(&cookie),
+        None,
+        None,
+        s3_connect_body("http://127.0.0.1:9000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Endpoint validation runs before any S3 request is signed — an http
+/// endpoint for a non-loopback host is a 400 naming the rule, not a
+/// network error.
+#[tokio::test]
+async fn s3_connect_rejects_http_non_loopback_endpoint() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let (status, body) = post_json_body(
+        app,
+        "/api/connections/s3",
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+        s3_connect_body("http://minio.internal.example:9000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["message"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        message.contains("https") || message.contains("loopback"),
+        "message should name the http/loopback rule: {body}"
+    );
+}
+
+/// SSRF hardening at the route level: https to a private-range literal is
+/// rejected with a 400 before verify.
+#[tokio::test]
+async fn s3_connect_rejects_private_range_endpoint() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let (status, body) = post_json_body(
+        app,
+        "/api/connections/s3",
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+        s3_connect_body("https://10.9.8.7:9000"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["message"].as_str().unwrap_or("").to_lowercase();
+    assert!(
+        message.contains("private") || message.contains("loopback"),
+        "message should name the range problem: {body}"
+    );
+}
+
+/// A payload missing a required field is a 4xx (serde rejection or the
+/// handler's blank-field validation — either way, no connection).
+#[tokio::test]
+async fn s3_connect_rejects_missing_secret_field() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;
+    let mut body = s3_connect_body("http://127.0.0.1:9000");
+    body.as_object_mut().unwrap().remove("secret_access_key");
+    let (status, _) = post_json_body(
+        app,
+        "/api/connections/s3",
+        Some(&cookie),
+        Some(&csrf_token),
+        Some(&csrf_cookie),
+        body,
+    )
+    .await;
+    assert!(status.is_client_error(), "expected 4xx, got {status}");
+}
