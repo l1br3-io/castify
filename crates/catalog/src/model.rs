@@ -8,14 +8,31 @@ pub enum Provider {
     GoogleDrive,
     Dropbox,
     OneDrive,
+    /// Any S3-compatible object storage (R2, B2, MinIO, AWS S3, …).
+    /// Endpoints/buckets are per-connection data, so one variant covers
+    /// every service. Wire form is `"s3"` (explicit rename — snake_case
+    /// would emit `"s3_compatible"`).
+    #[serde(rename = "s3")]
+    S3Compatible,
 }
 
 impl Provider {
+    /// Every supported provider, in display order. Full-enum iterations
+    /// (e.g. the available-connections listing) derive from this rather
+    /// than ad-hoc arrays, so adding a variant updates them all at once.
+    pub const ALL: [Provider; 4] = [
+        Provider::GoogleDrive,
+        Provider::Dropbox,
+        Provider::OneDrive,
+        Provider::S3Compatible,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Provider::GoogleDrive => "google_drive",
             Provider::Dropbox => "dropbox",
             Provider::OneDrive => "onedrive",
+            Provider::S3Compatible => "s3",
         }
     }
 
@@ -24,6 +41,7 @@ impl Provider {
             "google_drive" => Ok(Provider::GoogleDrive),
             "dropbox" => Ok(Provider::Dropbox),
             "onedrive" => Ok(Provider::OneDrive),
+            "s3" => Ok(Provider::S3Compatible),
             other => Err(format!("unknown provider: {other}")),
         }
     }
@@ -32,6 +50,48 @@ impl Provider {
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_compatible_round_trips_through_parse() {
+        let p = Provider::parse("s3").expect("s3 parses");
+        assert_eq!(p, Provider::S3Compatible);
+        assert_eq!(p.as_str(), "s3");
+        assert_eq!(p.to_string(), "s3");
+    }
+
+    /// The serde wire form must be `"s3"` — snake_case auto-rename would
+    /// produce `"s3_compatible"`, which the spec pins as `"s3"`
+    /// (docs/specs/s3-compatible-storage, §4).
+    #[test]
+    fn s3_compatible_serde_wire_form_is_s3() {
+        let json = serde_json::to_string(&Provider::S3Compatible).unwrap();
+        assert_eq!(json, "\"s3\"");
+        let back: Provider = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Provider::S3Compatible);
+    }
+
+    /// `ALL` is what full-enum iterations (e.g. the available-connections
+    /// listing) derive from — every variant must appear exactly once and
+    /// round-trip through `parse(as_str())`.
+    #[test]
+    fn all_covers_every_variant_with_unique_round_trip_keys() {
+        let keys: std::collections::HashSet<&str> =
+            Provider::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(keys.len(), Provider::ALL.len(), "duplicate as_str keys");
+        for p in Provider::ALL {
+            assert_eq!(Provider::parse(p.as_str()).unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn unknown_provider_string_is_rejected() {
+        assert!(Provider::parse("icloud").is_err());
     }
 }
 

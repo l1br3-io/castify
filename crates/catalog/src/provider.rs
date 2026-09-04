@@ -272,6 +272,18 @@ pub enum ConnectFlow {
     Credentials(CredentialsSchema),
 }
 
+/// The connect-flow kind of a provider, as a serializable value. This is
+/// the `authMode` field of `GET /api/connections/available` — a static
+/// property of each provider (reported via
+/// [`crate::providers::ProviderRegistry::auth_mode`]), not of its
+/// configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    OAuth,
+    Credentials,
+}
+
 /// Builder that creates a boxed `Provider` instance from a credential and
 /// provider-specific configuration. Each provider registers its own builder.
 ///

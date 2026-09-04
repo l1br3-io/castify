@@ -154,13 +154,31 @@ async fn delete(
 }
 
 #[tokio::test]
-async fn available_returns_all_false_when_unconfigured() {
+async fn available_lists_all_providers_with_auth_mode() {
     let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (status, body) = get_json(app, "/api/connections/available", Some(&cookie)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["google_drive"], false);
-    assert_eq!(body["dropbox"], false);
-    assert_eq!(body["onedrive"], false);
+    let entries = body.as_array().expect("available returns a list");
+    assert_eq!(entries.len(), 4);
+
+    let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries
+        .iter()
+        .map(|e| (e["id"].as_str().unwrap(), e))
+        .collect();
+
+    // OAuth providers report their flow + configured flag (false in the
+    // fresh test state — no env credentials).
+    for id in ["google_drive", "dropbox", "onedrive"] {
+        let e = by_id.get(id).unwrap_or_else(|| panic!("missing {id}"));
+        assert_eq!(e["authMode"], "oauth", "{id} authMode");
+        assert_eq!(e["configured"], false, "{id} configured");
+    }
+
+    // S3 reports credentials mode and is always configured (OQ-3: no
+    // server-level credentials, no kill-switch).
+    let s3 = by_id.get("s3").expect("missing s3");
+    assert_eq!(s3["authMode"], "credentials");
+    assert_eq!(s3["configured"], true);
 }
 
 #[tokio::test]

@@ -1,9 +1,11 @@
-// `useAvailableProviders` — which providers have OAuth credentials configured.
+// `useAvailableProviders` — the provider catalog: who can be connected and
+// how (OAuth round-trip vs credentials form).
 //
 // Backed by `GET /api/connections/available` (auth-required). The
-// `/connections` page uses this to disable "Connect" buttons for unconfigured
-// providers and surface a `docs/config.md` setup hint (FR-8.2). Stable for the
-// app's lifetime (env-only), so a long stale time avoids needless refetches.
+// `/connections` page uses `configured` to hide unconfigured OAuth
+// providers (surfacing a `docs/config.md` setup hint when none are) and
+// `authMode` to pick the connect UX. Stable for the app's lifetime
+// (env-only), so a long stale time avoids needless refetches.
 
 import { useQuery } from "@tanstack/react-query";
 import { fetchAvailableProviders } from "../api/connections";
@@ -11,11 +13,7 @@ import type { AvailableProviders } from "../api/types";
 
 export const AVAILABLE_PROVIDERS_QUERY_KEY = ["available-providers"] as const;
 
-const EMPTY: AvailableProviders = {
-  google_drive: false,
-  dropbox: false,
-  onedrive: false,
-};
+const EMPTY: AvailableProviders = [];
 
 export function useAvailableProviders() {
   return useQuery<AvailableProviders>({

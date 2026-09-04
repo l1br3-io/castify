@@ -57,8 +57,11 @@ export function HomePage() {
 
   const isEmpty = (connections.data ?? []).length === 0;
   if (isEmpty) {
+    // Credential-based providers (S3) are always configured, so this is
+    // near-unreachable with a current backend — kept as a defensive
+    // branch for older backends / partial responses.
     const anyConfigured = available.data
-      ? Object.values(available.data).some(Boolean)
+      ? available.data.some((entry) => entry.configured)
       : false;
     if (!anyConfigured) {
       return <SetupRequired />;

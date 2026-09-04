@@ -5,22 +5,28 @@ import { HomePage } from "./home";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 
 // The home page branches on `GET /api/connections` (via the `['connections']`
-// query) and `GET /api/connections/available`. Zero connections → first-run
-// guide (if a provider is configured) or setup-required notice (if none are);
-// at least one connection → the video library (`VideoList`), which queries
+// query) and `GET /api/connections/available` (list: one entry per provider
+// with authMode + configured). Zero connections → first-run guide (if a
+// provider is configured) or setup-required notice (if none are); at least
+// one connection → the video library (`VideoList`), which queries
 // `GET /api/videos`.
 
-const ALL_AVAILABLE = {
-  google_drive: true,
-  dropbox: true,
-  onedrive: true,
-};
+const ALL_AVAILABLE = [
+  { id: "google_drive", authMode: "oauth", configured: true },
+  { id: "dropbox", authMode: "oauth", configured: true },
+  { id: "onedrive", authMode: "oauth", configured: true },
+  { id: "s3", authMode: "credentials", configured: true },
+];
 
-const NONE_AVAILABLE = {
-  google_drive: false,
-  dropbox: false,
-  onedrive: false,
-};
+// Defensive fixture: a current backend always reports s3 configured
+// (credential-based providers need no server setup), so this shape only
+// arises from an older/partial backend — the branch must still behave.
+const NONE_AVAILABLE = [
+  { id: "google_drive", authMode: "oauth", configured: false },
+  { id: "dropbox", authMode: "oauth", configured: false },
+  { id: "onedrive", authMode: "oauth", configured: false },
+  { id: "s3", authMode: "credentials", configured: false },
+];
 
 const SAMPLE_CONNECTION = {
   id: "c1",

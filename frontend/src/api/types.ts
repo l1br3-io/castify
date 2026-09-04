@@ -13,18 +13,22 @@ export interface OwnerEnvelope {
 
 // Provider identifiers as serialized by the `Provider` enum
 // (`crates/catalog/src/model.rs`, `#[serde(rename_all = "snake_case")]`).
-export type ProviderKey = "google_drive" | "dropbox" | "onedrive";
+// `"s3"` is any S3-compatible object storage (R2, B2, MinIO, AWS S3, …) —
+// endpoints/buckets are per-connection data.
+export type ProviderKey = "google_drive" | "dropbox" | "onedrive" | "s3";
 
 export const PROVIDERS: readonly ProviderKey[] = [
   "google_drive",
   "dropbox",
   "onedrive",
+  "s3",
 ] as const;
 
 export const PROVIDER_LABELS: Record<ProviderKey, string> = {
   google_drive: "Google Drive",
   dropbox: "Dropbox",
   onedrive: "OneDrive",
+  s3: "S3-Compatible Storage",
 };
 
 // Scan status as serialized by `ScanStatus` (`#[serde(rename_all = "lowercase")]`).
@@ -40,11 +44,23 @@ export interface ConnectionDto {
   video_count: number;
 }
 
-export interface AvailableProviders {
-  google_drive: boolean;
-  dropbox: boolean;
-  onedrive: boolean;
+// How a provider connects (`AuthMode` in the backend). OAuth providers
+// round-trip through the provider's consent screen; credentials providers
+// submit a schema-driven form.
+export type AuthMode = "oauth" | "credentials";
+
+// One entry of `GET /api/connections/available`'s list response. Note the
+// camelCase `authMode` key — pinned by the s3-compatible-storage spec's
+// wire contract (the one non-snake_case key in the API).
+export interface AvailableProviderDto {
+  id: ProviderKey;
+  authMode: AuthMode;
+  // Server-level setup done? OAuth providers depend on env credentials;
+  // credential-based providers (s3) are always configured.
+  configured: boolean;
 }
+
+export type AvailableProviders = AvailableProviderDto[];
 
 export interface StartResponse {
   auth_url: string;

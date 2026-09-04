@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 
 import { ConnectionsPage } from "./connections";
 import { setCsrfToken } from "../api/client";
@@ -10,17 +10,25 @@ import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 // (configured-providers probe). Mutations hit `POST .../start` and
 // `DELETE /api/connections/{id}`.
 
-const ALL_AVAILABLE = {
-  google_drive: true,
-  dropbox: true,
-  onedrive: true,
-};
+// `GET /api/connections/available` now returns a list: one entry per
+// provider with its connect-flow kind and configured flag. ALL_AVAILABLE
+// mirrors a fully-configured backend; NONE_AVAILABLE is a defensive
+// fixture (a current backend always reports s3 configured) used to pin the
+// empty-state branch.
 
-const NONE_AVAILABLE = {
-  google_drive: false,
-  dropbox: false,
-  onedrive: false,
-};
+const ALL_AVAILABLE = [
+  { id: "google_drive", authMode: "oauth", configured: true },
+  { id: "dropbox", authMode: "oauth", configured: true },
+  { id: "onedrive", authMode: "oauth", configured: true },
+  { id: "s3", authMode: "credentials", configured: true },
+];
+
+const NONE_AVAILABLE = [
+  { id: "google_drive", authMode: "oauth", configured: false },
+  { id: "dropbox", authMode: "oauth", configured: false },
+  { id: "onedrive", authMode: "oauth", configured: false },
+  { id: "s3", authMode: "credentials", configured: false },
+];
 
 function connectionsFetch(
   connections: unknown,
@@ -70,8 +78,31 @@ describe("ConnectionsPage", () => {
       fetchImplementation: connectionsFetch([]),
     });
 
-    // Three provider cards, none connected, all configured → three Connect buttons.
-    expect(await screen.findAllByRole("button", { name: /^connect$/i })).toHaveLength(3);
+    // Four provider cards, none connected: the three OAuth providers get
+    // Connect buttons, S3 renders as a credentials-mode info card.
+    expect(await screen.findByText("S3-Compatible Storage")).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    expect(
+      await screen.findAllByRole("button", { name: /^connect$/i }),
+    ).toHaveLength(3);
+  });
+
+  it("renders the S3 card without an OAuth connect action", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([]),
+    });
+
+    // Credentials-mode card: present with its hint copy, but no Connect
+    // button that would hit the OAuth-only `/start` endpoint (the
+    // schema-driven form arrives with the s3-compatible-storage effort).
+    const card = (await screen.findByText("S3-Compatible Storage")).closest(
+      "article",
+    );
+    expect(card).not.toBeNull();
+    expect(
+      within(card as HTMLElement).queryByRole("button"),
+    ).toBeNull();
   });
 
   it("shows an empty state instead of disabled cards when no providers are configured", async () => {

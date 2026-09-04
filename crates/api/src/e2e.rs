@@ -842,6 +842,14 @@ impl castify_catalog::provider::Provider for E2eMockProvider {
                 url: format!("/api/__e2e/mock-cdn/{file_id}"),
                 expires_at: None,
             }),
+            // Mirrors the real S3 provider's presigned-direct posture
+            // (task 005). The s3 e2e fixtures arrive with the browser
+            // suite in task 009; until then this arm exists only to keep
+            // the match exhaustive.
+            Provider::S3Compatible => Ok(StreamUrl::Direct {
+                url: format!("/api/__e2e/mock-cdn/{file_id}"),
+                expires_at: None,
+            }),
         }
     }
 }
@@ -911,6 +919,10 @@ impl E2eMockFactory {
                 7_000_000,
                 Some("hash-od-clip"),
             )],
+            // S3 fixtures arrive with the MinIO e2e suite (task 009 of the
+            // s3-compatible-storage effort); no e2e connection can exist
+            // before then.
+            Provider::S3Compatible => vec![],
         }
     }
 
@@ -1037,6 +1049,8 @@ impl E2eMockFactory {
                     FileKind::Other,
                 ),
             ],
+            // See `videos()`: S3 fixtures arrive with task 009.
+            Provider::S3Compatible => vec![],
         }
     }
 }

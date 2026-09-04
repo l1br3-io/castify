@@ -15,10 +15,14 @@
 //   * Scanning — shows a live "Found N media…" indicator; the
 //     `['connections']` query refetches every few seconds while any connection
 //     is in the `scanning` state (see `use-connections.ts`).
-//   * Available (not connected) — Connect button → `POST .../start` → navigate
-//     to the returned `auth_url` (full page redirect to the provider).
-// Unconfigured providers (no OAuth env vars) are hidden; if none are configured
-// the grid shows an empty-state hint pointing to `docs/config.md`.
+//   * Available (not connected) — OAuth providers: Connect button →
+//     `POST .../start` → navigate to the returned `auth_url` (full page
+//     redirect to the provider). Credentials providers (S3-compatible
+//     storage): the schema-driven form takes over in a later task; for now
+//     the card renders without a connect action.
+// Unconfigured OAuth providers (no env vars) are hidden; credentials
+// providers are always configured. If nothing is configured the grid shows
+// an empty-state hint pointing to `docs/config.md`.
 //
 // Errors from connect/disconnect surface inline on the relevant card.
 
@@ -49,6 +53,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import {
   PROVIDER_LABELS,
   PROVIDERS,
+  type AvailableProviderDto,
   type ConnectionDto,
   type ProviderKey,
 } from "../api/types";
@@ -121,9 +126,16 @@ function ConnectionsGrid() {
     connectedByProvider.set(conn.provider, conn);
   }
 
+  // The available list is the source of truth for who's connectable and
+  // how; PROVIDERS only fixes display order (labels/chips are
+  // frontend-owned).
+  const availableById = new Map<ProviderKey, AvailableProviderDto>(
+    (available.data ?? []).map((entry) => [entry.id, entry]),
+  );
+
   const visibleProviders = PROVIDERS.filter(
     (provider) =>
-      (available.data?.[provider] ?? false) ||
+      (availableById.get(provider)?.configured ?? false) ||
       connectedByProvider.has(provider),
   );
 
@@ -136,7 +148,7 @@ function ConnectionsGrid() {
       {visibleProviders.map((provider) => (
         <ProviderCard
           key={provider}
-          provider={provider}
+          entry={availableById.get(provider)}
           connection={connectedByProvider.get(provider)}
         />
       ))}
@@ -145,25 +157,26 @@ function ConnectionsGrid() {
 }
 
 function ProviderCard({
-  provider,
+  entry,
   connection,
 }: {
-  provider: ProviderKey;
+  entry: AvailableProviderDto | undefined;
   connection: ConnectionDto | undefined;
 }) {
   if (connection) {
-    return <ConnectedCard provider={provider} connection={connection} />;
+    return <ConnectedCard connection={connection} />;
   }
-  return <AvailableCard provider={provider} />;
+  // Unreachable in practice — visibility requires a configured entry or a
+  // connection — but don't render a mislabeled card if the list and the
+  // connections query ever disagree.
+  if (!entry) {
+    return null;
+  }
+  return <AvailableCard entry={entry} />;
 }
 
-function ConnectedCard({
-  provider,
-  connection,
-}: {
-  provider: ProviderKey;
-  connection: ConnectionDto;
-}) {
+function ConnectedCard({ connection }: { connection: ConnectionDto }) {
+  const provider = connection.provider;
   return (
     <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
       <div className="flex items-start justify-between gap-2">
@@ -350,7 +363,8 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
   );
 }
 
-function AvailableCard({ provider }: { provider: ProviderKey }) {
+function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
+  const provider = entry.id;
   const [error, setError] = useState<string | null>(null);
 
   const connect = useMutation({
@@ -362,6 +376,24 @@ function AvailableCard({ provider }: { provider: ProviderKey }) {
     },
     onError: (err: unknown) => setError(describeError(err)),
   });
+
+  // Credentials providers connect through a schema-driven form (built in a
+  // later task of the s3-compatible-storage effort). Until it lands, the
+  // card renders information-only — no OAuth `/start` call to fail on.
+  if (entry.authMode === "credentials") {
+    return (
+      <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
+        <div>
+          <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
+          <p className="text-sm opacity-60">Not connected</p>
+        </div>
+        <p className="text-sm opacity-70">
+          Connects with storage credentials — an endpoint, bucket, and access
+          keys you already have.
+        </p>
+      </article>
+    );
+  }
 
   return (
     <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">

@@ -18,8 +18,7 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use castify_catalog::{
-    redirect_uri, ConnectFlow, Credential, NewConnection, OAuthStateEntry, PkceChallenge,
-    Provider,
+    redirect_uri, ConnectFlow, Credential, NewConnection, OAuthStateEntry, PkceChallenge, Provider,
 };
 
 use crate::auth::resolve_owner;
@@ -62,11 +61,17 @@ pub struct ConnectionDto {
     pub video_count: i64,
 }
 
+/// One entry in the `GET /api/connections/available` listing. `authMode` is
+/// camelCase — the one non-snake_case key in the API, pinned by the
+/// s3-compatible-storage spec's wire contract. `configured` reports
+/// server-level setup (OAuth env vars); credential-based providers are
+/// always configured.
 #[derive(Debug, Serialize)]
-pub struct AvailableProviders {
-    pub google_drive: bool,
-    pub dropbox: bool,
-    pub onedrive: bool,
+pub struct AvailableProviderDto {
+    pub id: &'static str,
+    #[serde(rename = "authMode")]
+    pub auth_mode: castify_catalog::AuthMode,
+    pub configured: bool,
 }
 
 /// Scan status returned by `GET /api/connections/{id}/scan` (FR-7.3).
@@ -123,13 +128,24 @@ pub async fn list(State(state): State<AppState>) -> ApiResult<Json<Vec<Connectio
     Ok(Json(dtos))
 }
 
-pub async fn available(State(state): State<AppState>) -> Json<AvailableProviders> {
+/// `GET /api/connections/available` — one entry per supported provider
+/// with its connect-flow kind (`authMode`) and server-level configured
+/// flag. Credential-based providers (S3) are always configured; OAuth
+/// providers depend on env credentials. The frontend uses `authMode` to
+/// pick the connect UX (OAuth redirect vs credentials form) and
+/// `configured` to hide unconfigured OAuth providers.
+pub async fn available(State(state): State<AppState>) -> Json<Vec<AvailableProviderDto>> {
     let reg = state.provider_registry();
-    Json(AvailableProviders {
-        google_drive: reg.is_configured(Provider::GoogleDrive),
-        dropbox: reg.is_configured(Provider::Dropbox),
-        onedrive: reg.is_configured(Provider::OneDrive),
-    })
+    Json(
+        Provider::ALL
+            .iter()
+            .map(|&provider| AvailableProviderDto {
+                id: provider.as_str(),
+                auth_mode: reg.auth_mode(provider),
+                configured: reg.is_configured(provider),
+            })
+            .collect(),
+    )
 }
 
 pub async fn start(
@@ -297,7 +313,9 @@ async fn callback_inner(
     let flow = match factory.connect_flow() {
         ConnectFlow::OAuth(flow) => flow,
         ConnectFlow::Credentials(_) => {
-            return Err(format!("{provider} connects via a credentials form, not OAuth"));
+            return Err(format!(
+                "{provider} connects via a credentials form, not OAuth"
+            ));
         }
     };
     let token_bundle = flow

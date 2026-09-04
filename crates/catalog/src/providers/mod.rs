@@ -13,7 +13,7 @@ pub mod google_drive;
 pub mod onedrive;
 
 use crate::model::Provider;
-use crate::provider::ProviderFactory;
+use crate::provider::{AuthMode, ProviderFactory};
 use dropbox::{DropboxConfig, DropboxFactory};
 use google_drive::{GoogleDriveConfig, GoogleDriveFactory};
 use onedrive::{OneDriveConfig, OneDriveFactory};
@@ -41,11 +41,26 @@ impl ProviderRegistry {
     }
 
     /// Returns true if the provider's OAuth credentials are configured.
+    /// S3-compatible storage needs no server-level credentials, so it
+    /// reports configured unconditionally (OQ-3: always enabled, no
+    /// kill-switch).
     pub fn is_configured(&self, provider: Provider) -> bool {
         match provider {
             Provider::GoogleDrive => self.google.is_some(),
             Provider::Dropbox => self.dropbox.is_some(),
             Provider::OneDrive => self.onedrive.is_some(),
+            Provider::S3Compatible => true,
+        }
+    }
+
+    /// The provider's connect-flow kind — a static property of the
+    /// provider, not of its configuration. Drives the `authMode` field of
+    /// `GET /api/connections/available` so the frontend knows whether to
+    /// render an OAuth redirect button or a credentials form.
+    pub fn auth_mode(&self, provider: Provider) -> AuthMode {
+        match provider {
+            Provider::GoogleDrive | Provider::Dropbox | Provider::OneDrive => AuthMode::OAuth,
+            Provider::S3Compatible => AuthMode::Credentials,
         }
     }
 
@@ -67,6 +82,11 @@ impl ProviderRegistry {
                 .onedrive
                 .clone()
                 .map(|cfg| Box::new(OneDriveFactory::new(cfg)) as Box<dyn ProviderFactory>),
+            // The S3 factory arrives with the provider module (task 005 of
+            // the s3-compatible-storage effort). Until then S3 reports
+            // configured (above) but cannot build a factory — nothing can
+            // attempt a connection, so the gap is unreachable in practice.
+            Provider::S3Compatible => None,
         }
     }
 }
@@ -101,6 +121,35 @@ mod tests {
         assert!(!reg.is_configured(Provider::Dropbox));
         assert!(!reg.is_configured(Provider::OneDrive));
         assert!(reg.factory_for(Provider::GoogleDrive).is_none());
+    }
+
+    /// OQ-3: S3 needs no server-level credentials, so it is always
+    /// configured — even on a default (empty) registry. No kill-switch.
+    #[test]
+    fn s3_is_configured_even_on_an_empty_registry() {
+        let reg = ProviderRegistry::default();
+        assert!(reg.is_configured(Provider::S3Compatible));
+    }
+
+    /// The auth-mode table behind `GET /api/connections/available`: the
+    /// three OAuth providers vs the credential-form provider.
+    #[test]
+    fn auth_mode_is_oauth_for_cloud_providers_credentials_for_s3() {
+        let reg = ProviderRegistry::default();
+        assert_eq!(reg.auth_mode(Provider::GoogleDrive), AuthMode::OAuth);
+        assert_eq!(reg.auth_mode(Provider::Dropbox), AuthMode::OAuth);
+        assert_eq!(reg.auth_mode(Provider::OneDrive), AuthMode::OAuth);
+        assert_eq!(reg.auth_mode(Provider::S3Compatible), AuthMode::Credentials);
+    }
+
+    /// Interim boundary of task 004: S3 reports configured (so the UI shows
+    /// the card) but has no factory until the provider module lands in
+    /// task 005. Connecting is impossible until then, so nothing can hold
+    /// the missing factory against us.
+    #[test]
+    fn s3_has_no_factory_until_task_005_registers_it() {
+        let reg = ProviderRegistry::default();
+        assert!(reg.factory_for(Provider::S3Compatible).is_none());
     }
 
     #[test]
