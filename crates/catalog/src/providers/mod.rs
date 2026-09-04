@@ -14,7 +14,7 @@ pub mod onedrive;
 pub mod s3;
 
 use crate::model::Provider;
-use crate::provider::{AuthMode, ProviderFactory};
+use crate::provider::{AuthMode, ConnectFlow, CredentialsSchema, ProviderFactory};
 use dropbox::{DropboxConfig, DropboxFactory};
 use google_drive::{GoogleDriveConfig, GoogleDriveFactory};
 use onedrive::{OneDriveConfig, OneDriveFactory};
@@ -63,6 +63,17 @@ impl ProviderRegistry {
         match provider {
             Provider::GoogleDrive | Provider::Dropbox | Provider::OneDrive => AuthMode::OAuth,
             Provider::S3Compatible => AuthMode::Credentials,
+        }
+    }
+
+    /// The renderable credentials form for a credentials-flow provider, or
+    /// `None` for OAuth providers / unconfigured providers. The frontend
+    /// renders this schema generically — the `credentials` field of
+    /// `GET /api/connections/available`.
+    pub fn credentials_schema(&self, provider: Provider) -> Option<CredentialsSchema> {
+        match self.factory_for(provider)?.connect_flow() {
+            ConnectFlow::Credentials(schema) => Some(schema),
+            ConnectFlow::OAuth(_) => None,
         }
     }
 

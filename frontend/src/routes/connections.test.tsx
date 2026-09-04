@@ -16,11 +16,50 @@ import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 // fixture (a current backend always reports s3 configured) used to pin the
 // empty-state branch.
 
+// The S3 entry's credentials schema — mirrors the backend's
+// `credentials_schema()` in `crates/catalog/src/providers/s3.rs`. The form
+// renders this generically; fixtures below vary it to prove that.
+const S3_SCHEMA = {
+  fields: [
+    {
+      key: "endpoint",
+      label: "Endpoint",
+      secret: false,
+      placeholder: "https://<account>.r2.cloudflarestorage.com",
+    },
+    {
+      key: "region",
+      label: "Region",
+      secret: false,
+      placeholder: "auto (Cloudflare R2) · us-east-1 (MinIO)",
+    },
+    { key: "bucket", label: "Bucket", secret: false, placeholder: "media" },
+    {
+      key: "access_key_id",
+      label: "Access key ID",
+      secret: true,
+      placeholder: "AKIA…",
+    },
+    {
+      key: "secret_access_key",
+      label: "Secret access key",
+      secret: true,
+      placeholder: "paste the secret access key",
+    },
+    {
+      key: "prefix",
+      label: "Key prefix (optional)",
+      secret: false,
+      placeholder: "media/",
+    },
+  ],
+};
+
 const ALL_AVAILABLE = [
   { id: "google_drive", authMode: "oauth", configured: true },
   { id: "dropbox", authMode: "oauth", configured: true },
   { id: "onedrive", authMode: "oauth", configured: true },
-  { id: "s3", authMode: "credentials", configured: true },
+  { id: "s3", authMode: "credentials", configured: true, credentials: S3_SCHEMA },
 ];
 
 const NONE_AVAILABLE = [
@@ -55,9 +94,53 @@ const GOOGLE_CONNECTED = {
   video_count: 7,
 };
 
+const S3_CONNECTED = {
+  id: "c-s3",
+  provider: "s3",
+  provider_account_email: null,
+  connected_at: "2026-01-01T00:00:00Z",
+  scan_status: "scanning",
+  last_scan_at: null,
+  video_count: 0,
+};
+
 describe("ConnectionsPage", () => {
   beforeEach(() => setCsrfToken("csrf-test"));
   afterEach(() => setCsrfToken(null));
+
+  /** The S3 card in its revealed-form state, helper for the fill-and-submit
+   * tests below. Resolves once the form's first input is rendered. */
+  async function openS3Form(): Promise<HTMLElement> {
+    const card = (await screen.findByText("S3-Compatible Storage")).closest(
+      "article",
+    );
+    expect(card).not.toBeNull();
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: /^connect$/i }),
+    );
+    expect(
+      await within(card as HTMLElement).findByLabelText("Endpoint"),
+    ).toBeInTheDocument();
+    return card as HTMLElement;
+  }
+
+  function fillCredentials(card: HTMLElement): void {
+    fireEvent.change(within(card).getByLabelText("Endpoint"), {
+      target: { value: "http://127.0.0.1:9000" },
+    });
+    fireEvent.change(within(card).getByLabelText("Region"), {
+      target: { value: "us-east-1" },
+    });
+    fireEvent.change(within(card).getByLabelText("Bucket"), {
+      target: { value: "media" },
+    });
+    fireEvent.change(within(card).getByLabelText("Access key ID"), {
+      target: { value: "minioadmin" },
+    });
+    fireEvent.change(within(card).getByLabelText("Secret access key"), {
+      target: { value: "miniosecret" },
+    });
+  }
 
   it("renders a connected card with email, video count, and disconnect", async () => {
     renderWithProviders(<ConnectionsPage />, {
@@ -79,30 +162,210 @@ describe("ConnectionsPage", () => {
     });
 
     // Four provider cards, none connected: the three OAuth providers get
-    // Connect buttons, S3 renders as a credentials-mode info card.
+    // Connect buttons (redirect flow), S3 gets one that reveals the
+    // credentials form instead.
     expect(await screen.findByText("S3-Compatible Storage")).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
     expect(
       await screen.findAllByRole("button", { name: /^connect$/i }),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
-  it("renders the S3 card without an OAuth connect action", async () => {
+  it("reveals the schema-driven form on the S3 card, never the OAuth /start flow", async () => {
+    const { fetchSpy } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([]),
+    });
+
+    // Credentials-mode connect: a Connect button reveals the generic form…
+    const card = await openS3Form();
+    // …with every schema field rendered by its label.
+    for (const label of [
+      "Endpoint",
+      "Region",
+      "Bucket",
+      "Access key ID",
+      "Secret access key",
+      "Key prefix (optional)",
+    ]) {
+      expect(within(card).getByLabelText(label)).toBeInTheDocument();
+    }
+
+    // …and no call to the OAuth-only `/start` endpoint.
+    const startCall = fetchSpy.mock.calls.find(([url]) =>
+      String(url).includes("/start"),
+    );
+    expect(startCall).toBeUndefined();
+  });
+
+  it("renders a schema with an extra field without component changes", async () => {
+    // The schema-driven acceptance check: a backend that grows a field (or
+    // a future credentials provider with different fields) must render
+    // through the same generic form — zero component edits.
+    const withExtraField = ALL_AVAILABLE.map((entry) =>
+      entry.id === "s3"
+        ? {
+            ...entry,
+            credentials: {
+              fields: [
+                ...S3_SCHEMA.fields,
+                {
+                  key: "vault_token",
+                  label: "Vault token",
+                  secret: false,
+                  placeholder: null,
+                },
+              ],
+            },
+          }
+        : entry,
+    );
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([], withExtraField),
+    });
+
+    const card = await openS3Form();
+    expect(within(card).getByLabelText("Vault token")).toBeInTheDocument();
+    expect(within(card).getByLabelText("Endpoint")).toBeInTheDocument();
+  });
+
+  it("masks secret inputs and toggles reveal per field", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([]),
     });
 
-    // Credentials-mode card: present with its hint copy, but no Connect
-    // button that would hit the OAuth-only `/start` endpoint (the
-    // schema-driven form arrives with the s3-compatible-storage effort).
-    const card = (await screen.findByText("S3-Compatible Storage")).closest(
-      "article",
+    const card = await openS3Form();
+    const accessKey = within(card).getByLabelText("Access key ID");
+    expect(accessKey).toHaveAttribute("type", "password");
+    expect(within(card).getByLabelText("Endpoint")).toHaveAttribute(
+      "type",
+      "text",
     );
-    expect(card).not.toBeNull();
+
+    fireEvent.click(
+      within(card).getByRole("button", { name: "Show Access key ID" }),
+    );
+    expect(accessKey).toHaveAttribute("type", "text");
+    fireEvent.click(
+      within(card).getByRole("button", { name: "Hide Access key ID" }),
+    );
+    expect(accessKey).toHaveAttribute("type", "password");
+
+    // Revealing one secret leaves the other masked.
     expect(
-      within(card as HTMLElement).queryByRole("button"),
-    ).toBeNull();
+      within(card).getByLabelText("Secret access key"),
+    ).toHaveAttribute("type", "password");
+  });
+
+  it("submits the credentials form and flips the card to connected", async () => {
+    let connections: unknown[] = [];
+    const { fetchSpy } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse(connections);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/s3" && method === "POST") {
+          connections = [S3_CONNECTED];
+          return jsonResponse(S3_CONNECTED, 201);
+        }
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    const card = await openS3Form();
+    fillCredentials(card);
+    fireEvent.click(within(card).getByRole("button", { name: /^connect$/i }));
+
+    await waitFor(() => {
+      const post = fetchSpy.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/connections/s3" &&
+          (init as RequestInit)?.method === "POST",
+      );
+      expect(post).toBeDefined();
+      expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+        endpoint: "http://127.0.0.1:9000",
+        region: "us-east-1",
+        bucket: "media",
+        access_key_id: "minioadmin",
+        secret_access_key: "miniosecret",
+        prefix: "",
+      });
+    });
+
+    // The refreshed list flips the card to its connected state and the
+    // existing scan-status UI takes over.
+    expect(await screen.findByText("Scanning")).toBeInTheDocument();
+    // Secrets never render back: the form (and its inputs) is gone.
+    expect(screen.queryByLabelText("Access key ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Secret access key")).not.toBeInTheDocument();
+  });
+
+  it("shows the backend's verify error inline and adds no row", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/s3" && method === "POST")
+          return jsonError(
+            400,
+            "the object store rejected these credentials — check the access key ID and secret access key",
+          );
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    const card = await openS3Form();
+    fillCredentials(card);
+    fireEvent.click(
+      within(card).getByRole("button", { name: /^connect$/i }),
+    );
+
+    // The backend's actionable message surfaces inline on the card…
+    expect(
+      await within(card).findByText(/rejected these credentials/),
+    ).toBeInTheDocument();
+    // …the form stays available for correction, and no connection row
+    // appeared (the card is still in its not-connected state).
+    expect(within(card).getByLabelText("Endpoint")).toBeInTheDocument();
+    expect(screen.queryByText("Scanning")).not.toBeInTheDocument();
+  });
+
+  it("shows a generic inline error when the network fails", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/s3" && method === "POST")
+          return Promise.reject(new TypeError("Failed to fetch"));
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    const card = await openS3Form();
+    fillCredentials(card);
+    fireEvent.click(within(card).getByRole("button", { name: /^connect$/i }));
+
+    expect(
+      await within(card).findByText(/Something went wrong/),
+    ).toBeInTheDocument();
+    expect(within(card).getByLabelText("Endpoint")).toBeInTheDocument();
   });
 
   it("shows an empty state instead of disabled cards when no providers are configured", async () => {

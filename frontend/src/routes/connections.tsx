@@ -18,8 +18,8 @@
 //   * Available (not connected) — OAuth providers: Connect button →
 //     `POST .../start` → navigate to the returned `auth_url` (full page
 //     redirect to the provider). Credentials providers (S3-compatible
-//     storage): the schema-driven form takes over in a later task; for now
-//     the card renders without a connect action.
+//     storage): Connect button reveals the schema-driven form
+//     (`CredentialsForm`), which submits to `POST /api/connections/{provider}`.
 // Unconfigured OAuth providers (no env vars) are hidden; credentials
 // providers are always configured. If nothing is configured the grid shows
 // an empty-state hint pointing to `docs/config.md`.
@@ -48,6 +48,7 @@ import { FOLDER_TREE_QUERY_KEY } from "../hooks/use-folder-tree";
 import { FOLDER_CONTENTS_QUERY_KEY } from "../hooks/use-folder-contents";
 import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
+import { CredentialsForm } from "../components/credentials-form";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import {
@@ -366,6 +367,7 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
 function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   const provider = entry.id;
   const [error, setError] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
 
   const connect = useMutation({
     mutationFn: () => startConnect(provider),
@@ -377,9 +379,10 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
     onError: (err: unknown) => setError(describeError(err)),
   });
 
-  // Credentials providers connect through a schema-driven form (built in a
-  // later task of the s3-compatible-storage effort). Until it lands, the
-  // card renders information-only — no OAuth `/start` call to fail on.
+  // Credentials providers connect through the schema-driven form
+  // (`CredentialsForm`) instead of the OAuth redirect. A missing schema is
+  // a wire-contract violation — fall back to the info-only card rather
+  // than a form with nothing to render.
   if (entry.authMode === "credentials") {
     return (
       <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
@@ -391,6 +394,27 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
           Connects with storage credentials — an endpoint, bucket, and access
           keys you already have.
         </p>
+        <div className="mt-auto">
+          {entry.credentials &&
+            (formOpen ? (
+              <CredentialsForm
+                provider={provider}
+                schema={entry.credentials}
+                onCancel={() => setFormOpen(false)}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setFormOpen(true);
+                }}
+                className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+              >
+                Connect
+              </button>
+            ))}
+        </div>
       </article>
     );
   }

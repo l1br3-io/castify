@@ -82,13 +82,17 @@ pub struct ConnectionDto {
 /// camelCase — the one non-snake_case key in the API, pinned by the
 /// s3-compatible-storage spec's wire contract. `configured` reports
 /// server-level setup (OAuth env vars); credential-based providers are
-/// always configured.
+/// always configured. `credentials` carries the renderable form schema and
+/// is present only on credentials-mode entries (skipped, not nulled, so
+/// OAuth entries keep their pre-schema wire shape).
 #[derive(Debug, Serialize)]
 pub struct AvailableProviderDto {
     pub id: &'static str,
     #[serde(rename = "authMode")]
     pub auth_mode: castify_catalog::AuthMode,
     pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<castify_catalog::CredentialsSchema>,
 }
 
 /// Scan status returned by `GET /api/connections/{id}/scan` (FR-7.3).
@@ -156,11 +160,12 @@ async fn connection_dto(
 }
 
 /// `GET /api/connections/available` — one entry per supported provider
-/// with its connect-flow kind (`authMode`) and server-level configured
-/// flag. Credential-based providers (S3) are always configured; OAuth
-/// providers depend on env credentials. The frontend uses `authMode` to
-/// pick the connect UX (OAuth redirect vs credentials form) and
-/// `configured` to hide unconfigured OAuth providers.
+/// with its connect-flow kind (`authMode`), server-level configured flag,
+/// and — for credentials-flow providers — the schema the frontend renders
+/// as a generic form. Credential-based providers (S3) are always
+/// configured; OAuth providers depend on env credentials. The frontend
+/// uses `authMode` to pick the connect UX (OAuth redirect vs credentials
+/// form) and `configured` to hide unconfigured OAuth providers.
 pub async fn available(State(state): State<AppState>) -> Json<Vec<AvailableProviderDto>> {
     let reg = state.provider_registry();
     Json(
@@ -170,6 +175,7 @@ pub async fn available(State(state): State<AppState>) -> Json<Vec<AvailableProvi
                 id: provider.as_str(),
                 auth_mode: reg.auth_mode(provider),
                 configured: reg.is_configured(provider),
+                credentials: reg.credentials_schema(provider),
             })
             .collect(),
     )

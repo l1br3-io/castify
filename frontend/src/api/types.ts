@@ -49,15 +49,40 @@ export interface ConnectionDto {
 // submit a schema-driven form.
 export type AuthMode = "oauth" | "credentials";
 
+// One field of a credentials-flow provider's form (`CredentialField` in
+// the backend). The frontend renders these generically — adding a field
+// (or a whole credentials provider) requires zero frontend code.
+export interface CredentialFieldDto {
+  // Machine key the API layer expects in the submitted form (snake_case).
+  key: string;
+  // Human label for the form input.
+  label: string;
+  // Mask the input (password-style) — true for secrets.
+  secret: boolean;
+  // Optional placeholder hint; null when the provider sets none.
+  placeholder: string | null;
+}
+
+// The declarative credentials form a credentials-flow provider renders
+// (`CredentialsSchema` in the backend, e.g. `providers/s3.rs`). Present
+// only on credentials-mode entries of `GET /api/connections/available`;
+// field order is form order.
+export interface CredentialsSchemaDto {
+  fields: CredentialFieldDto[];
+}
+
 // One entry of `GET /api/connections/available`'s list response. Note the
 // camelCase `authMode` key — pinned by the s3-compatible-storage spec's
-// wire contract (the one non-snake_case key in the API).
+// wire contract (the one non-snake_case key in the API). `credentials`
+// carries the renderable form and is skipped (not nulled) on OAuth
+// entries, so their wire shape is unchanged.
 export interface AvailableProviderDto {
   id: ProviderKey;
   authMode: AuthMode;
   // Server-level setup done? OAuth providers depend on env credentials;
   // credential-based providers (s3) are always configured.
   configured: boolean;
+  credentials?: CredentialsSchemaDto;
 }
 
 export type AvailableProviders = AvailableProviderDto[];

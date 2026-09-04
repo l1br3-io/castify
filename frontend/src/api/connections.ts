@@ -55,6 +55,23 @@ export function startConnect(
 }
 
 /**
+ * `POST /api/connections/{provider}` — submit the schema-rendered
+ * credentials form (credentials-flow providers). The body maps schema
+ * field keys to their input values. Resolves with the created connection
+ * on 201; a failed verify throws `ApiError` carrying the backend's
+ * actionable message (no connection row is persisted in that case).
+ */
+export function connectWithCredentials(
+  provider: ProviderKey,
+  values: Record<string, string>,
+): Promise<ConnectionDto> {
+  return apiFetch<ConnectionDto>(
+    `/api/connections/${encodeURIComponent(provider)}`,
+    { method: "POST", body: values },
+  );
+}
+
+/**
  * `DELETE /api/connections/{id}` — revoke + delete a connection. Resolves on
  * 204; throws `ApiError` (404) if the connection no longer exists.
  */

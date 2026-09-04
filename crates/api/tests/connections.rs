@@ -182,6 +182,55 @@ async fn available_lists_all_providers_with_auth_mode() {
 }
 
 #[tokio::test]
+async fn available_includes_credentials_schema_for_s3() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, body) = get_json(app, "/api/connections/available", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body.as_array().expect("available returns a list");
+    let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries
+        .iter()
+        .map(|e| (e["id"].as_str().unwrap(), e))
+        .collect();
+
+    // OAuth entries carry no form schema at all — the key is skipped, not
+    // nulled, so their wire shape is byte-identical to pre-schema responses.
+    for id in ["google_drive", "dropbox", "onedrive"] {
+        assert!(
+            by_id.get(id).unwrap().get("credentials").is_none(),
+            "{id} should not carry a credentials schema"
+        );
+    }
+
+    // The S3 entry carries the renderable form: the six schema fields in
+    // form order, with exactly the two key fields flagged secret.
+    let fields = by_id["s3"]["credentials"]["fields"]
+        .as_array()
+        .expect("s3 credentials.fields");
+    let keys: Vec<&str> = fields.iter().map(|f| f["key"].as_str().unwrap()).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "endpoint",
+            "region",
+            "bucket",
+            "access_key_id",
+            "secret_access_key",
+            "prefix"
+        ]
+    );
+    for field in fields {
+        let key = field["key"].as_str().unwrap();
+        let secret = field["secret"].as_bool().unwrap();
+        let expected = key == "access_key_id" || key == "secret_access_key";
+        assert_eq!(secret, expected, "{key} secret flag");
+        assert!(
+            field["label"].as_str().is_some_and(|l| !l.is_empty()),
+            "{key} label"
+        );
+    }
+}
+
+#[tokio::test]
 async fn list_returns_empty_array() {
     let (app, cookie, _repo, _guard) = boot_and_setup().await;
     let (status, body) = get_json(app, "/api/connections", Some(&cookie)).await;
