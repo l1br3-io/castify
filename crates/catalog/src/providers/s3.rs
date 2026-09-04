@@ -11,7 +11,8 @@
 //! extension tables — S3 listings carry no MIME type, so `.ts` stays a
 //! non-video (the same rule Dropbox applies without corroboration).
 
-use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::presigning::PresigningConfig;
 use aws_sdk_s3::Client;
 use sha2::{Digest, Sha256};
@@ -19,7 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::crypto::{Credential, S3Credentials};
 use crate::model::{DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage};
 use crate::provider::{
-    ConnectFlow, CredentialsSchema, CredentialField, Provider, ProviderError, ProviderFactory,
+    ConnectFlow, CredentialField, CredentialsSchema, Provider, ProviderError, ProviderFactory,
     ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
 };
 use crate::providers::common::{
@@ -225,10 +226,9 @@ fn body_stream(byte_stream: aws_sdk_s3::primitives::ByteStream) -> crate::provid
 /// (connect, DNS, timeout) surface as `Network`.
 fn map_sdk_error<E: ProvideErrorMetadata>(err: SdkError<E>) -> ProviderError {
     match err {
-        SdkError::ServiceError(se) => classify_s3_error(
-            se.raw().status().as_u16(),
-            se.into_err().meta().code(),
-        ),
+        SdkError::ServiceError(se) => {
+            classify_s3_error(se.raw().status().as_u16(), se.into_err().meta().code())
+        }
         other => ProviderError::Network(other.to_string()),
     }
 }
@@ -366,9 +366,7 @@ impl crate::provider::Provider for S3Provider {
             videos,
             subtitles,
             files,
-            next_cursor: response
-                .next_continuation_token()
-                .map(String::from),
+            next_cursor: response.next_continuation_token().map(String::from),
         })
     }
 
@@ -439,10 +437,8 @@ impl crate::provider::Provider for S3Provider {
     /// playback request. TTL is [`PRESIGN_TTL_SECS`] (OQ-1: 1 h); proxy
     /// streaming via `open_stream` remains the fallback path.
     async fn open_stream_url(&self, file_id: &str) -> ProviderResult<StreamUrl> {
-        let config = PresigningConfig::expires_in(std::time::Duration::from_secs(
-            PRESIGN_TTL_SECS,
-        ))
-        .map_err(|e| ProviderError::Other(format!("presigning config: {e}")))?;
+        let config = PresigningConfig::expires_in(std::time::Duration::from_secs(PRESIGN_TTL_SECS))
+            .map_err(|e| ProviderError::Other(format!("presigning config: {e}")))?;
         let presigned = self
             .client
             .get_object()
@@ -539,11 +535,19 @@ mod tests {
     fn derive_account_id_is_stable_32_hex_and_secret_free() {
         let id = derive_account_id("https://acct.r2.cloudflarestorage.com", "media");
         assert_eq!(id.len(), 32);
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         // Deterministic: same inputs, same id.
-        assert_eq!(id, derive_account_id("https://acct.r2.cloudflarestorage.com", "media"));
+        assert_eq!(
+            id,
+            derive_account_id("https://acct.r2.cloudflarestorage.com", "media")
+        );
         // Different bucket or endpoint → different id (separate connections).
-        assert_ne!(id, derive_account_id("https://acct.r2.cloudflarestorage.com", "other"));
+        assert_ne!(
+            id,
+            derive_account_id("https://acct.r2.cloudflarestorage.com", "other")
+        );
         assert_ne!(id, derive_account_id("http://localhost:9000", "media"));
         // The identity never embeds secret material.
         assert!(!id.contains("secret"));
@@ -588,7 +592,10 @@ mod tests {
         assert_eq!(videos.len(), 2);
         assert_eq!(videos[0].provider_file_id, "Movies/blade.mkv");
         assert_eq!(videos[0].mime_type.as_deref(), Some("video/x-matroska"));
-        assert_eq!(videos[0].provider_modified_at.as_deref(), Some("2026-09-01T12:00:00Z"));
+        assert_eq!(
+            videos[0].provider_modified_at.as_deref(),
+            Some("2026-09-01T12:00:00Z")
+        );
 
         assert_eq!(subtitles.len(), 2);
         assert_eq!(subtitles[0].provider_file_id, "Movies/blade.en.srt");
@@ -637,8 +644,14 @@ mod tests {
     /// → RateLimited, other statuses → Api.
     #[test]
     fn classify_s3_error_maps_statuses() {
-        assert!(matches!(classify_s3_error(401, None), ProviderError::Unauthorized));
-        assert!(matches!(classify_s3_error(403, Some("AccessDenied")), ProviderError::Unauthorized));
+        assert!(matches!(
+            classify_s3_error(401, None),
+            ProviderError::Unauthorized
+        ));
+        assert!(matches!(
+            classify_s3_error(403, Some("AccessDenied")),
+            ProviderError::Unauthorized
+        ));
         assert!(matches!(
             classify_s3_error(404, Some("NoSuchKey")),
             ProviderError::NotFound(_)
@@ -742,11 +755,7 @@ mod tests {
     fn factory_connect_flow_is_credentials_schema() {
         match S3Factory.connect_flow() {
             ConnectFlow::Credentials(schema) => {
-                let keys: Vec<&str> = schema
-                    .fields
-                    .iter()
-                    .map(|f| f.key.as_str())
-                    .collect();
+                let keys: Vec<&str> = schema.fields.iter().map(|f| f.key.as_str()).collect();
                 assert_eq!(
                     keys,
                     vec![

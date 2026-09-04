@@ -163,7 +163,10 @@ async fn run_scan_inner(
                 }
             }
             Err(ProviderError::Unauthorized) if !refreshed => {
-                tracing::info!(connection_id = connection_id, "credential rejected, refreshing");
+                tracing::info!(
+                    connection_id = connection_id,
+                    "credential rejected, refreshing"
+                );
                 if let Some(bundle) = credential.as_oauth() {
                     let flow = match factory.connect_flow() {
                         crate::provider::ConnectFlow::OAuth(flow) => flow,
@@ -526,7 +529,6 @@ mod tests {
                 "mock: open_stream not supported".into(),
             ))
         }
-
     }
 
     /// Mock factory that creates MockProvider instances.

@@ -4,9 +4,7 @@ use sha2::{Digest, Sha256};
 use crate::crypto::{Credential, TokenBundle};
 use crate::model::{DiscoveredSubtitle, DiscoveredVideo, FileKind, ListPage, Provider};
 use crate::oauth::redirect_uri;
-use crate::provider::{
-    ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
-};
+use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
     has_subtitle_extension, has_video_extension, infer_image_mime, is_mpeg_ts_name,
@@ -1142,10 +1140,7 @@ mod tests {
             scope: None,
         };
 
-        let provider = factory
-            .create(&Credential::OAuth(bundle))
-            .await
-            .unwrap();
+        let provider = factory.create(&Credential::OAuth(bundle)).await.unwrap();
         assert_eq!(provider.name(), "onedrive");
     }
 

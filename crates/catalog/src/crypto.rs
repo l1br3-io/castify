@@ -327,7 +327,9 @@ mod tests {
     fn credential_s3_prefix_round_trips_and_defaults_to_none() {
         let key = test_key();
         let mut creds = sample_s3_credentials();
-        let no_prefix = Credential::S3(creds.clone()).encrypt_to_bytes(&key).unwrap();
+        let no_prefix = Credential::S3(creds.clone())
+            .encrypt_to_bytes(&key)
+            .unwrap();
         let Credential::S3(recovered) = Credential::decrypt_from_bytes(&key, &no_prefix).unwrap()
         else {
             panic!("expected S3 variant");
