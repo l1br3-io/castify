@@ -6,6 +6,9 @@
 //!
 //! Construction from `castify_core::Config` happens in the api crate (which
 //! depends on both core and catalog) to avoid coupling catalog → core.
+//!
+//! Adding a provider (OAuth or credential-based)? Follow the checklist in
+//! `docs/specs/s3-compatible-storage/extending-providers.md`.
 
 pub mod common;
 pub mod dropbox;

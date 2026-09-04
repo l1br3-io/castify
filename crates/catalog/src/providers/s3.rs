@@ -468,8 +468,8 @@ pub struct S3Factory;
 fn expect_s3(credential: &Credential) -> ProviderResult<&S3Credentials> {
     match credential {
         Credential::S3(creds) => Ok(creds),
-        Credential::OAuth(_) => Err(ProviderError::Other(
-            "s3 connects via a credentials form; OAuth credentials are not supported".into(),
+        _ => Err(ProviderError::Other(
+            "s3 connects via a credentials form; other credential kinds are not supported".into(),
         )),
     }
 }
