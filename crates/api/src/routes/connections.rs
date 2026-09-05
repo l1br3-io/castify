@@ -556,17 +556,28 @@ fn parse_s3_endpoint(raw: &str) -> Result<ParsedS3Endpoint, String> {
 
 /// Loopback hosts are the local-MinIO allowance: they may use `http://`
 /// and are exempt from the private-range rejection (`127/8` and `::1`
-/// are loopback literals; `localhost` by name).
+/// are loopback literals; `localhost` by name). IPv4-mapped IPv6
+/// canonicalizes to its embedded v4 address first — `::ffff:127.0.0.1`
+/// is loopback exactly like `127.0.0.1`.
 fn host_is_loopback(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .is_ok_and(|ip| canonical_ip(ip).is_loopback())
 }
 
 /// Whether an IP is in globally routable space. Drives the SSRF check:
 /// endpoints resolving to private/link-local/loopback/unspecified
 /// ranges are rejected (link-local includes 169.254.169.254, the cloud
 /// metadata address).
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) canonicalize to their
+/// embedded v4 address — otherwise the mapped private/metadata forms
+/// bypass the range checks (std's v6 predicates don't see through the
+/// mapping).
 fn is_public_ip(ip: IpAddr) -> bool {
+    let ip = canonical_ip(ip);
     match ip {
         IpAddr::V4(v4) => {
             !(v4.is_private()
@@ -583,6 +594,15 @@ fn is_public_ip(ip: IpAddr) -> bool {
                 || (first & 0xffc0) == 0xfe80
                 || (first & 0xfe00) == 0xfc00)
         }
+    }
+}
+
+/// Canonicalize an IP for range checks: IPv4-mapped IPv6 collapses to
+/// plain IPv4 so both spellings of a host land in the same bucket.
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        IpAddr::V4(_) => ip,
     }
 }
 
@@ -1026,6 +1046,7 @@ mod tests {
 
     /// Loopback detection drives both the http allowance and the private-
     /// range exemption: `localhost` (case-insensitive), 127.0.0.0/8, ::1.
+    /// IPv4-mapped IPv6 (`::ffff:127.0.0.1`) canonicalizes to its v4 form.
     #[test]
     fn host_is_loopback_table() {
         assert!(host_is_loopback("localhost"));
@@ -1033,6 +1054,7 @@ mod tests {
         assert!(host_is_loopback("127.0.0.1"));
         assert!(host_is_loopback("127.99.200.1"));
         assert!(host_is_loopback("::1"));
+        assert!(host_is_loopback("::ffff:127.0.0.1"));
         assert!(!host_is_loopback("example.com"));
         assert!(!host_is_loopback("10.0.0.1"));
         assert!(!host_is_loopback("169.254.169.254"));
@@ -1042,6 +1064,9 @@ mod tests {
     /// Public-range table: RFC1918 private, link-local (incl. the cloud
     /// metadata address), loopback, unspecified, broadcast, IPv6 ULA and
     /// link-local are all non-public; global v4/v6 literals are public.
+    /// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) canonicalize to their
+    /// embedded v4 address — otherwise the mapped private/metadata forms
+    /// sail through as "public".
     #[test]
     fn is_public_ip_table() {
         let public = [
@@ -1065,6 +1090,11 @@ mod tests {
             "fc00::1",
             "::1",
             "::",
+            "::ffff:10.0.0.5",
+            "::ffff:192.168.1.4",
+            "::ffff:169.254.169.254",
+            "::ffff:127.0.0.1",
+            "::ffff:0.0.0.0",
         ];
         for ip in public {
             let ip: IpAddr = ip.parse().unwrap();
@@ -1113,6 +1143,11 @@ mod tests {
             "https://169.254.169.254",
             "https://[fd00::1]",
             "https://[fe80::1]",
+            // IPv4-mapped IPv6: the classic SSRF filter bypass — must land
+            // in the same rejection bucket as the embedded v4 address.
+            "https://[::ffff:10.0.0.5]:9000",
+            "https://[::ffff:169.254.169.254]",
+            "https://[::ffff:192.168.1.4]",
         ] {
             let err = validate_s3_endpoint(raw).await.unwrap_err();
             match err {
@@ -1127,6 +1162,14 @@ mod tests {
         }
         assert!(validate_s3_endpoint("https://127.0.0.1:9000").await.is_ok());
         assert!(validate_s3_endpoint("https://[::1]:9000").await.is_ok());
+        // Mapped loopback keeps the local-MinIO allowance (http allowed,
+        // private-range exempt) exactly like its v4 spelling.
+        assert!(validate_s3_endpoint("http://[::ffff:127.0.0.1]:9000")
+            .await
+            .is_ok());
+        assert!(validate_s3_endpoint("https://[::ffff:127.0.0.1]:9000")
+            .await
+            .is_ok());
     }
 
     /// A non-loopback DNS name that cannot resolve is a validation error —
