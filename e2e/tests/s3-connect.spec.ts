@@ -377,10 +377,12 @@ test.describe("S3-compatible storage (MinIO, task 009)", () => {
 
       // ── Secrets never render ─────────────────────────────────────────
       // (input-value coverage lives in connectAndScan, where the form
-      // lived; here the serialized page itself must not contain them.)
+      // lived; here the serialized page itself must not contain the
+      // secret. NB: the access key ID intentionally appears inside the
+      // presigned URL's X-Amz-Credential scope — SigV4 embeds the key ID
+      // in every presigned URL; it identifies, it does not authenticate.)
       const html = await page.content();
       expect(html).not.toContain(MINIO_ROOT_PASSWORD);
-      expect(html).not.toContain(MINIO_ROOT_USER);
     } finally {
       const leaked = await getS3Connection(page).catch(() => null);
       if (leaked) {
