@@ -307,6 +307,47 @@ describe("ConnectionsPage", () => {
     expect(screen.queryByLabelText("Secret access key")).not.toBeInTheDocument();
   });
 
+  it("invalidates the browse caches on a successful credentials connect", async () => {
+    // The initial scan populates videos and folder paths — the browse
+    // caches must not serve the pre-connect (empty) state for their
+    // staleTime window. Pins the invalidation set the form's onSuccess
+    // claims; a dropped key here means Browse shows a stale empty grid.
+    let connections: unknown[] = [];
+    const { queryClient } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse(connections);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/s3" && method === "POST") {
+          connections = [S3_CONNECTED];
+          return jsonResponse(S3_CONNECTED, 201);
+        }
+        return jsonError(404, "unmocked");
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const card = await openS3Form();
+    fillCredentials(card);
+    fireEvent.click(within(card).getByRole("button", { name: /^connect$/i }));
+
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["videos"] }),
+      );
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["folder-tree"] }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["folder-contents"] }),
+    );
+  });
+
   it("shows the backend's verify error inline and adds no row", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
