@@ -139,6 +139,22 @@ async function connectAndScan(page: Page): Promise<string> {
     timeout: 15_000,
   });
 
+  // SC6 where the secrets were entered: no input may still hold them
+  // (the form clears on success), and the connections payload — the API
+  // artifact the rest of the UI consumes — must carry none either.
+  // (innerText can never see input values, so assert on the DOM itself.)
+  const secretLingers = await page.locator("input").evaluateAll(
+    (els, secret) =>
+      els.some((el) => (el as HTMLInputElement).value === secret),
+    MINIO_ROOT_PASSWORD,
+  );
+  expect(secretLingers).toBe(false);
+  const connsBody = await (
+    await page.request.get("/api/connections")
+  ).text();
+  expect(connsBody).not.toContain(MINIO_ROOT_PASSWORD);
+  expect(connsBody).not.toContain(MINIO_ROOT_USER);
+
   // Wait for the row + a scan that found the media set.
   const csrf = await getCsrfToken(page);
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -229,140 +245,151 @@ test.describe("S3-compatible storage (MinIO, task 009)", () => {
     await ensureAuthenticated(page);
     await waitForMinioSeeded(page);
 
-    const connId = await connectAndScan(page);
+    // A leaked s3 connection defeats Playwright's retry (a re-run of
+    // connectAndScan meets an already-connected card) and contaminates the
+    // later specs' full-video-list assertions — clean up even on failure.
+    try {
+      await connectAndScan(page);
 
-    // ── Catalog: the whole media set ─────────────────────────────────
-    const videos = await s3Videos(page);
-    const names = videos.map((v) => v.name).sort();
-    expect(names).toEqual(["holiday.mp4", "teaser.mkv"]);
-    const holiday = videos.find((v) => v.name === "holiday.mp4")!;
-    expect(holiday.provider).toBe("s3");
+      // ── Catalog: the whole media set ─────────────────────────────────
+      const videos = await s3Videos(page);
+      const names = videos.map((v) => v.name).sort();
+      expect(names).toEqual(["holiday.mp4", "teaser.mkv"]);
+      const holiday = videos.find((v) => v.name === "holiday.mp4")!;
+      expect(holiday.provider).toBe("s3");
 
-    // Sidecar pairing: holiday.en.srt → one English srt track.
-    const detail = await getVideoDetail(page, holiday.id);
-    expect(detail.mime_type).toBe("video/mp4");
-    expect(detail.subtitle_tracks.length).toBe(1);
-    expect(detail.subtitle_tracks[0].language).toBe("en");
-    expect(detail.subtitle_tracks[0].format).toBe("srt");
+      // Sidecar pairing: holiday.en.srt → one English srt track.
+      const detail = await getVideoDetail(page, holiday.id);
+      expect(detail.mime_type).toBe("video/mp4");
+      expect(detail.subtitle_tracks.length).toBe(1);
+      expect(detail.subtitle_tracks[0].language).toBe("en");
+      expect(detail.subtitle_tracks[0].format).toBe("srt");
 
-    // The .txt lands as a Document file in /Docs (folder contents API).
-    const docs = await page.request.get(
-      "/api/folders/contents?path=/Docs&provider=s3",
-    );
-    expect(docs.ok()).toBeTruthy();
-    const docsBody = (await docs.json()) as {
-      entries: { kind: string; name: string }[];
-    };
-    expect(
-      docsBody.entries.map((e) => e.name),
-      `docs entries: ${JSON.stringify(docsBody.entries)}`,
-    ).toContain("notes.txt");
-    expect(
-      docsBody.entries.find((e) => e.name === "notes.txt")!.kind,
-    ).toBe("document");
+      // The .txt lands as a Document file in /Docs (folder contents API).
+      const docs = await page.request.get(
+        "/api/folders/contents?path=/Docs&provider=s3",
+      );
+      expect(docs.ok()).toBeTruthy();
+      const docsBody = (await docs.json()) as {
+        entries: { kind: string; name: string }[];
+      };
+      expect(
+        docsBody.entries.map((e) => e.name),
+        `docs entries: ${JSON.stringify(docsBody.entries)}`,
+      ).toContain("notes.txt");
+      expect(
+        docsBody.entries.find((e) => e.name === "notes.txt")!.kind,
+      ).toBe("document");
 
-    // Subtitle content serves through the proxy (S3 open_stream default
-    // fetch path — the credential-flow fix beyond stream-url).
-    const subRes = await page.request.get(
-      `/api/videos/${encodeURIComponent(holiday.id)}/subtitles/${encodeURIComponent(detail.subtitle_tracks[0].id)}`,
-    );
-    expect(subRes.status()).toBe(200);
-    expect(subRes.headers()["content-type"]).toBe("text/vtt");
-    expect((await subRes.text()).startsWith("WEBVTT")).toBe(true);
+      // Subtitle content serves through the proxy (S3 open_stream default
+      // fetch path — the credential-flow fix beyond stream-url).
+      const subRes = await page.request.get(
+        `/api/videos/${encodeURIComponent(holiday.id)}/subtitles/${encodeURIComponent(detail.subtitle_tracks[0].id)}`,
+      );
+      expect(subRes.status()).toBe(200);
+      expect(subRes.headers()["content-type"]).toBe("text/vtt");
+      expect((await subRes.text()).startsWith("WEBVTT")).toBe(true);
 
-    // ── Browse UI ────────────────────────────────────────────────────
-    await page.goto("/");
-    await expect(
-      page.getByRole("heading", { name: "All Videos" }),
-    ).toBeVisible();
-    await expect(
-      page.locator("#all-videos").getByRole("link", {
-        name: `Play ${holiday.name}`,
-      }),
-    ).toBeVisible();
+      // ── Browse UI ────────────────────────────────────────────────────
+      await page.goto("/");
+      await expect(
+        page.getByRole("heading", { name: "All Videos" }),
+      ).toBeVisible();
+      await expect(
+        page.locator("#all-videos").getByRole("link", {
+          name: `Play ${holiday.name}`,
+        }),
+      ).toBeVisible();
 
-    // ── Play: the direct, presigned path ─────────────────────────────
-    // Capture every video/* byte response before navigation.
-    const mediaResponses: { url: string; origin: string }[] = [];
-    page.on("response", (res: Response) => {
-      const type = res.headers()["content-type"] ?? "";
-      if (type.startsWith("video/")) {
-        mediaResponses.push({
-          url: res.url(),
-          origin: new URL(res.url()).origin,
-        });
+      // ── Play: the direct, presigned path ─────────────────────────────
+      // Capture every video/* byte response before navigation.
+      const mediaResponses: { url: string; origin: string }[] = [];
+      page.on("response", (res: Response) => {
+        const type = res.headers()["content-type"] ?? "";
+        if (type.startsWith("video/")) {
+          mediaResponses.push({
+            url: res.url(),
+            origin: new URL(res.url()).origin,
+          });
+        }
+      });
+
+      await page.goto(`/watch/${encodeURIComponent(holiday.id)}`);
+      await waitForVideoMetadata(page);
+
+      // stream-url resolved to a presigned direct URL on the MinIO origin.
+      const streamUrl = await getStreamUrl(page, holiday.id);
+      expect(streamUrl.strategy).toBe("direct");
+      expect(streamUrl.url).toContain("X-Amz-Signature");
+      expect(streamUrl.expires_at).toBeTruthy();
+      const minioOrigin = new URL(MINIO_ENDPOINT).origin;
+      expect(streamUrl.url.startsWith(`${minioOrigin}/media/Movies/`)).toBe(
+        true,
+      );
+
+      // The <video> element streams straight from MinIO.
+      const video = page.locator("video");
+      const src = await video.getAttribute("src");
+      expect(src!.startsWith(`${minioOrigin}/media/`)).toBe(true);
+      expect(src!).toContain("X-Amz-Signature");
+
+      // Real playback + progression on the direct URL.
+      await playAndProgress(page);
+
+      // Seek (Range request straight to MinIO).
+      await video.evaluate((v: HTMLVideoElement) => {
+        v.currentTime = 4;
+      });
+      await expect
+        .poll(
+          async () =>
+            await video.evaluate((v: HTMLVideoElement) => v.currentTime),
+          { timeout: 5_000 },
+        )
+        .toBeCloseTo(4, 0);
+
+      // MinIO honors ranges on the presigned URL (explicit contract check).
+      const ranged = await page.request.get(src!, {
+        headers: { Range: "bytes=0-3" },
+      });
+      expect(ranged.status()).toBe(206);
+      expect(ranged.headers()["content-range"]).toMatch(
+        /^bytes 0-3\/\d+$/,
+      );
+      expect((await ranged.body()).length).toBe(4);
+
+      // ── THE network assertion: backend served zero video bytes ──────
+      expect(mediaResponses.length).toBeGreaterThan(0);
+      expect(
+        mediaResponses.map((m) => m.origin),
+        `all video bytes came from MinIO: ${JSON.stringify(mediaResponses)}`,
+      ).toEqual(expect.arrayContaining([minioOrigin]));
+      const castifyOrigin = new URL(
+        process.env.CASTIFY_E2E_BASE_URL ?? "http://localhost:8427",
+      ).origin;
+      const throughBackend = mediaResponses.filter(
+        (m) => m.origin === castifyOrigin,
+      );
+      expect(
+        throughBackend,
+        `no video bytes may transit the castify api: ${JSON.stringify(throughBackend)}`,
+      ).toEqual([]);
+
+      // ── Secrets never render ─────────────────────────────────────────
+      // (input-value coverage lives in connectAndScan, where the form
+      // lived; here the serialized page itself must not contain them.)
+      const html = await page.content();
+      expect(html).not.toContain(MINIO_ROOT_PASSWORD);
+      expect(html).not.toContain(MINIO_ROOT_USER);
+    } finally {
+      const leaked = await getS3Connection(page).catch(() => null);
+      if (leaked) {
+        const csrf = await getCsrfToken(page).catch(() => null);
+        if (csrf) {
+          await disconnect(page, leaked.id, csrf).catch(() => {});
+        }
       }
-    });
-
-    await page.goto(`/watch/${encodeURIComponent(holiday.id)}`);
-    await waitForVideoMetadata(page);
-
-    // stream-url resolved to a presigned direct URL on the MinIO origin.
-    const streamUrl = await getStreamUrl(page, holiday.id);
-    expect(streamUrl.strategy).toBe("direct");
-    expect(streamUrl.url).toContain("X-Amz-Signature");
-    expect(streamUrl.expires_at).toBeTruthy();
-    const minioOrigin = new URL(MINIO_ENDPOINT).origin;
-    expect(streamUrl.url.startsWith(`${minioOrigin}/media/Movies/`)).toBe(
-      true,
-    );
-
-    // The <video> element streams straight from MinIO.
-    const video = page.locator("video");
-    const src = await video.getAttribute("src");
-    expect(src!.startsWith(`${minioOrigin}/media/`)).toBe(true);
-    expect(src!).toContain("X-Amz-Signature");
-
-    // Real playback + progression on the direct URL.
-    await playAndProgress(page);
-
-    // Seek (Range request straight to MinIO).
-    await video.evaluate((v: HTMLVideoElement) => {
-      v.currentTime = 4;
-    });
-    await expect
-      .poll(
-        async () =>
-          await video.evaluate((v: HTMLVideoElement) => v.currentTime),
-        { timeout: 5_000 },
-      )
-      .toBeCloseTo(4, 0);
-
-    // MinIO honors ranges on the presigned URL (explicit contract check).
-    const ranged = await page.request.get(src!, {
-      headers: { Range: "bytes=0-3" },
-    });
-    expect(ranged.status()).toBe(206);
-    expect(ranged.headers()["content-range"]).toMatch(
-      /^bytes 0-3\/\d+$/,
-    );
-    expect((await ranged.body()).length).toBe(4);
-
-    // ── THE network assertion: backend served zero video bytes ──────
-    expect(mediaResponses.length).toBeGreaterThan(0);
-    expect(
-      mediaResponses.map((m) => m.origin),
-      `all video bytes came from MinIO: ${JSON.stringify(mediaResponses)}`,
-    ).toEqual(expect.arrayContaining([minioOrigin]));
-    const castifyOrigin = new URL(
-      process.env.CASTIFY_E2E_BASE_URL ?? "http://localhost:8427",
-    ).origin;
-    const throughBackend = mediaResponses.filter(
-      (m) => m.origin === castifyOrigin,
-    );
-    expect(
-      throughBackend,
-      `no video bytes may transit the castify api: ${JSON.stringify(throughBackend)}`,
-    ).toEqual([]);
-
-    // ── Secrets never render ─────────────────────────────────────────
-    const bodyText = await page.evaluate(() => document.body.innerText);
-    expect(bodyText).not.toContain(MINIO_ROOT_PASSWORD);
-    expect(bodyText).not.toContain(MINIO_ROOT_USER);
-
-    // Leave the stack clean for the remaining specs.
-    const csrf = await getCsrfToken(page);
-    await disconnect(page, connId, csrf);
+    }
   });
 
   test("proxy fallback: presigning forced off → proxy playback + Range/206 seeking", async ({
