@@ -58,7 +58,11 @@ ENTRYPOINT ["/castify"]
 # this stage (BuildKit skips it without --target).
 FROM alpine:3.22 AS e2e-runtime
 
-RUN apk add --no-cache ffmpeg
+# ca-certificates: the S3-compatible-storage client (aws-sdk-s3) loads TLS
+# roots from the system store on this stage; bare alpine has none. The
+# reqwest-based provider clients bundle webpki roots and don't need this,
+# but S3-over-HTTPS from an alpine runtime does.
+RUN apk add --no-cache ffmpeg ca-certificates
 
 COPY --from=backend /app/target/release/castify /castify
 COPY --from=backend --chown=65532:65532 /data /data

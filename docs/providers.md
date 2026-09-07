@@ -1,8 +1,8 @@
 # Connecting cloud providers
 
-Castify scans your cloud storage (Google Drive, Dropbox, OneDrive) and unifies the videos into one library. To connect an account you register an OAuth **app** with each provider, hand its credentials to Castify via environment variables, then click **Connect** in the UI to authorize your own account.
+Castify scans your cloud storage (Google Drive, Dropbox, OneDrive, plus any S3-compatible object storage) and unifies the videos into one library. The OAuth providers (Google, Dropbox, OneDrive) require registering an **app** and handing its credentials to Castify via environment variables. S3-compatible storage (Cloudflare R2, Backblaze B2, MinIO, AWS S3, …) skips all of that — you paste per-connection credentials into the UI.
 
-This guide walks through all three providers end to end. For the full environment-variable reference, see [`docs/config.md`](./config.md).
+This guide walks through every provider end to end. For the full environment-variable reference, see [`docs/config.md`](./config.md).
 
 ## How provider OAuth works
 
@@ -22,7 +22,7 @@ This split is why users can't bring their own client ID/secret: the credentials 
 
 ## The redirect URI
 
-Every provider needs this exact redirect URI, where `{provider}` is `google_drive`, `dropbox`, or `onedrive`:
+The three OAuth providers each need this exact redirect URI, where `{provider}` is `google_drive`, `dropbox`, or `onedrive` — **S3-compatible storage doesn't need one** (no OAuth, no redirect):
 
 ```
 {CASTIFY_APP_BASE_URL}/api/connections/{provider}/callback
@@ -85,13 +85,56 @@ Every provider needs this exact redirect URI, where `{provider}` is `google_driv
    cargo run -p castify-api
    ```
 
+## S3-compatible storage (Cloudflare R2, Backblaze B2, MinIO, AWS S3, …)
+
+No app registration, no environment variables, no redirect URI. You enter credentials **per connection** in the UI; Castify verifies them (a `HeadBucket` + one list page), encrypts them at rest (`CASTIFY_TOKEN_KEY`), and starts scanning. One connection = one bucket; connect several endpoints (an R2 bucket *and* a MinIO box) and they appear as separate connections.
+
+The connect form asks for: **Endpoint, Region, Bucket, Access key ID, Secret access key**, and an optional **Key prefix**.
+
+**Streaming posture:** playback prefers presigned URLs — the browser pulls video bytes **directly from the provider**, your Castify server relays none of them (proxy fallback exists). On R2 that also means zero egress fees. Videos without browser-compatible codecs still need ffmpeg for transcoding — see [`docs/deploy.md`](./deploy.md) § Transcoding & ffmpeg.
+
+### Cloudflare R2 (recommended for video — zero egress fees)
+
+1. **Create a bucket** — [Cloudflare dashboard](https://dash.cloudflare.com/) → **R2 Object Storage** → **Create bucket** → name it (e.g. `media`) → upload your videos (any tool that speaks S3, or the dashboard drag-and-drop).
+2. **Create a read-only API token** — R2 overview → **Manage R2 API Tokens** → **Create API Token**:
+   - **Permissions** → **Object Read Only** — Castify never writes or deletes.
+   - Scope it to your bucket under **Specify bucket(s)** if you want it tight.
+   - Create → copy the **Access Key ID** and **Secret Access Key** (shown once).
+3. **Find your endpoint** — on the token page (or bucket **Settings** → **S3 API**): `https://<account-id>.r2.cloudflarestorage.com`.
+4. **Connect in Castify** — Connections → **S3-compatible storage**:
+   | Form field      | Value                                          |
+   | --------------- | ---------------------------------------------- |
+   | Endpoint        | `https://<account-id>.r2.cloudflarestorage.com` |
+   | Region          | `auto`                                          |
+   | Bucket          | `media`                                         |
+   | Access key ID   | *(from step 2)*                                 |
+   | Secret access key | *(from step 2)*                               |
+
+### Backblaze B2
+
+1. **Create a bucket** — [B2 Cloud Storage](https://secure.backblaze.com/b2_buckets.htm) → **Create a Bucket** → set **Files in Bucket are: Private**.
+2. **Create an application key** — **App Keys** → **Add a New Application Key** → name it, allow access to just that bucket, capabilities: **read + list only** (e.g. `listFiles`, `readFiles`) → copy the **keyID** and **applicationKey** (shown once).
+3. **Connect in Castify** — the endpoint follows the pattern `https://s3.<region>.backblazeb2.com` (region is shown on the bucket page, e.g. `us-west-004`); use the same region in the form.
+
+### MinIO (self-hosted)
+
+Endpoint `http://127.0.0.1:9000` (or your LAN address), region `us-east-1` unless configured otherwise, plus any access key/secret pair you created (`mc admin user` or the console). Plain `http://` endpoints are accepted **only** on loopback — everything else must be `https://`.
+
+### AWS S3
+
+Endpoint can be left to the SDK default style (`https://s3.<region>.amazonaws.com`), region = your bucket's region. Create an IAM user or role scoped to read-only on that one bucket (`s3:ListBucket`, `s3:GetObject`).
+
 ## Connect an account
 
-After the env vars are set and the backend restarted, `GET /api/connections/available` reports the provider as configured and its **Connect** button on the Connections page goes live.
+After the env vars are set and the backend restarted, `GET /api/connections/available` reports each OAuth provider as configured and its **Connect** button on the Connections page goes live. (S3-compatible storage is always available — no server config needed.)
+
+**OAuth providers (Google / Dropbox / OneDrive):**
 
 1. Open **Connections** → click **Connect** on the provider card.
 2. Approve the provider's consent screen. *(Google in Testing mode: dismiss the "Google hasn't verified this app" warning via **Advanced → Go to castify (unsafe)**.)*
 3. You're redirected back; Castify stores the encrypted token and starts scanning. Re-scan anytime from the card.
+
+**S3-compatible storage:** click **Connect**, fill in the form (see above), submit — verification runs, then the scan starts. No consent screen, no redirect.
 
 ## Environment variables
 
@@ -101,7 +144,7 @@ After the env vars are set and the backend restarted, `GET /api/connections/avai
 | Dropbox     | `CASTIFY_DROPBOX_CLIENT_ID`   | `CASTIFY_DROPBOX_CLIENT_SECRET`    |
 | OneDrive    | `CASTIFY_MS_CLIENT_ID`        | `CASTIFY_MS_CLIENT_SECRET`         |
 
-Both halves are required. `load_provider_oauth` returns `None` if either is missing, leaving the provider unconfigured.
+Both halves are required. `load_provider_oauth` returns `None` if either is missing, leaving the provider unconfigured. S3-compatible storage has no row here — its credentials are per-connection (entered in the UI), not server-level env config.
 
 ## Troubleshooting
 
@@ -119,3 +162,9 @@ Both the client ID **and** secret must be set. Confirm both are exported in the 
 
 **Scans stop with Unauthorized.**
 Castify stores a refresh token and refreshes automatically. If the grant was revoked at the provider (e.g. you disconnected there, or Google expired it after 6 months of inactivity), disconnect and reconnect from the Connections page.
+
+**S3 connect fails with 403 / signature errors.**
+Most commonly: wrong access key or secret (they're shown only once at creation — regenerate if unsure), or the token lacks read+list permission on that bucket. On R2, also check the endpoint contains **your account ID** (`https://<account-id>.r2.cloudflarestorage.com`) and the region is `auto`. Signature errors can also come from a server clock that has drifted — NTP-sync the host and retry.
+
+**S3 connect rejected: endpoint not allowed.**
+Endpoints must be `https://`; plain `http://` is accepted only on loopback (local MinIO). Hostnames resolving to private/link-local ranges are rejected for non-loopback connections.

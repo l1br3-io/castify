@@ -73,7 +73,7 @@ The following env vars arrive as the self-hosted media server milestones land. M
 
 | Variable                                       | Default             | Description                                                  |
 | ---------------------------------------------- | ------------------- | ------------------------------------------------------------ |
-| `CASTIFY_TRANSCODE_ENABLED`                      | `true`              | Master switch. When false, codec-incompatible videos hit the "download instead" wall. |
+| `CASTIFY_TRANSCODE_ENABLED`                      | `true`              | Master switch. When false, codec-incompatible videos hit the "download instead" wall. Requires ffmpeg at runtime — the stock Docker image doesn't include it; see [`deploy.md`](./deploy.md) § Transcoding & ffmpeg. |
 | `CASTIFY_TRANSCODE_SEGMENT_DURATION_SECS`        | `10`                | HLS segment duration.                                            |
 | `CASTIFY_TRANSCODE_DIR`                          | `<DATA_DIR>/transcode-cache` | Directory for transcode output.                          |
 | `CASTIFY_TRANSCODE_CACHE_MAX_BYTES`              | `53687091200` (50 GiB) | Soft limit for transcode cache pool.                          |
