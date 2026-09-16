@@ -55,6 +55,7 @@
      danger    7.65:1 / 7.13:1 / 6.51:1             5.74:1 / 6.08:1 / 6.34:1
      info      9.17:1 / 8.54:1 / 7.81:1             5.90:1 / 6.25:1 / 6.52:1
      focus     9.20:1 / 8.57:1 / 7.83:1 (UI ≥3:1)   6.11:1 / 6.47:1 / 6.75:1
+     on-accent vs accent fill: dark 9.20:1, light 4.59:1
 
      Light-theme subtles use 12% alpha (porcelain saturates faster); dark
      uses 14%, matching the accent pair above. */
@@ -72,6 +73,13 @@
      ring-offset convention extracted from the component set. */
   --color-focus: oklch(78% 0.15 75);
   --focus-ring-offset: 2px;
+
+  /* On-accent — the label color on accent FILLS (buttons, CTAs). Dark
+     reuses the canvas color (9.20:1); porcelain's ochre accent is too
+     bright for near-white labels (4.01:1), so light uses a deep brown
+     (4.59:1) — black-on-amber, like an engraved indicator lamp. Added
+     after axe flagged the FirstRunGuide CTA in the light theme. */
+  --color-on-accent: oklch(18% 0.008 75);
 
   /* Player chrome — scrims and overlay chips sit over video, which is dark
      regardless of app theme, so these are theme-invariant (no per-theme
@@ -159,6 +167,7 @@
   --color-info: oklch(77% 0.11 245);
   --color-info-subtle: oklch(77% 0.11 245 / 14%);
   --color-focus: oklch(78% 0.15 75);
+  --color-on-accent: oklch(18% 0.008 75);
   color-scheme: dark;
 }
 
@@ -174,6 +183,7 @@
   --color-info: oklch(48% 0.11 250);
   --color-info-subtle: oklch(48% 0.11 250 / 12%);
   --color-focus: oklch(48% 0.14 65);
+  --color-on-accent: oklch(12% 0.03 65);
   --color-castify-accent: oklch(58% 0.14 65);
   --color-castify-accent-dim: oklch(48% 0.14 65);
   --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
@@ -208,6 +218,7 @@
     --color-info: oklch(48% 0.11 250);
     --color-info-subtle: oklch(48% 0.11 250 / 12%);
     --color-focus: oklch(48% 0.14 65);
+    --color-on-accent: oklch(12% 0.03 65);
     --color-castify-accent: oklch(58% 0.14 65);
     --color-castify-accent-dim: oklch(48% 0.14 65);
     --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);

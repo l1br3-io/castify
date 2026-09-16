@@ -104,7 +104,7 @@ function FirstRunGuide() {
       </div>
       <Link
         to="/connections"
-        className="inline-block rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+        className="inline-block rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
       >
         Connect a provider
       </Link>

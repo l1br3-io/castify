@@ -144,6 +144,21 @@ describe("semantic + structural design tokens", () => {
     },
   );
 
+  it.each(Object.entries(THEMES))(
+    "keeps labels on accent fills at AA (4.5:1) in both themes (--color-on-accent)",
+    (themeName, block) => {
+      const onAccent = parseColor(
+        block["--color-on-accent"] ?? /* c8 ignore next */ "",
+      );
+      const accent = parseColor(block["--color-castify-accent"]);
+      const ratio = contrast(onAccent, accent);
+      expect(
+        ratio,
+        `${themeName} on-accent label: ${ratio.toFixed(2)}:1`,
+      ).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
   it("declares player scrim/overlay tokens whose white text survives a fully bright frame", () => {
     for (const token of [
       "--color-player-scrim-bottom",

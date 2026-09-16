@@ -12,9 +12,66 @@
 // what the SPA does between capture and mutation.
 
 import { expect, type Page } from "@playwright/test";
+import { AxeBuilder } from "@axe-core/playwright";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const DISPLAY_NAME = "E2E Owner";
 export const PASSWORD = "e2e-test-password-123";
+
+// ── Accessibility (axe) ─────────────────────────────────────────────
+
+/**
+ * Run an axe scan against the current page and fail on serious/critical
+ * violations, writing a JSON report next to the test output and including
+ * its path in the failure message.
+ *
+ * Green-by-construction rule (spec `app-redesign`, task 004): a11y.spec.ts
+ * only scans screens already redesigned — every later screen task appends
+ * its own scan case, so the suite is never red on an un-redesigned screen.
+ *
+ * `disableRules` is the escape hatch for a rule that conflicts with a
+ * deliberate, documented design decision; record the reason at the call
+ * site. Unused by default.
+ */
+export async function scanAxe(
+  page: Page,
+  name: string,
+  disableRules: string[] = [],
+): Promise<void> {
+  let builder = new AxeBuilder({ page }).withTags([
+    "wcag2a",
+    "wcag2aa",
+    "wcag21a",
+    "wcag21aa",
+    "wcag22aa",
+  ]);
+  if (disableRules.length > 0) builder = builder.disableRules(disableRules);
+  const results = await builder.analyze();
+  const blocking = results.violations.filter(
+    (v) => v.impact === "serious" || v.impact === "critical",
+  );
+  if (blocking.length === 0) return;
+
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const reportPath = join("test-results", `axe-${slug}.json`);
+  const report = blocking.map((v) => ({
+    id: v.id,
+    impact: v.impact,
+    help: v.help,
+    nodes: v.nodes.map((n) => n.target),
+  }));
+  writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  const summary = blocking
+    .map(
+      (v) =>
+        `  [${v.impact}] ${v.id}: ${v.help} (${v.nodes.length} node(s), e.g. ${v.nodes[0]?.target.join(" ")})`,
+    )
+    .join("\n");
+  throw new Error(
+    `axe: ${blocking.length} serious/critical violation(s) on "${name}"\n${summary}\nreport: ${reportPath}`,
+  );
+}
 
 // ── Auth ────────────────────────────────────────────────────────────
 
