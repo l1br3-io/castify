@@ -265,3 +265,123 @@ dev:
     fi
     ( cd frontend && npm run dev ) &
     wait
+
+# --- R2 media upload (rclone; see docs/deploy-do-r2.md § Uploading media) ---
+
+# One-time rclone setup: install rclone (user-local, no sudo) and write the
+# `castify` remote from R2_* env vars (CLOUDFLARE_CASTIFY_* also accepted).
+upload-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    RCLONE="${HOME}/.local/bin/rclone"
+    ACCESS="${R2_ACCESS_KEY_ID:-${CLOUDFLARE_CASTIFY_ACCESS_KEY:-}}"
+    SECRET="${R2_SECRET_ACCESS_KEY:-${CLOUDFLARE_CASTIFY_SECRET_KEY:-}}"
+    ENDPOINT="${R2_ENDPOINT:-${CLOUDFLARE_CASTIFY_S3_URL:-}}"
+    BUCKET="${R2_BUCKET:-castify}"
+
+    [ -n "$ACCESS" ] && [ -n "$SECRET" ] && [ -n "$ENDPOINT" ] || {
+        echo "error: set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT (see .env.example)" >&2
+        exit 1
+    }
+
+    if [ ! -x "$RCLONE" ]; then
+        echo "== rclone: installing to ~/.local/bin =="
+        TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+        curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o "$TMP/rclone.zip"
+        unzip -oq "$TMP/rclone.zip" -d "$TMP"
+        mkdir -p "${HOME}/.local/bin"
+        cp "$TMP"/rclone-*-linux-amd64/rclone "$RCLONE"
+    fi
+    "$RCLONE" version | head -1
+
+    echo "== rclone: writing remote 'castify' =="
+    # no_check_bucket: R2 answers rclone's bucket probe oddly and it trips a
+    # denied CreateBucket attempt on every upload otherwise.
+    mkdir -p "${HOME}/.config/rclone"
+    {
+        printf '%s\n' \
+            '[castify]' \
+            'type = s3' \
+            'provider = Cloudflare' \
+            "access_key_id = ${ACCESS}" \
+            "secret_access_key = ${SECRET}" \
+            "endpoint = ${ENDPOINT}" \
+            'acl = private' \
+            'no_check_bucket = true'
+    } > "${HOME}/.config/rclone/rclone.conf"
+    chmod 600 "${HOME}/.config/rclone/rclone.conf"
+
+    echo "== rclone: verifying read access to bucket '${BUCKET}' =="
+    "$RCLONE" lsd "castify:${BUCKET}"
+    echo "remote ready — 'just upload-mount' for a drop-in folder, or 'just upload <dir>'"
+
+# Upload a directory of media to R2 (incremental: only new/changed files).
+#   just upload /path/to/movies
+upload dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    RCLONE="${HOME}/.local/bin/rclone"
+    BUCKET="${R2_BUCKET:-castify}"
+    [ -x "$RCLONE" ] || { echo "error: run 'just upload-setup' first" >&2; exit 1; }
+    [ -d "{{dir}}" ] || { echo "error: no such directory: {{dir}}" >&2; exit 1; }
+    "$RCLONE" copy "{{dir}}" "castify:${BUCKET}" \
+        --progress --transfers 4 --checkers 8 \
+        --s3-chunk-size 64M --s3-upload-concurrency 8
+    echo "done — rescan the connection in Castify to pick up new items"
+
+# Mount the R2 bucket as a local folder (systemd user service; auto-starts at
+# login). Videos dropped into the folder upload on close.
+upload-mount:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    RCLONE="${HOME}/.local/bin/rclone"
+    BUCKET="${R2_BUCKET:-castify}"
+    MOUNT_DIR="${R2_MOUNT:-${HOME}/R2-castify}"
+    UNIT_DIR="${HOME}/.config/systemd/user"
+    UNIT="castify-r2-mount.service"
+    [ -x "$RCLONE" ] || { echo "error: run 'just upload-setup' first" >&2; exit 1; }
+
+    # Take over from an earlier manual mount of the same directory.
+    if mountpoint -q "$MOUNT_DIR"; then
+        echo "== rclone: replacing existing mount at ${MOUNT_DIR} =="
+        fusermount3 -u "$MOUNT_DIR" 2>/dev/null || fusermount -u "$MOUNT_DIR" || true
+    fi
+    mkdir -p "$MOUNT_DIR" "$UNIT_DIR"
+    # rclone refuses to mount over a non-empty directory; stranded files from
+    # an unmounted VFS would wedge the service in a restart loop.
+    if [ -n "$(ls -A "$MOUNT_DIR")" ]; then
+        echo "error: ${MOUNT_DIR} is not empty — move these aside first:" >&2
+        ls -A "$MOUNT_DIR" >&2
+        exit 1
+    fi
+
+    echo "== systemd: installing ${UNIT} =="
+    {
+        printf '%s\n' \
+            '[Unit]' \
+            'Description=Castify R2 media mount (rclone)' \
+            '' \
+            '[Service]' \
+            'Type=notify' \
+            "ExecStart=${RCLONE} mount castify:${BUCKET} ${MOUNT_DIR} --vfs-cache-mode writes" \
+            'Restart=on-failure' \
+            'RestartSec=5' \
+            '' \
+            '[Install]' \
+            'WantedBy=default.target'
+    } > "${UNIT_DIR}/${UNIT}"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "${UNIT}"
+    sleep 2
+    systemctl --user is-active "${UNIT}"
+    echo "mounted: ${MOUNT_DIR} — drop videos there, then rescan in Castify"
+
+# Stop and disable the R2 folder mount.
+upload-unmount:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    MOUNT_DIR="${R2_MOUNT:-${HOME}/R2-castify}"
+    systemctl --user disable --now castify-r2-mount.service 2>/dev/null || true
+    mountpoint -q "$MOUNT_DIR" && fusermount3 -uz "$MOUNT_DIR" 2>/dev/null || true
+    echo "unmounted ${MOUNT_DIR}"

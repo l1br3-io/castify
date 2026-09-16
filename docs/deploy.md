@@ -2,6 +2,8 @@
 
 Castify ships as a single Docker image — a static Rust binary serving both the API and the embedded React SPA on one port. No external databases or service keys are required.
 
+For a fully worked, provider-specific example (Oracle Cloud free tier in Singapore + Cloudflare R2), see [`deploy-oracle-r2.md`](./deploy-oracle-r2.md). For the DigitalOcean (Singapore) variant — local image builds shipped over SSH, plus `just`-driven rclone uploads to R2 — see [`deploy-do-r2.md`](./deploy-do-r2.md).
+
 ## Quick start (Docker Compose)
 
 ```sh
