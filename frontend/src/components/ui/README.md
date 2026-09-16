@@ -84,6 +84,66 @@ A11y contract: the copied/failure announcements do not rely on the label
 flip (label changes alone are not reliably announced). Clipboard goes
 through `lib/clipboard` (`navigator.clipboard` with `execCommand` fallback).
 
+## Menu
+
+WAI-ARIA APG menu pattern. `Menu` renders the trigger (kebab glyph by
+default) + portal panel; `MenuItem` is the standard item; children may be a
+render-prop `(close) => ReactNode` for custom items (e.g. a `Link` with
+`role="menuitem"`).
+
+| State / input            | Behavior                                                |
+| ------------------------ | ------------------------------------------------------- |
+| Default (closed)         | trigger: `aria-haspopup="menu"` + `aria-expanded="false"` |
+| Open                     | `aria-expanded="true"`; focus moves to first **enabled** item |
+| Hover (trigger/items)    | `accent-subtle` fill; disabled items: no hover fill      |
+| Focus-visible            | standard focus ring (trigger); items highlight via `focus-visible` fill |
+| `ArrowDown` / `ArrowUp`  | cycle items, wrapping, skipping disabled                 |
+| `Escape`                 | close, focus returns to trigger                          |
+| `Tab` (in panel)         | dismiss (focus proceeds naturally — no dangling panel)   |
+| Click outside            | dismiss                                                  |
+| Select item              | runs `onSelect`, closes, focus back on trigger           |
+
+A11y contract: panel is `role="menu"` named by `label`; items are
+`role="menuitem"` buttons. Disabled items keep their text in the a11y tree;
+pair them with a `Tooltip` for the reason when one exists.
+
+## Dialog
+
+Controlled modal extracted from the share-dialog overlay. Props: `open`,
+`onClose`, `title`, `closeable` (default true), `children`, `footer`.
+
+| State / input            | Behavior                                                  |
+| ------------------------ | --------------------------------------------------------- |
+| Open                     | `role="dialog"` + `aria-modal="true"`, labelled by `title` |
+| Initial focus            | first focusable element (panel fallback)                   |
+| `Tab` / `Shift+Tab`      | trapped: wraps within the panel                            |
+| `Escape`                 | `onClose` (only when `closeable`)                          |
+| Backdrop click           | `onClose` (only when `closeable`)                          |
+| Close                    | focus restored to the element focused before open          |
+
+A11y contract: background content is inert to assistive tech via
+`aria-modal`; never render a dialog without a way to dismiss it that works
+by keyboard (`closeable={false}` must be paired with an explicit close
+action — that is the share dialog's post-creation state).
+
+## Tooltip
+
+Advisory text for a trigger; canonical use is the reason a disabled action
+is unavailable.
+
+| State / input        | Behavior                                                    |
+| -------------------- | ----------------------------------------------------------- |
+| Hover on trigger     | show (`role="tooltip"`, wired via `aria-describedby`)        |
+| Keyboard focus       | show — same as hover (no pointer-only state)                 |
+| Blur / mouse-leave   | hide                                                         |
+| `Escape`             | hide                                                         |
+| Touch-only pointer   | bubble removed by CSS (`[@media(hover:none)]:hidden`) — never stuck |
+
+A11y contract: the trigger keeps its own handlers (composed, not clobbered).
+For a disabled action, render the trigger with `aria-disabled` + styling —
+NOT the `disabled` attribute — so the tooltip (the reason) stays reachable
+by keyboard and pointer.
+
 ## EmptyState / ErrorState (consumers of Button)
 
 Shared "no data" / error surfaces. CTAs render through the `Button`
