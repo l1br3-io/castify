@@ -224,3 +224,108 @@ describe("SettingsPage shares section", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("SettingsPage transcoding section", () => {
+  // Stateful handler: GET returns the current toggle state, and a
+  // successful PUT persists the flip (mirrors the real server — a GET
+  // after a PUT returns the new value, not the boot-time one).
+  function transcodeHandler(
+    initial: boolean,
+    putError?: Response,
+  ): (input: RequestInfo | URL, init?: RequestInit) => Response {
+    let current = initial;
+    return (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/settings/transcode" && method === "GET")
+        return jsonResponse({ enabled: current });
+      if (url === "/api/settings/transcode" && method === "PUT") {
+        if (putError) return putError;
+        current = !current;
+        return jsonResponse({ enabled: current });
+      }
+      return jsonError(404, `unmocked ${method} ${url}`);
+    };
+  }
+
+  it("reflects the server state on load", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/settings"],
+        fetchImplementation: transcodeHandler(true),
+      },
+    );
+
+    const toggle = await screen.findByRole("switch", { name: /transcoding/i });
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(
+      screen.getByText(/browser-friendly formats/i),
+    ).toBeInTheDocument();
+  });
+
+  it("issues a PUT with the flipped value on click", async () => {
+    const { fetchSpy } = renderWithProviders(
+      <Routes>
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/settings"],
+        fetchImplementation: transcodeHandler(true),
+      },
+    );
+
+    const toggle = await screen.findByRole("switch", { name: /transcoding/i });
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute("aria-checked", "true"),
+    );
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("switch", { name: /transcoding/i }),
+      ).toHaveAttribute("aria-checked", "false");
+    });
+    const putCall = fetchSpy.mock.calls.find(([input, init]) => {
+      const url = String(input);
+      return (
+        url === "/api/settings/transcode" && (init?.method ?? "GET") === "PUT"
+      );
+    });
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+      enabled: false,
+    });
+  });
+
+  it("reverts with an error notice when the PUT fails", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/settings"],
+        fetchImplementation: transcodeHandler(true, jsonError(500, "boom")),
+      },
+    );
+
+    const toggle = await screen.findByRole("switch", { name: /transcoding/i });
+    await waitFor(() =>
+      expect(toggle).toHaveAttribute("aria-checked", "true"),
+    );
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("switch", { name: /transcoding/i }),
+      ).toHaveAttribute("aria-checked", "true");
+    });
+    expect(
+      await screen.findByText(/couldn't save\. try again\./i),
+    ).toBeInTheDocument();
+  });
+});

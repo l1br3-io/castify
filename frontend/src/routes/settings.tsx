@@ -17,10 +17,15 @@
 
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError } from "../api/client";
 import { changePassword } from "../api/session";
+import {
+  TRANSCODE_SETTINGS_QUERY_KEY,
+  fetchTranscodeSettings,
+  updateTranscodeSettings,
+} from "../api/settings";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
 import { SharesSection } from "../components/shares-list";
 
@@ -53,7 +58,83 @@ export function SettingsPage() {
         <PasswordForm />
       </section>
 
+      <TranscodingSection />
+
       <SharesSection />
+    </section>
+  );
+}
+
+function TranscodingSection() {
+  const queryClient = useQueryClient();
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const settingsQuery = useQuery({
+    queryKey: TRANSCODE_SETTINGS_QUERY_KEY,
+    queryFn: fetchTranscodeSettings,
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: updateTranscodeSettings,
+    onMutate: async (enabled) => {
+      setSaveError(null);
+      await queryClient.cancelQueries({
+        queryKey: TRANSCODE_SETTINGS_QUERY_KEY,
+      });
+      const previous = queryClient.getQueryData(TRANSCODE_SETTINGS_QUERY_KEY);
+      queryClient.setQueryData(TRANSCODE_SETTINGS_QUERY_KEY, { enabled });
+      return { previous };
+    },
+    onError: (_error, _enabled, context) => {
+      // Revert the optimistic flip — the server remains the authority.
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(
+          TRANSCODE_SETTINGS_QUERY_KEY,
+          context.previous,
+        );
+      }
+      setSaveError("Couldn't save. Try again.");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: TRANSCODE_SETTINGS_QUERY_KEY,
+      });
+    },
+  });
+
+  const enabled = settingsQuery.data?.enabled ?? false;
+  const toggleLabel = settingsQuery.isError
+    ? "Couldn't load the server setting."
+    : "On-the-fly conversion to browser-friendly formats (e.g. MKV). Uses server CPU; cached per video.";
+
+  return (
+    <section aria-labelledby="transcoding-heading" className="max-w-sm space-y-4">
+      <h2 id="transcoding-heading" className="text-lg font-semibold">
+        Transcoding
+      </h2>
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm opacity-70">{toggleLabel}</p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-labelledby="transcoding-heading"
+          disabled={!settingsQuery.isSuccess || toggleMutation.isPending}
+          onClick={() => toggleMutation.mutate(!enabled)}
+          className="relative h-6 w-11 shrink-0 rounded-full border border-white/10 transition-colors focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+          style={{
+            backgroundColor: enabled
+              ? "var(--color-castify-accent)"
+              : "var(--color-castify-canvas)",
+          }}
+        >
+          <span
+            className="absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all"
+            style={{ left: enabled ? "1.5rem" : "0.125rem" }}
+          />
+        </button>
+      </div>
+      {saveError && <p className={FIELD_ERROR_CLASS}>{saveError}</p>}
     </section>
   );
 }
