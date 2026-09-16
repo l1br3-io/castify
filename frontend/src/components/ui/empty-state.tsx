@@ -10,6 +10,8 @@
 
 import { type ReactNode } from "react";
 
+import { Button } from "./button";
+
 type EmptyStateProps = {
   title: string;
   body?: string;
@@ -46,13 +48,9 @@ export function EmptyState({
         <p className={`mx-auto mt-2 max-w-sm opacity-70 ${bodySize}`}>{body}</p>
       )}
       {onAction && actionLabel && (
-        <button
-          type="button"
-          onClick={onAction}
-          className="mt-5 inline-flex items-center justify-center rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
-        >
-          {actionLabel}
-        </button>
+        <div className="mt-5 flex justify-center">
+          <Button onClick={onAction}>{actionLabel}</Button>
+        </div>
       )}
     </div>
   );

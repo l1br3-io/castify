@@ -7,6 +7,8 @@
 // surface becomes informational only (caller should provide guidance in
 // the body about what to do next).
 
+import { Button } from "./button";
+
 type ErrorStateProps = {
   title?: string;
   body?: string;
@@ -37,13 +39,11 @@ export function ErrorState({
         <p className={`mx-auto mt-2 max-w-sm opacity-70 ${bodySize}`}>{body}</p>
       )}
       {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-5 inline-flex items-center justify-center rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-5 py-2 text-sm font-semibold transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
-        >
-          {retryLabel}
-        </button>
+        <div className="mt-5 flex justify-center">
+          <Button variant="secondary" onClick={onRetry}>
+            {retryLabel}
+          </Button>
+        </div>
       )}
     </div>
   );
