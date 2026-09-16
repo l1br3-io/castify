@@ -2231,8 +2231,9 @@ pub(crate) async fn serve_transcode_master(
     // ensures the master lists only the variants matching the current burn
     // dimension — hls.js must not ABR-switch between burned and unburned
     // segments (subtitles would flicker on/off at the switch boundary).
-    let profile =
-        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    // The derivation includes the remux dimension (transcode-controls), so
+    // a remuxed video's master lists its `-remux` outputs only.
+    let profile = derive_transcode_profile(state, id, precompute.name, subtitle_track_id).await;
 
     // Build master playlist from the current cache state, filtered to the
     // current profile.
@@ -2296,6 +2297,76 @@ async fn fetch_video_height(state: &AppState, video_id: &str) -> Option<u32> {
         .ok()??;
     let height: Option<i64> = row.get("height");
     height.filter(|h| *h > 0).map(|h| h as u32)
+}
+
+/// Derive the effective transcode profile for a (video, variant, burn)
+/// request: the burn dimension first, then the remux dimension
+/// (transcode-controls FR-3/FR-3a). Every profile consumer — master
+/// playlist, variant playlist, segment server, and the worker starter —
+/// MUST derive through this one function; a site deriving from burn alone
+/// would look up (or start!) the wrong output directory.
+///
+/// **GOTCHA — remux fallback:** when a remux attempt for this video+variant
+/// has already failed (a `failed` row carrying the `-remux` profile), the
+/// derivation drops the `-remux` component so the next request starts a
+/// FULL transcode instead of retrying the remux forever. Odd MKVs (headers
+/// needing `+genpts`, attached fonts) fail `-c copy`; re-encoding always
+/// works. The failed `-remux` row stays behind for admin/eviction — the
+/// `-remux` profile component is what keeps the fallback from ever serving
+/// remuxed segments as transcoded ones (or vice versa).
+async fn derive_transcode_profile(
+    state: &AppState,
+    video_id: &str,
+    variant: &str,
+    subtitle_track_id: Option<&str>,
+) -> String {
+    use crate::transcode::{burn_profile, should_remux, DEFAULT_PROFILE, REMUX_PROFILE_SUFFIX};
+
+    let base = burn_profile(DEFAULT_PROFILE, subtitle_track_id);
+    if subtitle_track_id.is_some() {
+        return base; // FR-3a: burn-in always re-encodes.
+    }
+
+    let repo = state.catalog_repository();
+    let remux_failed_before = match repo
+        .fetch_transcode_entry(
+            video_id,
+            variant,
+            &format!("{DEFAULT_PROFILE}{REMUX_PROFILE_SUFFIX}"),
+        )
+        .await
+    {
+        Ok(Some(entry)) => entry.status == "failed",
+        _ => false,
+    };
+
+    use sqlx::Row;
+    let row = sqlx::query(r#"SELECT video_codec, audio_codec, mime_type FROM videos WHERE id = ?"#)
+        .bind(video_id)
+        .fetch_optional(state.pool())
+        .await
+        .ok()
+        .flatten();
+    let (video_codec, audio_codec, mime_type) = match row {
+        Some(row) => (
+            row.get::<Option<String>, _>("video_codec"),
+            row.get::<Option<String>, _>("audio_codec"),
+            row.get::<Option<String>, _>("mime_type"),
+        ),
+        None => (None, None, None),
+    };
+
+    if should_remux(
+        None,
+        video_codec.as_deref(),
+        audio_codec.as_deref(),
+        mime_type.as_deref(),
+        remux_failed_before,
+    ) {
+        format!("{base}{REMUX_PROFILE_SUFFIX}")
+    } else {
+        base
+    }
 }
 
 /// Optional `?burn_subtitles=<track_id>` query parameter accepted by the
@@ -2366,8 +2437,7 @@ pub(crate) async fn serve_transcode_playlist(
     }
 
     let subtitle_track_id = burn.track_id();
-    let profile =
-        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile = derive_transcode_profile(state, id, variant, subtitle_track_id).await;
 
     let repo = state.catalog_repository();
     let entry = repo.fetch_transcode_entry(id, variant, &profile).await?;
@@ -2454,8 +2524,7 @@ pub(crate) async fn serve_transcode_segment(
     }
 
     let subtitle_track_id = burn.track_id();
-    let profile =
-        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile = derive_transcode_profile(state, id, variant, subtitle_track_id).await;
 
     let dir = transcode_output_dir(state, id, variant, &profile);
     let segment_path = dir.join(segment);
@@ -2552,9 +2621,8 @@ async fn ensure_transcode_started(
 ) -> ApiResult<()> {
     let registry = transcode_registry();
 
-    let key = crate::transcode::transcode_registry_key(video_id, variant, subtitle_track_id);
-    let profile =
-        crate::transcode::burn_profile(crate::transcode::DEFAULT_PROFILE, subtitle_track_id);
+    let profile = derive_transcode_profile(state, video_id, variant, subtitle_track_id).await;
+    let key = crate::transcode::transcode_registry_key_for_profile(video_id, variant, &profile);
     let repo = state.catalog_repository().clone();
 
     let mut guard = registry.lock().await;
@@ -2677,6 +2745,7 @@ async fn ensure_transcode_started(
             variant,
             segment_duration_secs,
             Some(spec),
+            false, // FR-3a: burn-in always re-encodes, never remuxes.
         )
         .await
         .map_err(|e| {
@@ -2684,7 +2753,12 @@ async fn ensure_transcode_started(
         })?;
         (Arc::new(h), Some(local_source))
     } else {
-        // ── Unburned path (M6/M7 stdin pipeline, unchanged) ──
+        // ── Unburned path (M6/M7 stdin pipeline) ──
+        // Remux dimension (transcode-controls FR-3): a `-remux` profile
+        // means ffmpeg stream-copies instead of re-encoding. The profile
+        // was derived above, so the flag is just its suffix — burn and
+        // remux never coexist (FR-3a, enforced in derivation).
+        let remux = profile.ends_with(crate::transcode::REMUX_PROFILE_SUFFIX);
         let stream_response = open_stream_with_refresh(state, stream_info, None).await?;
         let h = crate::transcode::start_transcode(
             Some(stream_response.body),
@@ -2692,6 +2766,7 @@ async fn ensure_transcode_started(
             variant,
             segment_duration_secs,
             None,
+            remux,
         )
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("failed to start transcode: {e}")))?;

@@ -36,6 +36,13 @@ use castify_catalog::BodyStream;
 /// Default transcode profile (CPU, H.264 High@L4.0 + AAC 128k).
 pub const DEFAULT_PROFILE: &str = "h264-high-40-aac128-cpu";
 
+/// Profile component marking a remux output (stream copy, no re-encode).
+/// Appended to the base profile (`{DEFAULT_PROFILE}-remux`) so remuxed and
+/// re-encoded outputs land in distinct `transcode_cache_entries` rows and
+/// distinct on-disk directories — a later full transcode of the same video
+/// must never serve remuxed segments, nor vice versa.
+pub const REMUX_PROFILE_SUFFIX: &str = "-remux";
+
 /// Default variant: source resolution capped at 720p.
 pub const DEFAULT_VARIANT: &str = "720p";
 
@@ -94,7 +101,54 @@ pub fn transcode_registry_key(
     subtitle_track_id: Option<&str>,
 ) -> String {
     let profile = burn_profile(DEFAULT_PROFILE, subtitle_track_id);
+    transcode_registry_key_for_profile(video_id, variant, &profile)
+}
+
+/// Build the in-memory `TRANSCODE_REGISTRY` key from an already-derived
+/// profile string (e.g. one carrying the `+subs-{id}` burn suffix, the
+/// `-remux` component, or both dimensions resolved by the caller). Same
+/// parseability contract as [`transcode_registry_key`].
+pub fn transcode_registry_key_for_profile(video_id: &str, variant: &str, profile: &str) -> String {
     format!("{video_id}:{variant}:{profile}")
+}
+
+/// Decide whether an unburned transcode for this video should **remux**
+/// (stream-copy into fMP4/HLS) instead of re-encoding (spec FR-3).
+///
+/// Remux applies only when *all* of these hold:
+/// - No burn-in is active (`subtitle_track_id.is_none()`) — the overlay
+///   filter forces a re-encode (spec FR-3a).
+/// - The codecs are already browser-compatible: H.264 video + **AAC**
+///   audio. AAC-only on purpose: MP3-in-fMP4/HLS depends on the hls.js
+///   build, and AC3/DTS (the common MKV case) don't fit HLS safely —
+///   those take the full-transcode path.
+/// - The container is one no browser demuxes (Matroska/AVI/WMV/FLV/TS) —
+///   a browser-playable container with these codecs never transcodes at
+///   all, so there is nothing to remux.
+/// - No previous remux attempt failed for this video. A failed remux
+///   (odd MKV features: headers needing genpts, attached fonts) flips the
+///   video to the full-transcode path — the caller signals this via
+///   `remux_failed_before`, typically from a `failed` `-remux` manifest
+///   row.
+///
+/// Codec names compare case-insensitively (ffprobe reports lowercase, but
+/// probe data is provider-controlled).
+pub fn should_remux(
+    subtitle_track_id: Option<&str>,
+    video_codec: Option<&str>,
+    audio_codec: Option<&str>,
+    mime_type: Option<&str>,
+    remux_failed_before: bool,
+) -> bool {
+    if subtitle_track_id.is_some() || remux_failed_before {
+        return false;
+    }
+    let (Some(vc), Some(ac)) = (video_codec, audio_codec) else {
+        return false; // Not probed yet — can't trust codecs for stream copy.
+    };
+    vc.eq_ignore_ascii_case("h264")
+        && ac.eq_ignore_ascii_case("aac")
+        && castify_catalog::codec_support::container_requires_transcode(mime_type)
 }
 
 /// Burn-in specification: resolves a subtitle track to the ffmpeg arguments
@@ -236,6 +290,47 @@ fn build_ffmpeg_args(
     ]
 }
 
+/// Build the flat ffmpeg argument list for a **remux** job (spec FR-3):
+/// stream-copy the first video + audio streams into HLS without any
+/// decode/encode. Disk-speed-bound — no encoder libraries involved.
+///
+/// `-sn` drops subtitle streams on purpose: MPEG-TS/HLS segments can't
+/// carry MKV-style subtitle tracks (PGS/SRT), and ffmpeg aborts rather
+/// than silently producing unplayable output. Text subtitles keep being
+/// served to the browser as sidecar tracks, exactly as today.
+fn build_remux_args(
+    input_source: &str,
+    segment_filename: &Path,
+    playlist_path: &Path,
+    segment_duration_secs: u32,
+) -> Vec<String> {
+    vec![
+        "-i".into(),
+        input_source.into(),
+        // First video + first audio only: a second AC3/DTS track would
+        // either fail or produce an unplayable variant.
+        "-map".into(),
+        "0:v:0".into(),
+        "-map".into(),
+        "0:a:0".into(),
+        // Stream copy — the whole point of remux.
+        "-c".into(),
+        "copy".into(),
+        "-sn".into(),
+        // HLS output, same segmenting contract as the full transcode.
+        "-f".into(),
+        "hls".into(),
+        "-hls_time".into(),
+        segment_duration_secs.to_string(),
+        "-hls_list_size".into(),
+        "0".into(),
+        "-hls_segment_filename".into(),
+        segment_filename.to_string_lossy().into_owned(),
+        "-y".into(),
+        playlist_path.to_string_lossy().into_owned(),
+    ]
+}
+
 /// Errors returned by the transcode pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum TranscodeError {
@@ -303,13 +398,19 @@ impl TranscodeState {
 /// Spawns an `ffmpeg` process and writes HLS segments to `output_dir`.
 /// Returns immediately with a handle; the transcode runs in the background.
 ///
-/// **Two input modes:**
-/// - **Unburned** (`burn = None`, `input = Some(stream)`): ffmpeg reads from
-///   stdin (provider stream piped in). This is the M6/M7 path, unchanged.
-/// - **Burned** (`burn = Some(spec)`, `input = None`): ffmpeg reads from
-///   `spec.source_path` (a seekable local file resolved by Task 005's
-///   `resolve_local_source`) and applies a `subtitles=` filter to render
-///   the subtitle track into the video frames.
+/// **Three modes:**
+/// - **Unburned full transcode** (`burn = None`, `remux = false`,
+///   `input = Some(stream)`): ffmpeg reads from stdin (provider stream
+///   piped in) and re-encodes. This is the M6/M7 path, unchanged.
+/// - **Unburned remux** (`burn = None`, `remux = true`,
+///   `input = Some(stream)`): same stdin pipeline, but ffmpeg args
+///   stream-copy (`-c copy`) instead of re-encoding (transcode-controls
+///   FR-3). Remux and burn are mutually exclusive — the overlay filter
+///   requires re-encode (FR-3a).
+/// - **Burned** (`burn = Some(spec)`, `input = None`, `remux = false`):
+///   ffmpeg reads from `spec.source_path` (a seekable local file resolved
+///   by Task 005's `resolve_local_source`) and applies a `subtitles=`
+///   filter to render the subtitle track into the video frames.
 ///
 /// The caller is responsible for:
 /// - Polling the output directory for ready segments
@@ -324,7 +425,12 @@ pub async fn start_transcode(
     variant: &str,
     segment_duration_secs: u32,
     burn: Option<BurnSpec>,
+    remux: bool,
 ) -> TranscodeResult<TranscodeHandle> {
+    debug_assert!(
+        !(remux && burn.is_some()),
+        "start_transcode: remux and burn are mutually exclusive"
+    );
     // Ensure output directory exists.
     tokio::fs::create_dir_all(&output_dir).await?;
 
@@ -340,14 +446,23 @@ pub async fn start_transcode(
         Some(spec) => spec.source_path.to_string_lossy().into_owned(),
         None => "pipe:0".to_string(),
     };
-    let args = build_ffmpeg_args(
-        &input_source,
-        &segment_filename,
-        &playlist_path,
-        variant,
-        segment_duration_secs,
-        burn.as_ref(),
-    );
+    let args = if remux {
+        build_remux_args(
+            &input_source,
+            &segment_filename,
+            &playlist_path,
+            segment_duration_secs,
+        )
+    } else {
+        build_ffmpeg_args(
+            &input_source,
+            &segment_filename,
+            &playlist_path,
+            variant,
+            segment_duration_secs,
+            burn.as_ref(),
+        )
+    };
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(&args)
@@ -959,5 +1074,120 @@ mod tests {
         assert_eq!(escape_filtergraph_value("a,b"), "a\\,b");
         assert_eq!(escape_filtergraph_value(r"a\b"), "a\\\\b");
         assert_eq!(escape_filtergraph_value("a'b"), "a\\'b");
+    }
+
+    #[test]
+    fn should_remux_h264_aac_in_undemuxable_container() {
+        assert!(should_remux(
+            None,
+            Some("h264"),
+            Some("aac"),
+            Some("video/x-matroska"),
+            false
+        ));
+    }
+
+    #[test]
+    fn should_remux_rejects_non_aac_audio() {
+        // MP3/AC3/DTS never remux — MP3-in-HLS is hls.js-dependent and
+        // AC3/DTS don't fit HLS (spec FR-3).
+        for audio in ["mp3", "ac3", "eac3", "dts"] {
+            assert!(
+                !should_remux(
+                    None,
+                    Some("h264"),
+                    Some(audio),
+                    Some("video/x-matroska"),
+                    false
+                ),
+                "h264+{audio} must take the full-transcode path"
+            );
+        }
+    }
+
+    #[test]
+    fn should_remux_rejects_non_h264_video_and_direct_containers() {
+        assert!(!should_remux(
+            None,
+            Some("hevc"),
+            Some("aac"),
+            Some("video/x-matroska"),
+            false
+        ));
+        // Browser-playable container: these never transcode at all, so
+        // there is nothing to remux.
+        assert!(!should_remux(
+            None,
+            Some("h264"),
+            Some("aac"),
+            Some("video/mp4"),
+            false
+        ));
+    }
+
+    #[test]
+    fn should_remux_never_with_burn_unprobed_codecs_or_prior_failure() {
+        // FR-3a: burn-in forces a re-encode.
+        assert!(!should_remux(
+            Some("sub-1"),
+            Some("h264"),
+            Some("aac"),
+            Some("video/x-matroska"),
+            false
+        ));
+        // Unprobed codecs — can't trust stream copy.
+        assert!(!should_remux(
+            None,
+            None,
+            Some("aac"),
+            Some("video/x-matroska"),
+            false
+        ));
+        // A previously failed remux flips to full transcode.
+        assert!(!should_remux(
+            None,
+            Some("h264"),
+            Some("aac"),
+            Some("video/x-matroska"),
+            true
+        ));
+    }
+
+    #[test]
+    fn remux_args_stream_copy_without_encoders() {
+        let tmp = std::env::temp_dir();
+        let args = build_remux_args(
+            "pipe:0",
+            &tmp.join("segment_%05d.ts"),
+            &tmp.join("playlist.m3u8"),
+            10,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-c copy"), "remux must stream copy");
+        assert!(
+            !joined.contains("libx264"),
+            "remux must not re-encode video"
+        );
+        assert!(!joined.contains("-b:a"), "remux must not re-encode audio");
+        assert!(joined.contains("-sn"), "subtitle streams must be dropped");
+        assert!(joined.contains("-map 0:v:0"), "first video stream only");
+        assert!(joined.contains("-map 0:a:0"), "first audio stream only");
+        assert!(joined.contains("-f hls"), "output is HLS");
+        assert!(
+            joined.contains("-i pipe:0"),
+            "reads provider bytes from stdin"
+        );
+        assert!(joined.contains("-hls_time 10"));
+    }
+
+    #[test]
+    fn registry_key_with_remux_profile_differs_from_full() {
+        let full = transcode_registry_key_for_profile("v1", "720p", DEFAULT_PROFILE);
+        let remux = transcode_registry_key_for_profile(
+            "v1",
+            "720p",
+            &format!("{DEFAULT_PROFILE}{REMUX_PROFILE_SUFFIX}"),
+        );
+        assert_ne!(full, remux);
     }
 }

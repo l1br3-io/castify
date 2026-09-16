@@ -702,3 +702,264 @@ async fn burned_and_unburned_coexist_in_manifest() {
         );
     }
 }
+
+// ── Remux (transcode-controls task 004) ────────────────────────────────
+//
+// Remux = stream copy into HLS (no decode/encode). Three layers of proof:
+// 1. A real H.264/AAC MKV fed through `start_transcode(remux = true)`
+//    produces valid HLS (below).
+// 2. The HTTP master-playlist path derives the `-remux` profile and serves
+//    existing remux segments from disk without spawning ffmpeg (the
+//    resume path — no provider is reachable in these tests).
+// 3. A previously failed remux flips the derivation to the full-transcode
+//    profile (fallback, spec FR-3 risk mitigation).
+
+/// Generate a tiny real H.264/AAC MKV via the system ffmpeg.
+async fn make_h264_aac_mkv(mkv_path: &std::path::Path) {
+    let status = tokio::process::Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("testsrc=duration=2:size=160x120:rate=10")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg("sine=frequency=440:duration=2")
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("1:a:0")
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-preset")
+        .arg("ultrafast")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("64k")
+        .arg(mkv_path)
+        .status()
+        .await
+        .expect("spawn ffmpeg (installed for probe/transcode tests)");
+    assert!(
+        status.success(),
+        "ffmpeg failed to generate the MKV fixture"
+    );
+}
+
+/// Poll a transcode handle until ffmpeg exits (bounded — these fixtures
+/// are 2 seconds of video).
+async fn wait_until_done(handle: &castify_api::transcode::TranscodeHandle) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !handle.state.is_done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "transcode did not finish within 30s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn remux_produces_valid_hls_from_h264_aac_mkv() {
+    let src = tempfile::tempdir().unwrap();
+    let mkv_path = src.path().join("source.mkv");
+    make_h264_aac_mkv(&mkv_path).await;
+
+    let out_root = tempfile::tempdir().unwrap();
+    let out_dir = out_root.path().join("remux");
+
+    let bytes: Bytes = Bytes::from(tokio::fs::read(&mkv_path).await.unwrap());
+    let stream: castify_catalog::BodyStream =
+        Box::pin(futures::stream::once(async move { Ok(bytes) }));
+
+    let handle = castify_api::transcode::start_transcode(
+        Some(stream),
+        out_dir.clone(),
+        "source",
+        1,
+        None,
+        true,
+    )
+    .await
+    .expect("start remux transcode");
+
+    wait_until_done(&handle).await;
+    assert!(
+        handle
+            .state
+            .completed
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "remux ffmpeg must exit zero for a well-formed H.264/AAC MKV"
+    );
+
+    let segments = castify_api::transcode::count_segments(&out_dir).await;
+    assert!(segments >= 1, "expected at least one .ts segment");
+    let playlist = castify_api::transcode::read_playlist(&out_dir)
+        .await
+        .expect("playlist.m3u8 on disk");
+    assert!(playlist.starts_with("#EXTM3U"), "playlist: {playlist}");
+    assert!(
+        playlist.contains("EXTINF"),
+        "playlist must carry media durations: {playlist}"
+    );
+    assert!(
+        playlist.contains(".ts"),
+        "playlist must reference .ts segments: {playlist}"
+    );
+}
+
+/// Seed a video whose codecs are browser-compatible but whose container
+/// isn't (the AC-1 seeded-MKV shape), return its id. Transcode dir is
+/// `{data_dir}/transcode-cache` (boot helper config).
+async fn seed_remux_eligible_video(repo: &CatalogRepository) -> String {
+    let vid = seed_video(repo).await;
+    sqlx::query(
+        "UPDATE videos SET mime_type = 'video/x-matroska', video_codec = 'h264', audio_codec = 'aac' WHERE id = ?",
+    )
+    .bind(&vid)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    vid
+}
+
+/// Pre-create remux segments on disk so `ensure_transcode_started` takes
+/// the resume path (no ffmpeg, no provider). 1080p source → pre-compute
+/// variant 720p.
+fn plant_remux_segments(data_dir: &std::path::Path, vid: &str) -> std::path::PathBuf {
+    let dir = data_dir
+        .join("transcode-cache")
+        .join(vid)
+        .join("720p")
+        .join(format!("{}-remux", castify_api::transcode::DEFAULT_PROFILE));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("segment_00000.ts"), b"fake-ts-bytes").unwrap();
+    dir
+}
+
+async fn get_master(app: &axum::Router, cookie: &str, vid: &str) -> (StatusCode, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/videos/{vid}/transcode/master.m3u8"))
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn master_serves_remux_outputs_from_disk_and_reuses_them() {
+    let (app, cookie, repo, data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_remux_eligible_video(&repo).await;
+    let remux_dir = plant_remux_segments(&data_dir, &vid);
+
+    // First master request: the resume path seeds a completed `-remux`
+    // manifest row from the on-disk segments and builds the playlist —
+    // no ffmpeg, no provider access (neither is reachable here).
+    let (status, playlist) = get_master(&app, &cookie, &vid).await;
+    assert_eq!(status, StatusCode::OK, "playlist: {playlist}");
+    assert!(
+        playlist.contains("720p/playlist.m3u8"),
+        "master must list the 720p variant: {playlist}"
+    );
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT profile, status FROM transcode_cache_entries WHERE video_id = ?")
+            .bind(&vid)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one manifest row: {rows:?}");
+    assert_eq!(
+        rows[0],
+        (
+            format!("{}-remux", castify_api::transcode::DEFAULT_PROFILE),
+            "completed".into()
+        ),
+        "the row must carry the -remux profile: {rows:?}"
+    );
+    assert!(
+        rows[0]
+            .0
+            .starts_with(castify_api::transcode::DEFAULT_PROFILE),
+        "sanity"
+    );
+    let _ = remux_dir;
+
+    // Second request: served from the same cache row — no second job.
+    let (status, playlist) = get_master(&app, &cookie, &vid).await;
+    assert_eq!(status, StatusCode::OK, "playlist: {playlist}");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM transcode_cache_entries WHERE video_id = ?")
+            .bind(&vid)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "second request must not create a new row");
+}
+
+#[tokio::test]
+async fn failed_remux_row_falls_back_to_full_transcode_profile() {
+    let (app, cookie, repo, data_dir, _guard) = boot_with_transcode_enabled().await;
+    let vid = seed_remux_eligible_video(&repo).await;
+    let remux_dir = plant_remux_segments(&data_dir, &vid);
+
+    // A previous remux attempt failed (odd-MKV case). The on-disk remux
+    // segments must now be dead weight: the derivation drops `-remux` and
+    // the request starts down the full-transcode path instead (which
+    // fails here only because no provider is reachable).
+    repo.insert_pending_transcode(&NewTranscodeEntry {
+        video_id: &vid,
+        variant: "720p",
+        profile: &format!("{}-remux", castify_api::transcode::DEFAULT_PROFILE),
+        output_dir: &remux_dir.to_string_lossy(),
+        segment_duration_secs: 10,
+        bitrate: None,
+        width: None,
+        height: None,
+    })
+    .await
+    .unwrap();
+    repo.mark_transcode_failed(
+        &vid,
+        "720p",
+        &format!("{}-remux", castify_api::transcode::DEFAULT_PROFILE),
+        "remux exited non-zero",
+    )
+    .await
+    .unwrap();
+
+    let (status, _playlist) = get_master(&app, &cookie, &vid).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "must NOT serve the remux segments after a failed remux"
+    );
+
+    // The full-transcode path was taken: a pending manifest row carrying
+    // the base profile exists (inserted before ffmpeg/provider startup).
+    let profiles: Vec<String> =
+        sqlx::query_scalar("SELECT profile FROM transcode_cache_entries WHERE video_id = ?")
+            .bind(&vid)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        profiles.contains(&castify_api::transcode::DEFAULT_PROFILE.to_string()),
+        "fallback must derive the full-transcode profile: {profiles:?}"
+    );
+}
