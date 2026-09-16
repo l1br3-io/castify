@@ -41,6 +41,68 @@
   --color-kind-subtitle: oklch(78% 0.12 150);
   --color-kind-other: oklch(70% 0.015 80);
 
+  /* Semantic — status hues for text, icons, and small-area fills; the
+     `-subtle` variants (12–14% alpha) are their soft-fill pair. Danger is
+     the only red: destructive actions and errors. Verified at WCAG 2.2 AA
+     text contrast (4.5:1) on canvas/surface/raised in BOTH themes; focus
+     shown at its 3:1 UI floor (non-text contrast). Ratios computed from
+     the oklch values below — src/index.test.ts recomputes them, so an
+     edit that drops a token below AA fails the suite.
+
+     token     dark: canvas/surface/raised          light: canvas/surface/raised
+     success   9.93:1 / 9.25:1 / 8.45:1             4.91:1 / 5.21:1 / 5.43:1
+     warning  11.55:1 / 10.76:1 / 9.83:1            5.02:1 / 5.32:1 / 5.55:1
+     danger    7.65:1 / 7.13:1 / 6.51:1             5.74:1 / 6.08:1 / 6.34:1
+     info      9.17:1 / 8.54:1 / 7.81:1             5.90:1 / 6.25:1 / 6.52:1
+     focus     9.20:1 / 8.57:1 / 7.83:1 (UI ≥3:1)   6.11:1 / 6.47:1 / 6.75:1
+
+     Light-theme subtles use 12% alpha (porcelain saturates faster); dark
+     uses 14%, matching the accent pair above. */
+  --color-success: oklch(78% 0.14 152);
+  --color-success-subtle: oklch(78% 0.14 152 / 14%);
+  --color-warning: oklch(84% 0.13 95);
+  --color-warning-subtle: oklch(84% 0.13 95 / 14%);
+  --color-danger: oklch(74% 0.15 25);
+  --color-danger-subtle: oklch(74% 0.15 25 / 14%);
+  --color-info: oklch(77% 0.11 245);
+  --color-info-subtle: oklch(77% 0.11 245 / 14%);
+
+  /* Focus — ring color for :focus-visible across the app (player chrome
+     keeps its over-video white treatment). The offset is the shared
+     ring-offset convention extracted from the component set. */
+  --color-focus: oklch(78% 0.15 75);
+  --focus-ring-offset: 2px;
+
+  /* Player chrome — scrims and overlay chips sit over video, which is dark
+     regardless of app theme, so these are theme-invariant (no per-theme
+     override). Tested as white-on-layer over a fully bright frame:
+     scrim-bottom ~12.6:1, scrim-top 4.76:1, overlay chip 5.74:1,
+     caption bg 8.52:1. */
+  --color-player-scrim-top: oklch(14.5% 0.02 260 / 55%);
+  --color-player-scrim-bottom: oklch(14.5% 0.02 260 / 80%);
+  --color-player-overlay-surface: oklch(0% 0 0 / 60%);
+  --color-player-overlay-text: oklch(100% 0 0);
+
+  /* Captions — defaults for the styling the app controls (::cue, JASSUB).
+     White on translucent black honors FCC/CVAA-style readability over any
+     frame; the size floor matches the existing cue scale. */
+  --color-caption-bg: oklch(0% 0 0 / 70%);
+  --color-caption-text: oklch(100% 0 0);
+  --caption-size-floor: 1.15em;
+
+  /* Elevation — the ordered overlay layers (menu < dialog < toast). One
+     ladder so stacking stays consistent as overlays compose. */
+  --z-menu: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+
+  /* Provider brand — official brand colors for provider sign-in buttons
+     and small-area provider badges ONLY: never large fills, never state
+     indicators; provider identity is never conveyed by color alone. */
+  --color-brand-google: #4285f4;
+  --color-brand-dropbox: #0061fe;
+  --color-brand-onedrive: #0078d4;
+
   /* Sanctioned motion — exactly two effects (spec § Motion): the
      page-load stagger and the scan pulse. Both collapse under the global
      reduced-motion override at the bottom of this file. */
@@ -88,12 +150,30 @@
   --color-kind-archive: oklch(78% 0.11 50);
   --color-kind-subtitle: oklch(78% 0.12 150);
   --color-kind-other: oklch(70% 0.015 80);
+  --color-success: oklch(78% 0.14 152);
+  --color-success-subtle: oklch(78% 0.14 152 / 14%);
+  --color-warning: oklch(84% 0.13 95);
+  --color-warning-subtle: oklch(84% 0.13 95 / 14%);
+  --color-danger: oklch(74% 0.15 25);
+  --color-danger-subtle: oklch(74% 0.15 25 / 14%);
+  --color-info: oklch(77% 0.11 245);
+  --color-info-subtle: oklch(77% 0.11 245 / 14%);
+  --color-focus: oklch(78% 0.15 75);
   color-scheme: dark;
 }
 
 /* Light theme — cool porcelain, the quiet reading room. Explicit opt-in
    via data-theme="light". */
 :root[data-theme="light"] {
+  --color-success: oklch(51% 0.12 152);
+  --color-success-subtle: oklch(51% 0.12 152 / 12%);
+  --color-warning: oklch(52% 0.12 85);
+  --color-warning-subtle: oklch(52% 0.12 85 / 12%);
+  --color-danger: oklch(51% 0.19 27);
+  --color-danger-subtle: oklch(51% 0.19 27 / 12%);
+  --color-info: oklch(48% 0.11 250);
+  --color-info-subtle: oklch(48% 0.11 250 / 12%);
+  --color-focus: oklch(48% 0.14 65);
   --color-castify-accent: oklch(58% 0.14 65);
   --color-castify-accent-dim: oklch(48% 0.14 65);
   --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
@@ -119,6 +199,15 @@
    hence the :not() guard. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
+    --color-success: oklch(51% 0.12 152);
+    --color-success-subtle: oklch(51% 0.12 152 / 12%);
+    --color-warning: oklch(52% 0.12 85);
+    --color-warning-subtle: oklch(52% 0.12 85 / 12%);
+    --color-danger: oklch(51% 0.19 27);
+    --color-danger-subtle: oklch(51% 0.19 27 / 12%);
+    --color-info: oklch(48% 0.11 250);
+    --color-info-subtle: oklch(48% 0.11 250 / 12%);
+    --color-focus: oklch(48% 0.14 65);
     --color-castify-accent: oklch(58% 0.14 65);
     --color-castify-accent-dim: oklch(48% 0.14 65);
     --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
@@ -170,13 +259,14 @@ body {
 }
 
 /* M3 T12: subtitle cue styling. jsdom can't render these (UA-rendered
-   pseudo-element); styled for legibility on varied video backgrounds.
-   White text + translucent black backdrop + soft shadow for outline. */
+   pseudo-element); styled for legibility on varied video backgrounds via
+   the caption tokens (white text + translucent black backdrop + soft
+   shadow for outline). */
 video::cue {
-  font-size: 1.15em;
+  font-size: var(--caption-size-floor);
   font-family: var(--font-sans);
-  color: #fff;
-  background-color: rgba(0, 0, 0, 0.7);
+  color: var(--color-caption-text);
+  background-color: var(--color-caption-bg);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
