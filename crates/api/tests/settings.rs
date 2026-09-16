@@ -398,6 +398,78 @@ async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
     drop(named);
 }
 
+/// Spec AC-3 verbatim: toggle off, restart with the env default ON —
+/// the persisted `off` wins. (The sibling test above covers the mirrored
+/// direction; together they pin "DB wins" both ways.)
+#[tokio::test]
+async fn transcode_toggle_off_survives_restart_with_env_default_on() {
+    use castify_api::state::AppState;
+    use castify_core::Config;
+
+    let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = named.to_path_buf();
+    let pool = castify_storage::connect(&path).await.unwrap();
+    castify_storage::run_migrations(&pool).await.unwrap();
+    let secret = castify_auth::SessionSecret::resolve(&pool, None)
+        .await
+        .unwrap();
+    let token_key = castify_catalog::TokenKey::resolve(&pool, None)
+        .await
+        .unwrap();
+    let data_dir = std::env::temp_dir().join("castify-settings-restart-off-test");
+    std::fs::create_dir_all(&data_dir).ok();
+    let base_config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        log_level: "warn".to_string(),
+        data_dir: data_dir.clone(),
+        database_path: path.clone(),
+        app_base_url: None,
+        cookie_secure: false,
+        google_oauth: None,
+        dropbox_oauth: None,
+        microsoft_oauth: None,
+        video_cache: castify_core::VideoCacheConfig {
+            enabled: false,
+            max_bytes: 0,
+            dir: data_dir.join("video-cache"),
+        },
+        probe: castify_core::ProbeConfig::default(),
+        transcode: castify_core::TranscodeConfig {
+            enabled: true, // env default ON
+            ..Default::default()
+        },
+        abr: castify_core::AbrConfig::default(),
+    };
+
+    // First boot: env default on. Owner flips the toggle to OFF.
+    let state = AppState::new(
+        base_config.clone(),
+        pool.clone(),
+        secret.clone(),
+        token_key.clone(),
+    )
+    .await;
+    let app = build_app(state);
+    let cookie = setup_owner(&app).await;
+    let (token, cookies) = csrf_request_parts(&app, &cookie).await;
+    let status = put_transcode(&app, &cookies, Some(&token), r#"{"enabled": false}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Restart: fresh pool over the same db, env default still ON.
+    pool.close().await;
+    let pool = castify_storage::connect(&path).await.unwrap();
+    let state = AppState::new(base_config, pool, secret, token_key).await;
+    let app = build_app(state);
+
+    let (status, body) = get_json(&app, &cookie, "/api/settings/transcode").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["enabled"], false,
+        "persisted `off` must win over the env default `on` (spec AC-3)"
+    );
+    drop(named);
+}
+
 /// The container decision matrix (FR-1/FR-2): browser-compatible codecs
 /// (h264/aac) in a container no browser demuxes route to transcode when
 /// the toggle is on, and stay exactly on today's direct behavior when it's

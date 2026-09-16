@@ -943,23 +943,48 @@ async fn failed_remux_row_falls_back_to_full_transcode_profile() {
     .await
     .unwrap();
 
-    let (status, _playlist) = get_master(&app, &cookie, &vid).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "must NOT serve the remux segments after a failed remux"
-    );
+    let (_status, _playlist) = get_master(&app, &cookie, &vid).await;
 
-    // The full-transcode path was taken: a pending manifest row carrying
-    // the base profile exists (inserted before ffmpeg/provider startup).
-    let profiles: Vec<String> =
-        sqlx::query_scalar("SELECT profile FROM transcode_cache_entries WHERE video_id = ?")
+    // The full-transcode path was taken. Status is environment-dependent
+    // (no provider here → error; under the e2e mock the full job starts
+    // and the master 200s), so the proof is the manifest: a row carrying
+    // the BASE profile exists (inserted before ffmpeg/provider startup),
+    // and the failed `-remux` row was left untouched — the on-disk remux
+    // segments are dead weight, never served.
+    let profiles: Vec<(String, String)> =
+        sqlx::query_as("SELECT profile, status FROM transcode_cache_entries WHERE video_id = ?")
             .bind(&vid)
             .fetch_all(repo.pool())
             .await
             .unwrap();
     assert!(
-        profiles.contains(&castify_api::transcode::DEFAULT_PROFILE.to_string()),
+        profiles.iter().any(|(p, _)| p == castify_api::transcode::DEFAULT_PROFILE),
         "fallback must derive the full-transcode profile: {profiles:?}"
     );
+    assert!(
+        profiles
+            .iter()
+            .any(|(p, s)| p.ends_with("-remux") && s == "failed"),
+        "the failed remux row must stay failed: {profiles:?}"
+    );
+
+    // Registry hygiene: under the e2e feature the fallback really starts
+    // an ffmpeg worker — cancel it so the process-static registry is
+    // empty for tests that assert `active_workers == 0`. Without the
+    // feature no worker exists and cancel is an idempotent no-op.
+    let (csrf, cookies) = csrf_request_parts(&app, &cookie).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/videos/{vid}/transcode"))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
