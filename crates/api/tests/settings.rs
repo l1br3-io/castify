@@ -96,6 +96,35 @@ async fn csrf_request_parts(app: &axum::Router, session_cookie: &str) -> (String
     (token, cookies)
 }
 
+/// Issue a PUT /api/settings/transcode with the given cookie/header pair
+/// (`None` sends no CSRF token) and raw body. Returns status + parsed body
+/// (body parse is best-effort; non-JSON rejections yield `Value::Null`).
+async fn put_transcode(
+    app: &axum::Router,
+    cookies: &str,
+    csrf_token: Option<&str>,
+    body: &str,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .method("PUT")
+        .uri("/api/settings/transcode")
+        .header("cookie", cookies)
+        .header("content-type", "application/json");
+    if let Some(token) = csrf_token {
+        builder = builder.header("x-csrf-token", token);
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            builder
+                .body(Body::from(Bytes::from(body.to_string())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    response.status()
+}
+
 #[tokio::test]
 async fn transcode_toggle_roundtrips_persists_and_gates_admin() {
     let (state, guard, path) = common::fresh_state_with(|c| c.transcode.enabled = false).await;
@@ -160,4 +189,211 @@ async fn transcode_toggle_roundtrips_persists_and_gates_admin() {
     assert_eq!(value, "true");
     pool.close().await;
     drop(guard);
+}
+
+#[tokio::test]
+async fn settings_transcode_requires_a_session() {
+    let (state, guard, _path) = common::fresh_state().await;
+    let app = build_app(state);
+
+    // No session cookie → the auth middleware rejects before the handler.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/transcode")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn put_transcode_without_csrf_or_with_invalid_body_is_rejected() {
+    let (state, guard, _path) = common::fresh_state().await;
+    let pool = state.pool().clone();
+    let app = build_app(state);
+
+    let cookie = setup_owner(&app).await;
+    let (token, cookies) = csrf_request_parts(&app, &cookie).await;
+
+    // Authenticated mutation without the CSRF pair → 403, nothing persisted.
+    let status = put_transcode(&app, &cookie, None, r#"{"enabled": true}"#).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // With CSRF but a syntactically invalid body → 400 (extractor
+    // rejection), nothing persisted.
+    let status = put_transcode(&app, &cookies, Some(&token), r#"{"enabled": "yes"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The failed PUTs must not have flipped the toggle or written a row.
+    let (status, body) = get_json(&app, &cookie, "/api/settings/transcode").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], false);
+    let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM settings")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "rejected PUTs must not persist anything");
+    drop(guard);
+}
+
+#[tokio::test]
+async fn stream_url_strategy_flips_with_the_runtime_toggle() {
+    use castify_catalog::{Credential, NewConnection, NewVideo, Provider, S3Credentials};
+
+    // Codec-incompatible video (mpeg2video is an unconditional No in the
+    // codec map) on an S3-credential connection: stream-url resolves a
+    // presigned URL locally (SigV4, no network, no e2e feature needed).
+    let (state, guard, _path) = common::fresh_state_with(|c| c.transcode.enabled = false).await;
+    let repo = state.catalog_repository().clone();
+    let app = build_app(state);
+
+    let cookie = setup_owner(&app).await;
+
+    let conn = repo
+        .create_connection(&NewConnection {
+            provider: Provider::S3Compatible,
+            credential: Credential::S3(S3Credentials {
+                endpoint: "http://127.0.0.1:9000".into(),
+                region: "us-east-1".into(),
+                bucket: "media".into(),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+                prefix: None,
+            }),
+            provider_account_id: Some("settings-toggle-test".into()),
+            provider_account_email: None,
+        })
+        .await
+        .unwrap();
+    repo.upsert_video(
+        &conn.id,
+        Provider::S3Compatible,
+        &NewVideo {
+            provider_file_id: "Movies/holiday.mkv".into(),
+            name: "holiday.mkv".into(),
+            path: Some("/Movies/holiday.mkv".into()),
+            size_bytes: 129_201,
+            mime_type: Some("video/mp4".into()),
+            duration_ms: Some(8_000),
+            width: Some(160),
+            height: Some(120),
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let video_id: String =
+        sqlx::query_scalar("SELECT id FROM videos WHERE provider_file_id = 'Movies/holiday.mkv'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    sqlx::query("UPDATE videos SET video_codec = 'mpeg2video', audio_codec = 'aac' WHERE id = ?")
+        .bind(&video_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    // Toggle off → exactly today's behavior: direct/proxy URL, never a
+    // transcode strategy (FR-2).
+    let (status, body) =
+        get_json(&app, &cookie, &format!("/api/videos/{video_id}/stream-url")).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_ne!(body["strategy"], "transcode", "body: {body}");
+
+    // Flip the toggle through the API…
+    let (token, cookies) = csrf_request_parts(&app, &cookie).await;
+    let status = put_transcode(&app, &cookies, Some(&token), r#"{"enabled": true}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // …and the very next stream-url request overrides to transcode.
+    let (status, body) =
+        get_json(&app, &cookie, &format!("/api/videos/{video_id}/stream-url")).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["strategy"], "transcode", "body: {body}");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.ends_with(&format!("/api/videos/{video_id}/transcode/master.m3u8")),
+        "unexpected transcode url: {url}"
+    );
+    drop(guard);
+}
+
+#[tokio::test]
+async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
+    use castify_api::state::AppState;
+    use castify_core::Config;
+
+    // Own db + pool (mirrors the session-restart test): PUT a value, then
+    // simulate a restart by rebuilding the app over the same on-disk db
+    // with the env default still saying "disabled". The persisted value
+    // must win (spec AC-3).
+    let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+    let path = named.to_path_buf();
+    let pool = castify_storage::connect(&path).await.unwrap();
+    castify_storage::run_migrations(&pool).await.unwrap();
+    let secret = castify_auth::SessionSecret::resolve(&pool, None)
+        .await
+        .unwrap();
+    let token_key = castify_catalog::TokenKey::resolve(&pool, None)
+        .await
+        .unwrap();
+    let data_dir = std::env::temp_dir().join("castify-settings-restart-test");
+    std::fs::create_dir_all(&data_dir).ok();
+    let base_config = Config {
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        log_level: "warn".to_string(),
+        data_dir: data_dir.clone(),
+        database_path: path.clone(),
+        app_base_url: None,
+        cookie_secure: false,
+        google_oauth: None,
+        dropbox_oauth: None,
+        microsoft_oauth: None,
+        video_cache: castify_core::VideoCacheConfig {
+            enabled: false,
+            max_bytes: 0,
+            dir: data_dir.join("video-cache"),
+        },
+        probe: castify_core::ProbeConfig::default(),
+        transcode: castify_core::TranscodeConfig {
+            enabled: false,
+            ..Default::default()
+        },
+        abr: castify_core::AbrConfig::default(),
+    };
+
+    // First boot: env default false. Owner flips the toggle to on.
+    let state = AppState::new(
+        base_config.clone(),
+        pool.clone(),
+        secret.clone(),
+        token_key.clone(),
+    )
+    .await;
+    let app = build_app(state);
+    let cookie = setup_owner(&app).await;
+    let (token, cookies) = csrf_request_parts(&app, &cookie).await;
+    let status = put_transcode(&app, &cookies, Some(&token), r#"{"enabled": true}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Restart: fresh pool over the same db file, env default still false.
+    pool.close().await;
+    let pool = castify_storage::connect(&path).await.unwrap();
+    let state = AppState::new(base_config, pool, secret, token_key).await;
+    let app = build_app(state);
+
+    let (status, body) = get_json(&app, &cookie, "/api/settings/transcode").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["enabled"], true,
+        "persisted settings value must win over the env-config default"
+    );
+    drop(named);
 }
