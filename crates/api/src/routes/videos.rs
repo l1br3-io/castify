@@ -824,9 +824,9 @@ async fn maybe_override_to_transcode(
         return response;
     }
 
-    // Fetch codec info from the videos table.
+    // Fetch codec + container info from the videos table.
     let pool = state.pool();
-    let row = sqlx::query(r#"SELECT video_codec, audio_codec FROM videos WHERE id = ?"#)
+    let row = sqlx::query(r#"SELECT video_codec, audio_codec, mime_type FROM videos WHERE id = ?"#)
         .bind(video_id)
         .fetch_optional(pool)
         .await;
@@ -837,12 +837,31 @@ async fn maybe_override_to_transcode(
 
     let video_codec: Option<String> = row.get("video_codec");
     let audio_codec: Option<String> = row.get("audio_codec");
+    let mime_type: Option<String> = row.get("mime_type");
+
+    // Container check first (transcode-controls FR-1): codecs alone don't
+    // decide playback — the browser must also demux the container, and no
+    // browser demuxes Matroska/AVI/WMV/FLV/MPEG-TS. Unlike the codec
+    // check below, `mime_type` is set at scan time, so this is race-free
+    // even before the lazy probe fills the codec columns.
+    use castify_catalog::codec_support;
+    if codec_support::container_requires_transcode(mime_type.as_deref()) {
+        tracing::info!(
+            %video_id,
+            mime = ?mime_type,
+            "container not browser-demuxable; overriding to transcode strategy"
+        );
+        return StreamUrlResponse {
+            url: format!("{scope_base}/videos/{video_id}/transcode/master.m3u8"),
+            strategy: "transcode".into(),
+            expires_at: None,
+        };
+    }
 
     let (Some(vc), Some(ac)) = (video_codec.as_deref(), audio_codec.as_deref()) else {
         return response; // Not probed yet — let lazy probe handle it.
     };
 
-    use castify_catalog::codec_support;
     if codec_support::codec_strategy(vc, Some(ac))
         == codec_support::TranscodeDecision::MustTranscode
     {

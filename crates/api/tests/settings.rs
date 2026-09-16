@@ -397,3 +397,236 @@ async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
     );
     drop(named);
 }
+
+/// The container decision matrix (FR-1/FR-2): browser-compatible codecs
+/// (h264/aac) in a container no browser demuxes route to transcode when
+/// the toggle is on, and stay exactly on today's direct behavior when it's
+/// off. Direct containers and unknown mimes are never overridden.
+#[tokio::test]
+async fn container_mime_matrix_routes_to_transcode_only_when_toggle_on() {
+    use castify_catalog::{Credential, NewConnection, NewVideo, Provider, S3Credentials};
+
+    let (state, guard, _path) = common::fresh_state_with(|c| c.transcode.enabled = false).await;
+    let repo = state.catalog_repository().clone();
+    let app = build_app(state);
+
+    let cookie = setup_owner(&app).await;
+
+    let conn = repo
+        .create_connection(&NewConnection {
+            provider: Provider::S3Compatible,
+            credential: Credential::S3(S3Credentials {
+                endpoint: "http://127.0.0.1:9000".into(),
+                region: "us-east-1".into(),
+                bucket: "media".into(),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+                prefix: None,
+            }),
+            provider_account_id: Some("container-matrix-test".into()),
+            provider_account_email: None,
+        })
+        .await
+        .unwrap();
+
+    let undemuxable = [
+        "video/x-matroska",
+        "video/x-msvideo",
+        "video/x-ms-wmv",
+        "video/x-flv",
+        "video/mp2t",
+    ];
+    let direct = ["video/mp4", "video/webm", "video/quicktime", "video/x-m4v"];
+
+    async fn seed_matrix_video(
+        repo: &castify_catalog::CatalogRepository,
+        conn_id: &str,
+        mime: Option<&str>,
+    ) -> String {
+        let provider_file_id = format!("matrix/{}", mime.unwrap_or("no-mime").replace('/', "_"));
+        repo.upsert_video(
+            conn_id,
+            Provider::S3Compatible,
+            &NewVideo {
+                provider_file_id: provider_file_id.clone(),
+                name: format!("{provider_file_id}.bin"),
+                path: Some(format!("/{provider_file_id}")),
+                size_bytes: 1000,
+                mime_type: mime.map(str::to_string),
+                duration_ms: Some(8_000),
+                width: Some(160),
+                height: Some(120),
+                native_hash: None,
+                native_hash_algo: None,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM videos WHERE provider_file_id = ?")
+            .bind(&provider_file_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        // Browser-compatible codecs: only the container can trigger the
+        // override (spec AC-1's seeded-MKV shape).
+        sqlx::query("UPDATE videos SET video_codec = 'h264', audio_codec = 'aac' WHERE id = ?")
+            .bind(&id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        id
+    }
+
+    let mut undemuxable_ids = Vec::new();
+    for mime in undemuxable {
+        undemuxable_ids.push(seed_matrix_video(&repo, &conn.id, Some(mime)).await);
+    }
+    let mut direct_ids = Vec::new();
+    for mime in direct {
+        direct_ids.push(seed_matrix_video(&repo, &conn.id, Some(mime)).await);
+    }
+    let unknown_mime_id =
+        seed_matrix_video(&repo, &conn.id, Some("application/octet-stream")).await;
+    let no_mime_id = seed_matrix_video(&repo, &conn.id, None).await;
+
+    async fn strategy(app: &axum::Router, cookie: &str, id: &str) -> String {
+        let (status, body) = get_json(app, cookie, &format!("/api/videos/{id}/stream-url")).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        body["strategy"].as_str().expect("strategy").to_string()
+    }
+
+    // Toggle off → FR-2: exactly today's behavior. Every seeded video
+    // resolves a presigned direct URL (S3 presign is local SigV4).
+    for id in undemuxable_ids
+        .iter()
+        .chain(direct_ids.iter())
+        .chain([&unknown_mime_id, &no_mime_id])
+    {
+        assert_eq!(
+            strategy(&app, &cookie, id).await,
+            "direct",
+            "toggle off must keep direct for {id}"
+        );
+    }
+
+    // Flip the toggle on through the API.
+    let (token, cookies) = csrf_request_parts(&app, &cookie).await;
+    let status = put_transcode(&app, &cookies, Some(&token), r#"{"enabled": true}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Undemuxable containers → transcode even though codecs are compatible.
+    for id in &undemuxable_ids {
+        assert_eq!(
+            strategy(&app, &cookie, id).await,
+            "transcode",
+            "container-incompatible {id} must transcode with toggle on"
+        );
+    }
+    // Direct containers and unknown/null mimes stay direct.
+    for id in direct_ids.iter().chain([&unknown_mime_id, &no_mime_id]) {
+        assert_eq!(
+            strategy(&app, &cookie, id).await,
+            "direct",
+            "direct-play container {id} must stay direct"
+        );
+    }
+    drop(guard);
+}
+
+/// FR-1's share-flow requirement: shares delegate to the same
+/// `serve_stream_url`, so a container-incompatible video inside a share
+/// also overrides to transcode — recipient-side, no session needed.
+#[tokio::test]
+async fn share_stream_url_inherits_container_override() {
+    use castify_api::shares::token::{generate_share_token, hash_share_token};
+    use castify_catalog::{Credential, NewConnection, NewVideo, Provider, S3Credentials};
+
+    let (state, guard, _path) = common::fresh_state_with(|c| c.transcode.enabled = true).await;
+    let repo = state.catalog_repository().clone();
+    let app = build_app(state.clone());
+
+    // Owner row must exist for the share to reference.
+    let cookie = setup_owner(&app).await;
+
+    let conn = repo
+        .create_connection(&NewConnection {
+            provider: Provider::S3Compatible,
+            credential: Credential::S3(S3Credentials {
+                endpoint: "http://127.0.0.1:9000".into(),
+                region: "us-east-1".into(),
+                bucket: "media".into(),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+                prefix: None,
+            }),
+            provider_account_id: Some("share-container-test".into()),
+            provider_account_email: None,
+        })
+        .await
+        .unwrap();
+    repo.upsert_video(
+        &conn.id,
+        Provider::S3Compatible,
+        &NewVideo {
+            provider_file_id: "Movies/vacation.mkv".into(),
+            name: "vacation.mkv".into(),
+            path: Some("/Movies/vacation.mkv".into()),
+            size_bytes: 129_201,
+            mime_type: Some("video/x-matroska".into()),
+            duration_ms: Some(8_000),
+            width: Some(160),
+            height: Some(120),
+            native_hash: None,
+            native_hash_algo: None,
+            provider_modified_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let video_id: String =
+        sqlx::query_scalar("SELECT id FROM videos WHERE provider_file_id = 'Movies/vacation.mkv'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    sqlx::query("UPDATE videos SET video_codec = 'h264', audio_codec = 'aac' WHERE id = ?")
+        .bind(&video_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let owner: String = sqlx::query_scalar("SELECT id FROM owners LIMIT 1")
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    let token = generate_share_token();
+    castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_share(&castify_api::shares::NewShare {
+            owner_id: &uuid::Uuid::parse_str(&owner).unwrap(),
+            token_hash: &hash_share_token(&token),
+            password_hash: None,
+            title: "Trip footage",
+            expires_at: None,
+            video_ids: std::slice::from_ref(&video_id),
+        })
+        .await
+        .unwrap();
+
+    // Recipient request: no session cookie, share token only.
+    let (status, body) = get_json(
+        &app,
+        &cookie,
+        &format!("/api/share/{token}/videos/{video_id}/stream-url"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["strategy"], "transcode", "body: {body}");
+    let url = body["url"].as_str().expect("url present");
+    assert!(
+        url.ends_with(&format!(
+            "/api/share/{token}/videos/{video_id}/transcode/master.m3u8"
+        )),
+        "share transcode URL must be share-scoped: {url}"
+    );
+    drop(guard);
+}

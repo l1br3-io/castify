@@ -280,6 +280,33 @@ pub fn codec_strategy(video_codec: &str, audio_codec: Option<&str>) -> Transcode
     }
 }
 
+/// Container (mime type) browser-demuxability (transcode-controls spec).
+///
+/// Codecs alone don't decide playback: the browser's `<video>` element
+/// must also be able to *demux the container*. Matroska (`.mkv`), AVI,
+/// WMV/ASF, FLV, and MPEG-TS are demuxed by no modern browser — an
+/// H.264/AAC file inside one of them plays nowhere as-is, so it routes
+/// through the HLS pipeline (remux or full transcode, per the codec
+/// check) regardless of codec compatibility.
+///
+/// MP4-family (`video/mp4`, `video/x-m4v`), `video/webm`, and
+/// `video/quicktime` stay direct. Unknown/null mimes are treated as
+/// direct (unchanged pre-container-check behavior). Source:
+/// https://developer.mozilla.org/en-US/docs/Web/Media/Formats/Video_codecs
+/// — codec support assumes a browser-demuxable container.
+pub fn container_requires_transcode(mime: Option<&str>) -> bool {
+    mime.is_some_and(|m| {
+        matches!(
+            m.to_ascii_lowercase().as_str(),
+            "video/x-matroska"
+                | "video/x-msvideo"
+                | "video/x-ms-wmv"
+                | "video/x-flv"
+                | "video/mp2t"
+        )
+    })
+}
+
 /// Combine two `BrowserSupport` values — the more restrictive wins.
 fn combine_support(a: BrowserSupport, b: BrowserSupport) -> BrowserSupport {
     use BrowserSupport::*;
@@ -376,5 +403,43 @@ mod tests {
             "expected ≥15 codecs in the support map, got {}",
             map.len()
         );
+    }
+
+    #[test]
+    fn container_undemuxable_mimes_require_transcode() {
+        for mime in [
+            "video/x-matroska",
+            "video/x-msvideo",
+            "video/x-ms-wmv",
+            "video/x-flv",
+            "video/mp2t",
+        ] {
+            assert!(
+                container_requires_transcode(Some(mime)),
+                "{mime} must route to transcode"
+            );
+        }
+    }
+
+    #[test]
+    fn container_demuxable_and_unknown_mimes_stay_direct() {
+        for mime in [
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
+            "video/x-m4v",
+            "application/octet-stream",
+        ] {
+            assert!(
+                !container_requires_transcode(Some(mime)),
+                "{mime} must stay direct"
+            );
+        }
+        assert!(!container_requires_transcode(None));
+    }
+
+    #[test]
+    fn container_check_is_case_insensitive() {
+        assert!(container_requires_transcode(Some("VIDEO/X-MATROSKA")));
     }
 }
