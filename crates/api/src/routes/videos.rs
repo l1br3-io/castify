@@ -820,7 +820,7 @@ async fn maybe_override_to_transcode(
     use sqlx::Row;
 
     // Only override if transcode is enabled in config.
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return response;
     }
 
@@ -1967,7 +1967,7 @@ pub struct TranscodePoolStats {
 pub async fn get_transcode_admin(
     State(state): State<AppState>,
 ) -> ApiResult<Json<TranscodeAdminResponse>> {
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return Ok(Json(TranscodeAdminResponse {
             enabled: false,
             variants: vec![],
@@ -2165,7 +2165,7 @@ pub(crate) async fn serve_transcode_master(
     id: &str,
     burn: &BurnSubtitlesQuery,
 ) -> ApiResult<Response> {
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return Err(ApiError::NotFound);
     }
 
@@ -2342,7 +2342,7 @@ pub(crate) async fn serve_transcode_playlist(
     variant: &str,
     burn: &BurnSubtitlesQuery,
 ) -> ApiResult<Response> {
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return Err(ApiError::NotFound);
     }
 
@@ -2425,7 +2425,7 @@ pub(crate) async fn serve_transcode_segment(
     segment: &str,
     burn: &BurnSubtitlesQuery,
 ) -> ApiResult<Response> {
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return Err(ApiError::NotFound);
     }
 
@@ -2788,7 +2788,7 @@ pub async fn cancel_transcode(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    if !state.config().transcode.enabled {
+    if !state.transcode_enabled() {
         return Err(ApiError::NotFound);
     }
 

@@ -82,7 +82,7 @@ async fn boot_with_transcode_enabled() -> (
         },
         abr: castify_core::AbrConfig::default(),
     };
-    let state = AppState::new(config, pool, secret, token_key);
+    let state = AppState::new(config, pool, secret, token_key).await;
     let repo = state.catalog_repository().clone();
     let app = build_app(state);
 

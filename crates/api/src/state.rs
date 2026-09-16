@@ -41,10 +41,15 @@ struct AppStateInner {
     /// (docs/specs/sharing, task 004). Deliberately never persisted — a
     /// restart clears all lockouts.
     unlock_rate_limiter: crate::shares::ratelimit::UnlockRateLimiter,
+    /// Runtime-editable transcode toggle (Settings page). Initialized from
+    /// the `settings` table — falling back to the env-config default when
+    /// the owner hasn't set it — and updated in place by
+    /// `PUT /api/settings/transcode`. Held briefly; std RwLock is fine.
+    transcode_enabled: std::sync::RwLock<bool>,
 }
 
 impl AppState {
-    pub fn new(
+    pub async fn new(
         config: Config,
         pool: SqlitePool,
         session_secret: SessionSecret,
@@ -71,6 +76,7 @@ impl AppState {
         let video_cache_enabled = config.video_cache.enabled;
         let video_cache_dir = config.video_cache.dir.clone();
         let video_cache_max_bytes = config.video_cache.max_bytes;
+        let transcode_enabled = resolve_transcode_enabled(&pool, config.transcode.enabled).await;
         Self {
             inner: Arc::new(AppStateInner {
                 config,
@@ -84,7 +90,7 @@ impl AppState {
                 provider_registry,
                 local_source_registry: crate::local_source::LocalSourceRegistry::new(),
                 video_cache: if video_cache_enabled {
-                    match futures::executor::block_on(DiskCache::new(&video_cache_dir)) {
+                    match DiskCache::new(&video_cache_dir).await {
                         Ok(cache) => {
                             tracing::info!(
                                 dir = %video_cache_dir.display(),
@@ -106,8 +112,30 @@ impl AppState {
                     None
                 },
                 unlock_rate_limiter: crate::shares::ratelimit::UnlockRateLimiter::new(),
+                transcode_enabled: std::sync::RwLock::new(transcode_enabled),
             }),
         }
+    }
+
+    /// Whether server-side transcoding is currently active. The single
+    /// decision point for every transcode gate — env config only provides
+    /// the default; the Settings page owns the runtime value.
+    pub fn transcode_enabled(&self) -> bool {
+        *self
+            .inner
+            .transcode_enabled
+            .read()
+            .expect("transcode_enabled lock poisoned")
+    }
+
+    /// Update the runtime transcode toggle. Callers persist the value to
+    /// the `settings` table first; this flips the in-memory flag.
+    pub fn set_transcode_enabled(&self, enabled: bool) {
+        *self
+            .inner
+            .transcode_enabled
+            .write()
+            .expect("transcode_enabled lock poisoned") = enabled;
     }
 
     pub fn config(&self) -> &Config {
@@ -189,5 +217,36 @@ impl AppState {
     #[cfg(not(feature = "e2e"))]
     pub fn factory_for(&self, provider: Provider) -> Option<Box<dyn ProviderFactory>> {
         self.inner.provider_registry.factory_for(provider)
+    }
+}
+
+/// Resolve the initial transcode toggle: the persisted `settings` value when
+/// the owner has set one, else the env-config default. Read failures and
+/// invalid stored values log a warning and fall back rather than blocking
+/// startup.
+async fn resolve_transcode_enabled(pool: &SqlitePool, default: bool) -> bool {
+    use sqlx::Row;
+    let value: Option<String> =
+        sqlx::query("SELECT value FROM settings WHERE key = 'transcode_enabled'")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "failed to read transcode_enabled setting; using config default"
+                );
+                e
+            })
+            .ok()
+            .flatten()
+            .map(|row| row.get("value"));
+    match value.as_deref() {
+        Some("false") => false,
+        Some("true") => true,
+        Some(other) => {
+            tracing::warn!(value = %other, "invalid transcode_enabled setting; using config default");
+            default
+        }
+        None => default,
     }
 }

@@ -8,7 +8,7 @@ use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
 use crate::routes::{
-    connections, csrf, files, folders, health, session, setup, share, shares, videos,
+    connections, csrf, files, folders, health, session, settings, setup, share, shares, videos,
 };
 use crate::spa::spa_handler;
 use crate::state::AppState;
@@ -30,6 +30,11 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/session/password",
             axum::routing::put(session::change_password),
+        )
+        .route(
+            "/api/settings/transcode",
+            axum::routing::get(settings::get_transcode_settings)
+                .put(settings::put_transcode_settings),
         )
         .route("/api/connections", axum::routing::get(connections::list))
         .route(

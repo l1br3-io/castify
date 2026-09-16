@@ -1221,7 +1221,7 @@ mod tests {
             transcode: Default::default(),
             abr: Default::default(),
         };
-        (AppState::new(config, pool, secret, token_key), named)
+        (AppState::new(config, pool, secret, token_key).await, named)
     }
 
     /// What the mock factory's `verify` returns.
