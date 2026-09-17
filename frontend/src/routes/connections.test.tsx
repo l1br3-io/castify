@@ -153,6 +153,48 @@ describe("ConnectionsPage", () => {
     expect(
       screen.getByRole("button", { name: /disconnect/i }),
     ).toBeInTheDocument();
+    const card = screen.getByText("user@example.com").closest("article");
+    expect(
+      within(card as HTMLElement).getAllByTestId("provider-mark").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("tells the user the library is ready once a scan has settled", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([GOOGLE_CONNECTED]),
+    });
+
+    await screen.findByText("user@example.com");
+    // Idle + count + last-scanned date = the "library ready" tell (FR-2.3);
+    // no LED while nothing is scanning.
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.getByText(/last scanned/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("scan-led")).not.toBeInTheDocument();
+  });
+
+  it("pins the scan LED to scanning cards only", async () => {
+    const scanning = { ...GOOGLE_CONNECTED, scan_status: "scanning", video_count: 4 };
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([scanning]),
+    });
+
+    expect(await screen.findByText("Scanning")).toBeInTheDocument();
+    expect(screen.getByTestId("scan-led")).toBeInTheDocument();
+  });
+
+  it("presents scan errors with the danger tone, not the accent", async () => {
+    const errored = { ...GOOGLE_CONNECTED, scan_status: "error", last_scan_at: null };
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([errored]),
+    });
+
+    expect(await screen.findByText("Scan error")).toBeInTheDocument();
+    expect(
+      screen.getByText("Scan failed. Try reconnecting the provider."),
+    ).toHaveClass("text-[var(--color-danger)]");
   });
 
   it("renders an available (not connected) card with a connect button", async () => {
@@ -162,13 +204,69 @@ describe("ConnectionsPage", () => {
     });
 
     // Four provider cards, none connected: the three OAuth providers get
-    // Connect buttons (redirect flow), S3 gets one that reveals the
-    // credentials form instead.
+    // brand sign-in buttons that state the action (task 010), S3 gets a
+    // Connect button that reveals the credentials form instead.
     expect(await screen.findByText("S3-Compatible Storage")).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
     expect(
-      await screen.findAllByRole("button", { name: /^connect$/i }),
-    ).toHaveLength(4);
+      screen.getByRole("button", { name: "Connect Google Drive" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Connect Dropbox" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Connect OneDrive" }),
+    ).toBeInTheDocument();
+    // S3 has no brand guidelines — the standard primary, exact "Connect"
+    // (string name matches the full accessible name only; e2e selectors
+    // depend on this name — see s3-connect.spec.ts).
+    expect(
+      screen.getByRole("button", { name: "Connect" }),
+    ).toBeInTheDocument();
+  });
+
+  it("pairs every provider card with its mark — identity is never color alone", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([]),
+    });
+
+    for (const label of [
+      "Google Drive",
+      "Dropbox",
+      "OneDrive",
+      "S3-Compatible Storage",
+    ]) {
+      const card = (
+        await screen.findByText(label)
+      ).closest("article");
+      expect(card).not.toBeNull();
+      expect(
+        within(card as HTMLElement).getAllByTestId("provider-mark").length,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("carries each provider's brand treatment on its sign-in button", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([]),
+    });
+
+    // Dropbox's guideline is the brand-blue fill…
+    const dropbox = await screen.findByRole("button", {
+      name: "Connect Dropbox",
+    });
+    expect(dropbox.className).toContain("--color-brand-dropbox");
+    expect(within(dropbox).getByTestId("brand-mark")).toBeInTheDocument();
+    // …Google and Microsoft guidelines are the light surface with the
+    // official multicolor mark and dark ink label.
+    const google = screen.getByRole("button", { name: "Connect Google Drive" });
+    expect(google.className).toContain("--color-castify-neutral-100");
+    expect(within(google).getByTestId("brand-mark")).toBeInTheDocument();
+    const onedrive = screen.getByRole("button", { name: "Connect OneDrive" });
+    expect(onedrive.className).toContain("--color-castify-neutral-100");
+    expect(within(onedrive).getByTestId("brand-mark")).toBeInTheDocument();
   });
 
   it("reveals the schema-driven form on the S3 card, never the OAuth /start flow", async () => {
@@ -484,11 +582,10 @@ describe("ConnectionsPage", () => {
       },
     });
 
-    // Click the first Connect button (Google Drive, index 0).
-    const connectButtons = await screen.findAllByRole("button", {
-      name: /^connect$/i,
-    });
-    fireEvent.click(connectButtons[0]);
+    // Click the Google Drive sign-in button by its stated action.
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Connect Google Drive" }),
+    );
 
     await waitFor(() => {
       expect(hrefSetter).toHaveBeenCalledWith(

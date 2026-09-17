@@ -2,6 +2,13 @@
 // `/connections` URL is stable): provider cards, OAuth connect/disconnect,
 // callback banner.
 //
+// Task 010 (Classical reskin): unfilled hairline cards in the demo's 1–2
+// column grid; official provider marks on every card (badges.tsx); brand
+// sign-in buttons that state the action ("Connect Google Drive") per each
+// provider's guidelines; scan state in token tones — accent tint + LED
+// pulse while scanning, danger on scan errors — and a neutral "Connected"
+// tag with count + last-scanned as the library-ready tell (FR-2.3).
+//
 // The backend's OAuth callback redirects here with query params:
 //   * `?connected={provider}` on success — show a success banner, then strip
 //     the param so it doesn't persist on refresh.
@@ -51,6 +58,11 @@ import { FOLDER_CONTENTS_QUERY_KEY } from "../hooks/use-folder-contents";
 import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
 import { CredentialsForm } from "../components/credentials-form";
+import { ProviderMark } from "../components/badges";
+import { Button } from "../components/ui/button";
+import { FOCUS_RING } from "../components/ui/button-classes";
+import { EmptyState } from "../components/ui/empty-state";
+import { cn } from "../components/ui/cn";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import {
@@ -75,8 +87,8 @@ export function ConnectionsPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Sources</h1>
-        <p className="mt-2 opacity-70">
+        <h1 className="text-3xl">Sources</h1>
+        <p className="mt-2 text-[var(--color-castify-muted)]">
           Connect a cloud provider to scan it for media. Your tokens are
           encrypted at rest.
         </p>
@@ -107,7 +119,7 @@ function ConnectionsGrid() {
 
   if (connections.isLoading || available.isLoading) {
     return (
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         {Array.from({ length: 3 }).map((_, i) => (
           <Skeleton key={i} className="h-40 w-full" />
         ))}
@@ -147,7 +159,7 @@ function ConnectionsGrid() {
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2">
       {visibleProviders.map((provider) => (
         <ProviderCard
           key={provider}
@@ -181,13 +193,19 @@ function ProviderCard({
 function ConnectedCard({ connection }: { connection: ConnectionDto }) {
   const provider = connection.provider;
   return (
-    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
-          <p className="text-sm opacity-60">
-            {connection.provider_account_email ?? "Connected"}
-          </p>
+        <div className="flex items-center gap-2.5">
+          <ProviderMark
+            provider={provider}
+            className={cn("size-5 shrink-0", MARK_TONE[provider])}
+          />
+          <div>
+            <h2 className="text-lg">{PROVIDER_LABELS[provider]}</h2>
+            <p className="text-sm text-[var(--color-castify-muted)]">
+              {connection.provider_account_email ?? "Connected"}
+            </p>
+          </div>
         </div>
         <ScanBadge status={connection.scan_status} />
       </div>
@@ -200,24 +218,38 @@ function ConnectedCard({ connection }: { connection: ConnectionDto }) {
   );
 }
 
+// Brand color on cards appears only on the mark (badge-sized artwork) —
+// never as fills or state indicators (spec § Tokens).
+const MARK_TONE: Record<ProviderKey, string> = {
+  google_drive: "",
+  dropbox: "text-[var(--color-brand-dropbox)]",
+  onedrive: "",
+  s3: "text-[var(--color-castify-muted)]",
+};
+
 function ScanBadge({ status }: { status: ConnectionDto["scan_status"] }) {
   if (status === "scanning") {
     return (
-      <span className="rounded-full bg-[var(--color-castify-accent)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent)]">
+      <span className="inline-flex items-center gap-1.5 rounded-[var(--radius-pill)] bg-[var(--color-castify-accent-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-strong)]">
+        <span
+          aria-hidden
+          data-testid="scan-led"
+          className="size-[6px] shrink-0 rounded-full bg-[var(--color-castify-accent)] animate-scan-pulse"
+        />
         Scanning
       </span>
     );
   }
   if (status === "error") {
     return (
-      <span className="rounded-full bg-[var(--color-castify-accent-dim)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-dim)]">
+      <span className="rounded-[var(--radius-pill)] bg-[var(--color-danger-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-danger)]">
         Scan error
       </span>
     );
   }
   return (
-    <span className="rounded-full bg-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium opacity-70">
-      Idle
+    <span className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-muted)]">
+      Connected
     </span>
   );
 }
@@ -226,20 +258,20 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
   const videos = connection.video_count;
   if (connection.scan_status === "scanning") {
     return (
-      <p className="text-sm opacity-70">
+      <p className="text-sm text-[var(--color-castify-muted)]">
         {videos > 0 ? `Found ${videos} media…` : "Starting scan…"}
       </p>
     );
   }
   if (connection.scan_status === "error") {
     return (
-      <p className="text-sm text-[var(--color-castify-accent-dim)]">
+      <p className="text-sm text-[var(--color-danger)]">
         Scan failed. Try reconnecting the provider.
       </p>
     );
   }
   return (
-    <p className="text-sm opacity-70">
+    <p className="figure text-sm text-[var(--color-castify-muted)]">
       {videos} media
       {connection.last_scan_at
         ? ` · last scanned ${formatDate(connection.last_scan_at)}`
@@ -279,25 +311,24 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
 
   return (
     <>
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => {
           setError(null);
           rescan.mutate();
         }}
         disabled={disabled}
-        className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+        pending={rescan.isPending}
       >
         {connection.scan_status === "scanning"
           ? "Scanning…"
           : rescan.isPending
             ? "Starting…"
             : "Rescan"}
-      </button>
+      </Button>
       {error && (
-        <p className="text-xs text-[var(--color-castify-accent-dim)]">
-          {error}
-        </p>
+        <p className="text-xs text-[var(--color-danger)]">{error}</p>
       )}
     </>
   );
@@ -349,19 +380,94 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
 
   return (
     <div>
-      <button
-        type="button"
+      <Button
+        variant="destructive"
+        size="sm"
         onClick={handleDisconnect}
-        disabled={disconnect.isPending}
-        className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+        pending={disconnect.isPending}
       >
         {disconnect.isPending ? "Disconnecting…" : "Disconnect"}
-      </button>
+      </Button>
       {error && (
-        <p className="mt-1 text-xs text-[var(--color-castify-accent-dim)]">
-          {error}
-        </p>
+        <p className="mt-1 text-xs text-[var(--color-danger)]">{error}</p>
       )}
+    </div>
+  );
+}
+
+// Brand sign-in buttons — each provider's official treatment (FR-1.1):
+// Google and Microsoft brand guidelines specify a light surface button with
+// the multicolor mark and dark ink; Dropbox specifies its brand-blue fill
+// with a white label (≥4.5:1 AA). Labels state the action ("Connect Google
+// Drive"). S3 has no brand — the standard primary (gold outline). The
+// embedded mark is re-tagged `brand-mark`: the card header already carries
+// the canonical decorative mark.
+const BRAND_BUTTON_CLASSES: Record<ProviderKey, string> = {
+  google_drive:
+    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-neutral-100)] text-[var(--color-castify-neutral-900)] hover:bg-[var(--color-castify-neutral-200)] active:bg-[var(--color-castify-neutral-300)]",
+  dropbox:
+    "border border-transparent bg-[var(--color-brand-dropbox)] text-white hover:opacity-90 active:opacity-80",
+  onedrive:
+    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-neutral-100)] text-[var(--color-castify-neutral-900)] hover:bg-[var(--color-castify-neutral-200)] active:bg-[var(--color-castify-neutral-300)]",
+  s3: "",
+};
+
+function BrandConnectButton({
+  provider,
+  pending,
+  onClick,
+}: {
+  provider: ProviderKey;
+  pending: boolean;
+  onClick: () => void;
+}) {
+  // Exact "Connect" — the e2e credentials-flow selectors (s3-connect.spec.ts)
+  // key on this name.
+  if (provider === "s3") {
+    return (
+      <Button className="w-full" pending={pending} onClick={onClick}>
+        {pending ? "Connecting…" : "Connect"}
+      </Button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={pending}
+      aria-busy={pending || undefined}
+      className={cn(
+        "inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius-button)] px-5 py-2 text-sm font-display font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70",
+        FOCUS_RING,
+        BRAND_BUTTON_CLASSES[provider],
+      )}
+    >
+      <ProviderMark
+        provider={provider}
+        testId="brand-mark"
+        className={cn(
+          "size-4 shrink-0",
+          provider === "dropbox" ? "text-white" : "",
+        )}
+      />
+      {pending ? "Connecting…" : `Connect ${PROVIDER_LABELS[provider]}`}
+    </button>
+  );
+}
+
+function AvailableCardHeader({ provider }: { provider: ProviderKey }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <ProviderMark
+        provider={provider}
+        className={cn("size-5 shrink-0", MARK_TONE[provider])}
+      />
+      <div>
+        <h2 className="text-lg">{PROVIDER_LABELS[provider]}</h2>
+        <p className="text-sm text-[var(--color-castify-muted)]">
+          Not connected
+        </p>
+      </div>
     </div>
   );
 }
@@ -387,12 +493,9 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   // than a form with nothing to render.
   if (entry.authMode === "credentials") {
     return (
-      <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
-        <div>
-          <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
-          <p className="text-sm opacity-60">Not connected</p>
-        </div>
-        <p className="text-sm opacity-70">
+      <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+        <AvailableCardHeader provider={provider} />
+        <p className="text-sm text-[var(--color-castify-muted)]">
           Connects with storage credentials — an endpoint, bucket, and access
           keys you already have.
         </p>
@@ -405,16 +508,14 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
                 onCancel={() => setFormOpen(false)}
               />
             ) : (
-              <button
-                type="button"
+              <BrandConnectButton
+                provider={provider}
+                pending={false}
                 onClick={() => {
                   setError(null);
                   setFormOpen(true);
                 }}
-                className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
-              >
-                Connect
-              </button>
+              />
             ))}
         </div>
       </article>
@@ -422,30 +523,22 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   }
 
   return (
-    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
-      <div>
-        <h2 className="font-semibold">{PROVIDER_LABELS[provider]}</h2>
-        <p className="text-sm opacity-60">Not connected</p>
-      </div>
-      <p className="text-sm opacity-70">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+      <AvailableCardHeader provider={provider} />
+      <p className="text-sm text-[var(--color-castify-muted)]">
         Connect to scan your {PROVIDER_LABELS[provider]} for media.
       </p>
       <div className="mt-auto">
-        <button
-          type="button"
+        <BrandConnectButton
+          provider={provider}
+          pending={connect.isPending}
           onClick={() => {
             setError(null);
             connect.mutate();
           }}
-          disabled={connect.isPending}
-          className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
-        >
-          {connect.isPending ? "Connecting…" : "Connect"}
-        </button>
+        />
         {error && (
-          <p className="mt-1 text-xs text-[var(--color-castify-accent-dim)]">
-            {error}
-          </p>
+          <p className="mt-1 text-xs text-[var(--color-danger)]">{error}</p>
         )}
       </div>
     </article>
@@ -454,16 +547,10 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
 
 function NoConfiguredProviders() {
   return (
-    <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
-      <p className="text-lg font-medium">No cloud providers configured</p>
-      <p className="mt-2 text-sm opacity-60">
-        Add OAuth credentials for Google Drive, Dropbox, or OneDrive to start
-        connecting accounts.
-      </p>
-      <p className="mt-3 text-xs opacity-70">
-        See <code>docs/config.md</code> for setup.
-      </p>
-    </div>
+    <EmptyState
+      title="No cloud providers configured"
+      body="Add OAuth credentials for Google Drive, Dropbox, or OneDrive to start connecting accounts — see docs/config.md for setup."
+    />
   );
 }
 
@@ -478,20 +565,21 @@ function Banner({
 }) {
   const tone =
     kind === "success"
-      ? "border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent-subtle)]"
+      ? "border-[var(--color-success)]/40 bg-[var(--color-success-subtle)]"
       : kind === "error"
-        ? "border-[var(--color-castify-accent-dim)]/40 bg-[var(--color-castify-accent-dim)]/10"
-        : "border-[var(--color-castify-muted)]/25 bg-[var(--color-castify-muted)]/10";
+        ? "border-[var(--color-danger)]/40 bg-[var(--color-danger-subtle)]"
+        : "border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)]";
   return (
     <div
-      className={`flex items-center justify-between gap-3 rounded-[var(--radius-button)] border ${tone} px-4 py-2.5 text-sm`}
+      role={kind === "error" ? "alert" : "status"}
+      className={`flex items-center justify-between gap-3 rounded-[var(--radius-button)] border px-4 py-2.5 text-sm ${tone}`}
     >
       <span>{children}</span>
       <button
         type="button"
         onClick={onDismiss}
-        className="shrink-0 opacity-60 transition hover:opacity-100"
         aria-label="Dismiss"
+        className={cn("shrink-0 px-1 opacity-60 transition hover:opacity-100", FOCUS_RING)}
       >
         ×
       </button>

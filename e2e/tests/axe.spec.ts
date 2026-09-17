@@ -66,4 +66,17 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await page.waitForLoadState("networkidle");
     await scanAxe(page, "setup");
   });
+
+  test("/connections Sources (task 010) — no serious or critical violations", async ({
+    page,
+  }) => {
+    await ensureAuthenticated(page);
+    await page.goto("/connections");
+    // Wait for the provider grid, not just networkidle — the card fetches
+    // resolve after the shell paints.
+    await page
+      .getByRole("heading", { name: "S3-Compatible Storage" })
+      .waitFor();
+    await scanAxe(page, "sources");
+  });
 });
