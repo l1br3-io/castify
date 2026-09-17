@@ -203,6 +203,12 @@ Gotcha baked into the recipe: rclone's pre-upload bucket probe trips a denied
   boot; forward-only — back up first):
 
   ```sh
+  just deploy root@<ip>   # builds, ships over SSH, restarts, health-checks
+  ```
+
+  Manual equivalent:
+
+  ```sh
   docker build --target e2e-runtime -t castify:ffmpeg .
   docker save castify:ffmpeg | gzip | ssh root@<ip> 'gunzip | docker load'
   ssh root@<ip> 'docker rm -f castify && docker run -d --name castify --restart unless-stopped \

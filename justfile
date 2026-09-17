@@ -221,6 +221,41 @@ logs:
 ps:
     {{COMPOSE}} ps
 
+# --- Remote deploy (ship image over SSH; docs/deploy-do-r2.md § 9) ---
+
+# Build locally, ship the image to the droplet, restart the container.
+#   just deploy root@<ip> [base_url]
+# Defaults mirror docs/deploy-do-r2.md § 6 (loopback port, castify-data
+# volume, ffmpeg variant, 5 GB transcode cache). Override base_url if your
+# Caddyfile maps a different domain. The volume survives the restart, but
+# migrations are forward-only — back up first if schema changed
+# (deploy.md § Data persistence).
+deploy host base_url="https://castify.example.com":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "== deploy: build image (ffmpeg variant) =="
+    docker build --target e2e-runtime -t castify:ffmpeg .
+    echo "== deploy: ship image to {{host}} =="
+    docker save castify:ffmpeg | gzip | ssh {{host}} 'gunzip | docker load'
+    echo "== deploy: restart container =="
+    ssh {{host}} 'docker rm -f castify && docker run -d --name castify \
+        --restart unless-stopped \
+        -p 127.0.0.1:8427:8427 \
+        -v castify-data:/data \
+        -e CASTIFY_APP_BASE_URL={{base_url}} \
+        -e CASTIFY_TRANSCODE_CACHE_MAX_BYTES=5368709120 \
+        castify:ffmpeg'
+    echo "== deploy: waiting for health =="
+    for _ in $(seq 1 60); do
+        if ssh {{host}} 'curl -sf http://127.0.0.1:8427/api/health' >/dev/null 2>&1; then
+            echo "healthy — serving {{base_url}}"
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "error: container not healthy within 60s — check: ssh {{host}} docker logs castify" >&2
+    exit 1
+
 # Dev mode: backend + frontend concurrently, with hot-reload on the frontend.
 # Ctrl-C kills both. Requires `cargo-watch` for backend auto-reload; falls back
 # to plain `cargo run` if it's not installed.
