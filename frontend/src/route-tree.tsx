@@ -20,6 +20,7 @@ import { NotFoundPage } from "./routes/not-found";
 import { SettingsPage } from "./routes/settings";
 import { SetupPage } from "./routes/setup";
 import { ShareManagePage } from "./routes/share-manage";
+import { SharesPage } from "./routes/shares";
 import { SharePage } from "./routes/share";
 import { ShareWatchPage } from "./routes/share-watch";
 import { WatchPage } from "./routes/watch";
@@ -48,6 +49,14 @@ export const routeTree: RouteObject[] = [
       {
         path: "connections",
         element: <ConnectionsPage />,
+        loader: requireSessionLoader,
+      },
+      {
+        // Shares list (task 005): promoted from a Settings section to a
+        // top-level route per spec D4. Share-manage stays at the stable
+        // `/settings/shares/:id` path below.
+        path: "shares",
+        element: <SharesPage />,
         loader: requireSessionLoader,
       },
       {

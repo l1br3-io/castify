@@ -75,7 +75,7 @@ async function recipientPage(browser: Browser): Promise<{
   return { context, page };
 }
 
-/** Owner's Settings row for this spec's share (scoped against leaks). */
+/** Owner's Shares-page row for this spec's share (scoped against leaks). */
 function shareRow(owner: Page) {
   return owner
     .getByRole("listitem")
@@ -157,9 +157,9 @@ test.describe("Share manage page (docs/specs/share-manage-page task 006)", () =>
       await stale.goto(s.share_url);
       await expect(stale.getByText("3 videos shared with you")).toBeVisible();
 
-      // Owner: Settings → Manage → the detail page mirrors the grid.
+      // Owner: Shares list → Manage → the detail page mirrors the grid.
       await ensureAuthenticated(owner);
-      await owner.goto("/settings");
+      await owner.goto("/shares");
       const row = shareRow(owner);
       await expect(row).toContainText("3 items");
 

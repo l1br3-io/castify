@@ -116,7 +116,7 @@ function SharesList() {
     return (
       <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
         <p className="font-medium">No shares yet</p>
-        <p className="mt-2 text-sm opacity-60">
+        <p className="mt-2 text-sm text-[var(--color-castify-muted)]">
           Shares you create will appear here.
         </p>
       </div>
@@ -178,7 +178,7 @@ function SharesList() {
       {visible.length === 0 ? (
         <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
           <p className="font-medium">No shares match</p>
-          <p className="mt-2 text-sm opacity-60">
+          <p className="mt-2 text-sm text-[var(--color-castify-muted)]">
             Try a different search or status filter.
           </p>
         </div>
@@ -245,7 +245,7 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 className="truncate font-semibold">{share.title}</h3>
-          <p className="mt-0.5 text-sm opacity-60">
+          <p className="mt-0.5 text-sm text-[var(--color-castify-muted)]">
             {share.item_count} {share.item_count === 1 ? "item" : "items"} ·
             created {formatDate(share.created_at)}
             {share.expires_at

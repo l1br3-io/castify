@@ -13,7 +13,7 @@
 // /api/connections`. This is the fetch-avoidance contract from
 // docs/data-storage-principles.md (cheapest request is the one never made);
 // for session users the query dedupes into the existing `['connections']`
-// cache that the Connections page already reads.
+// cache that the Sources page already reads.
 //
 // Theme toggle (Phase 1 design-pass): a sun/moon button in the header. The
 // initial theme is applied before first paint by the inline script in
@@ -28,11 +28,13 @@ import { hasScanning, useConnections } from "../hooks/use-connections";
 import { useTheme } from "../hooks/use-theme";
 import { useToast } from "../hooks/use-toast";
 import { MoonIcon, SunIcon } from "../components/icons";
+import { Button } from "../components/ui/button";
+import { IconButton } from "../components/ui/icon-button";
 import { OfflineBanner } from "../components/ui/offline-banner";
 
 const NAV_LINK_CLASS = ({ isActive }: { isActive: boolean }) =>
   [
-    "font-mono text-xs tracking-wide border-b pb-0.5 -mb-px transition-colors",
+    "font-mono text-xs tracking-wide border-b pb-0.5 -mb-px rounded-[var(--radius-button)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]",
     isActive
       ? "text-[var(--color-castify-text)] border-[var(--color-castify-accent)]"
       : "text-[var(--color-castify-muted)] border-transparent hover:text-[var(--color-castify-text)] hover:border-[var(--color-castify-rule)]",
@@ -95,9 +97,18 @@ export function AppLayout() {
             {session && (
               <>
                 <ScanLed />
-                <nav className="flex items-center gap-4">
+                <nav aria-label="Primary" className="flex items-center gap-4">
+                  {/* IA (spec D4): Library / Shares / Sources / Settings.
+                      The `/connections` path is stable; the label is the
+                      approved rename (FR-7.2). */}
+                  <NavLink to="/" end className={NAV_LINK_CLASS}>
+                    Library
+                  </NavLink>
+                  <NavLink to="/shares" className={NAV_LINK_CLASS}>
+                    Shares
+                  </NavLink>
                   <NavLink to="/connections" className={NAV_LINK_CLASS}>
-                    Connections
+                    Sources
                   </NavLink>
                   <NavLink to="/settings" className={NAV_LINK_CLASS}>
                     Settings
@@ -107,27 +118,21 @@ export function AppLayout() {
             )}
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <button
-              type="button"
+            <IconButton
+              label={
+                theme === "dark"
+                  ? "Switch to light theme"
+                  : "Switch to dark theme"
+              }
+              variant="secondary"
               onClick={toggle}
-              aria-label={
-                theme === "dark"
-                  ? "Switch to light theme"
-                  : "Switch to dark theme"
-              }
-              title={
-                theme === "dark"
-                  ? "Switch to light theme"
-                  : "Switch to dark theme"
-              }
-              className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] text-[var(--color-castify-text)] transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
             >
               {theme === "dark" ? (
                 <SunIcon className="h-4 w-4" />
               ) : (
                 <MoonIcon className="h-4 w-4" />
               )}
-            </button>
+            </IconButton>
             {session ? (
               <>
                 <span className="hidden sm:inline opacity-70">
@@ -136,17 +141,18 @@ export function AppLayout() {
                     {session.display_name ?? "owner"}
                   </strong>
                 </span>
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="font-mono font-medium"
+                  pending={logoutMutation.isPending}
                   onClick={() => {
                     logoutMutation.mutate();
                     toast.info("Signed out.");
                   }}
-                  disabled={logoutMutation.isPending}
-                  className="font-mono rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs text-[var(--color-castify-muted)] transition-colors hover:bg-[var(--color-castify-accent-subtle)] hover:text-[var(--color-castify-text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)] disabled:opacity-50"
                 >
                   {logoutMutation.isPending ? "Signing out…" : "Sign out"}
-                </button>
+                </Button>
               </>
             ) : null}
           </div>

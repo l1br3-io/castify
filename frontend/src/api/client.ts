@@ -32,7 +32,7 @@ export class ApiError extends Error {
    * Machine-readable error code from the backend's `{ code }` field, or
    * `null` when absent. Currently only `"reauth_required"` is produced —
    * signaling a dead provider refresh token that needs user-driven
-   * reconnect on the Connections page. Other failures leave `code` null
+   * reconnect on the Sources page. Other failures leave `code` null
    * so the existing `message`-based UX applies.
    */
   readonly code: string | null;

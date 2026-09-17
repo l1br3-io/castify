@@ -48,7 +48,7 @@ export function HomePage() {
   if (connections.isError) {
     return (
       <ErrorState
-        title="Couldn't load connections."
+        title="Couldn't load sources."
         body="Your library can't be reached right now."
         onRetry={() => connections.refetch()}
       />

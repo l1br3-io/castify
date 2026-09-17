@@ -16,7 +16,7 @@
 // backend returns `401 { code: "reauth_required" }` and the hook exposes
 // `reauthRequired: true` so the caller can render a reconnect prompt
 // instead of looping on retry. Recovery requires the user to disconnect +
-// reconnect the connection on the Connections page.
+// reconnect the source on the Sources page.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 

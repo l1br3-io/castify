@@ -992,7 +992,7 @@ describe("WatchPage", () => {
   // When the backend detects OAuth `invalid_grant` during token refresh, it
   // returns `401 { code: "reauth_required" }` from `/stream-url` (instead of
   // a confusing `502 invalid_grant`). The watch page surfaces a structured
-  // "Reconnect {Provider}" card linking to the Connections page so the user
+  // "Reconnect {Provider}" card linking to the Sources page so the user
   // has a clear recovery path. The hook also short-circuits TanStack retries
   // since recovery requires user action.
 
@@ -1035,9 +1035,9 @@ describe("WatchPage", () => {
       screen.queryByText(/invalid_grant/),
     ).not.toBeInTheDocument();
 
-    // Call-to-action link points at the Connections page.
+    // Call-to-action link points at the Sources page.
     expect(
-      screen.getByRole("link", { name: "Go to Connections" }),
+      screen.getByRole("link", { name: "Go to Sources" }),
     ).toHaveAttribute("href", "/connections");
 
     // No `<video>` element — the player is replaced entirely.
@@ -1133,7 +1133,7 @@ describe("WatchPage", () => {
   it("Reconnect button triggers the OAuth flow inline with return_to=/watch/{id}", async () => {
     mockCanPlayType("probably");
     // Industry-pattern inline reauth: clicking the primary CTA kicks off the
-    // OAuth flow directly from the card — not a navigation to the Connections
+    // OAuth flow directly from the card — not a navigation to the Sources
     // page. The backend uses `return_to` to land the user back here after
     // the round-trip, so we assert the request includes it and the browser
     // is redirected to the provider's auth URL.

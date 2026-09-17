@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "./app-layout";
@@ -57,7 +57,28 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Connections")).toBeInTheDocument();
+
+    // Primary nav (spec D4): Library / Shares / Sources / Settings.
+    const nav = screen.getByRole("navigation");
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual([
+      "Library",
+      "Shares",
+      "Sources",
+      "Settings",
+    ]);
+    expect(
+      within(nav).getByRole("link", { name: "Library" }),
+    ).toHaveAttribute("href", "/");
+    expect(
+      within(nav).getByRole("link", { name: "Shares" }),
+    ).toHaveAttribute("href", "/shares");
+    expect(
+      within(nav).getByRole("link", { name: "Sources" }),
+    ).toHaveAttribute("href", "/connections");
+    expect(
+      within(nav).getByRole("link", { name: "Settings" }),
+    ).toHaveAttribute("href", "/settings");
   });
 
   it("sends DELETE /api/session with x-csrf-token on sign-out", async () => {
@@ -104,7 +125,8 @@ describe("AppLayout", () => {
     expect(
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Connections")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sources")).not.toBeInTheDocument();
   });
 
   describe("scan LED", () => {

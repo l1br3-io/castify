@@ -112,10 +112,10 @@ describe("ShareManagePage", () => {
       "Beta clip",
     ]);
 
-    // Back to the shares section of Settings.
+    // Back to the standalone shares list (/shares since task 005).
     expect(
       screen.getByRole("link", { name: /back to shares/i }),
-    ).toHaveAttribute("href", "/settings");
+    ).toHaveAttribute("href", "/shares");
   });
 
   it("renders a not-found card for an unknown share id", async () => {

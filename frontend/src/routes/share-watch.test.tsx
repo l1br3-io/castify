@@ -406,7 +406,7 @@ describe("ShareWatchPage", () => {
     // re-grant the owner's OAuth tokens.
     expect(screen.queryByRole("heading", { name: /Reconnect/i })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: "Go to Connections" }),
+      screen.queryByRole("link", { name: "Go to Sources" }),
     ).not.toBeInTheDocument();
     expect(document.querySelector("video")).toBeNull();
   });

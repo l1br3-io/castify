@@ -22,4 +22,13 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await page.waitForLoadState("networkidle");
     await scanAxe(page, "home-library");
   });
+
+  test("/shares (nav IA task 005) — no serious or critical violations", async ({
+    page,
+  }) => {
+    await ensureAuthenticated(page);
+    await page.goto("/shares");
+    await page.waitForLoadState("networkidle");
+    await scanAxe(page, "shares");
+  });
 });

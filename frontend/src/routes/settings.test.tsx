@@ -1,26 +1,10 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { Route, Routes, useLocation } from "react-router-dom";
 
 import { SettingsPage } from "./settings";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 import { useSession } from "../hooks/use-session";
-import { getShareLinkMap } from "../lib/share-links-db";
-
-// The page embeds the Shares section (task 011), which reads the per-device
-// link map from IndexedDB on mount — jsdom has no IndexedDB, so mock the
-// store at the module boundary (same pattern as browse.test.tsx's
-// player-db mock). `restoreMocks: true` resets implementations, so the
-// default is re-established before each test.
-vi.mock("../lib/share-links-db", () => ({
-  getShareLinkMap: vi.fn(),
-  saveShareLink: vi.fn(),
-  deleteShareLink: vi.fn(),
-}));
-
-beforeEach(() => {
-  vi.mocked(getShareLinkMap).mockResolvedValue({});
-});
 
 function noContent(): Response {
   return new Response(null, { status: 204 });
@@ -188,40 +172,22 @@ describe("SettingsPage", () => {
   });
 });
 
-describe("SettingsPage shares section", () => {
-  it("renders the Shares heading and rows from GET /api/shares", async () => {
+describe("SettingsPage shares pointer", () => {
+  it("links to the standalone /shares page instead of embedding the list", () => {
     renderWithProviders(
       <Routes>
         <Route path="/settings" element={<SettingsPage />} />
       </Routes>,
-      {
-        initialEntries: ["/settings"],
-        fetchImplementation: (input, init) => {
-          const url = String(input);
-          const method = init?.method ?? "GET";
-          if (url === "/api/shares" && method === "GET")
-            return jsonResponse([
-              {
-                id: "s1",
-                title: "Trip footage",
-                item_count: 3,
-                created_at: "2026-08-01T12:00:00Z",
-                expires_at: null,
-                revoked_at: null,
-                status: "active",
-              },
-            ]);
-          return jsonError(404, `unmocked ${method} ${url}`);
-        },
-      },
+      { initialEntries: ["/settings"] },
     );
 
-    expect(await screen.findByText("Trip footage")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Shares" })).toBeInTheDocument();
-    // No local link for this share → status only, no copy button.
+    const link = screen.getByRole("link", { name: /shares/i });
+    expect(link).toHaveAttribute("href", "/shares");
+    // The list itself moved out — no shares rows or status chips remain.
     expect(
-      screen.queryByRole("button", { name: /copy link/i }),
+      screen.queryByRole("button", { name: /active/i }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/search shares/i)).not.toBeInTheDocument();
   });
 });
 

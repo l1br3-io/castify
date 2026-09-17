@@ -39,7 +39,7 @@ export function fetchAvailableProviders(): Promise<AvailableProviders> {
  * `returnTo` is an optional server-relative path the browser should land on
  * after the OAuth round-trip — used by the watch page's "Try again" button
  * so users come back to the video they were trying to play rather than the
- * Connections page. The backend validates it as a relative path and ignores
+ * Sources page. The backend validates it as a relative path and ignores
  * anything that looks like an open-redirect attempt.
  */
 export function startConnect(

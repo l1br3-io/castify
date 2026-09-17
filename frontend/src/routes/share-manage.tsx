@@ -86,7 +86,7 @@ export function ShareManagePage() {
         />
         <div className="mt-4 text-center">
           <Link
-            to="/settings"
+            to="/shares"
             className="text-sm text-[var(--color-castify-accent)] hover:underline"
           >
             Back to shares
@@ -233,7 +233,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
     <section className="space-y-4">
       <div>
         <Link
-          to="/settings"
+          to="/shares"
           className="text-sm text-[var(--color-castify-accent)] hover:underline"
         >
           ← Back to shares

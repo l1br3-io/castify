@@ -318,14 +318,19 @@ test.describe("Play lifecycle (M3 T14)", () => {
       page.getByRole("heading", { name: "All Videos" }),
     ).toBeVisible();
 
-    // Click the FIRST PosterCard in the All Videos grid. The grid's queue
-    // is `data.videos.map(v => v.id)` (browse.tsx) — the first card is
+    // Click the FIRST playable PosterCard in the All Videos grid. The grid's
+    // queue is `data.videos.map(v => v.id)` (browse.tsx) — the first card is
     // always index 0, so Next is guaranteed enabled (4+ videos seeded).
     // Don't pick a specific named card (alphabetical / insertion order
     // varies; a named pick might land at the queue's tail).
+    // `concert.mp4` is excluded: the e2e fixture seeds it with MPEG-2 bytes
+    // (crates/api/src/e2e.rs `gd-concert` gotcha), which no browser can
+    // decode — waitForVideoMetadata would never see loadedmetadata. The
+    // first non-concert card still can't be the queue's tail (3 other
+    // unique videos follow it in some order), so Next stays enabled.
     const firstCard = page
       .locator("#all-videos")
-      .getByRole("link", { name: /^Play / })
+      .getByRole("link", { name: /^Play (?!concert\.mp4$)/ })
       .first();
     const firstHref = await firstCard.getAttribute("href");
     expect(firstHref).toBeTruthy();

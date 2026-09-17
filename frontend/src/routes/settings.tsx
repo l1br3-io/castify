@@ -1,4 +1,4 @@
-// Settings page: change password + shares management.
+// Settings page: change password + transcoding toggle.
 //
 // Password UX flow:
 //   Three-field form (current, new, confirm) → `PUT /api/session/password`.
@@ -12,11 +12,11 @@
 // server remains the authority.
 //
 // Draft state is ephemeral React state; nothing persists client-side. The
-// Shares section (task 011) below owns its data — see
-// `components/shares-list.tsx`.
+// shares list moved to its own `/shares` route (task 005, spec D4) — this
+// page keeps a pointer link.
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError } from "../api/client";
@@ -27,7 +27,6 @@ import {
   updateTranscodeSettings,
 } from "../api/settings";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
-import { SharesSection } from "../components/shares-list";
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 256;
@@ -43,7 +42,15 @@ export function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm opacity-70">
-          Change your password and manage the links you've shared.
+          Change your password and playback preferences. Links you've shared
+          live on the{" "}
+          <Link
+            to="/shares"
+            className="font-medium text-[var(--color-castify-text)] underline decoration-[var(--color-castify-rule)] underline-offset-4 transition-colors hover:text-[var(--color-castify-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
+          >
+            Shares
+          </Link>{" "}
+          page.
         </p>
       </div>
 
@@ -59,8 +66,6 @@ export function SettingsPage() {
       </section>
 
       <TranscodingSection />
-
-      <SharesSection />
     </section>
   );
 }

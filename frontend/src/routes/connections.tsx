@@ -1,4 +1,6 @@
-// Connections page: provider cards, OAuth connect/disconnect, callback banner.
+// Sources page (formerly "Connections", renamed per spec D4/FR-7.2 — the
+// `/connections` URL is stable): provider cards, OAuth connect/disconnect,
+// callback banner.
 //
 // The backend's OAuth callback redirects here with query params:
 //   * `?connected={provider}` on success — show a success banner, then strip
@@ -73,7 +75,7 @@ export function ConnectionsPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Connections</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">Sources</h1>
         <p className="mt-2 opacity-70">
           Connect a cloud provider to scan it for media. Your tokens are
           encrypted at rest.
@@ -83,7 +85,7 @@ export function ConnectionsPage() {
       {oauthError ? (
         <Banner kind="error" onDismiss={dismissBanner}>
           {oauthError === "account_id_missing"
-            ? "Reconnect refused: the provider did not return an account identifier, so Castify can't safely rotate the existing connection's token. Disconnect the connection below and try again."
+            ? "Reconnect refused: the provider did not return an account identifier, so Castify can't safely rotate the existing source's token. Disconnect the source below and try again."
             : "Connection failed. The provider did not grant access — please try again."}
         </Banner>
       ) : connectedProvider ? (
@@ -115,7 +117,7 @@ function ConnectionsGrid() {
   if (connections.isError) {
     return (
       <ErrorState
-        title="Couldn't load connections."
+        title="Couldn't load sources."
         body={describeError(connections.error)}
         onRetry={() => connections.refetch()}
       />
