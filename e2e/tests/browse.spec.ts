@@ -55,15 +55,15 @@ test.describe("Browse page (e2e mock)", () => {
 
     // ── Navigate to browse page ────────────────────────────────────
     await page.goto("/");
-    // Wait for the page to load: Recently Added shelf appears only after
+    // Wait for the page to load: Recently added shelf appears only after
     // the recentlyAdded query resolves.
     await expect(
-      page.getByRole("heading", { name: "Recently Added" }),
+      page.getByRole("heading", { name: "Recently added" }),
     ).toBeVisible();
 
     // ── Compact library header (M9: the featured-video hero is gone) ──
     await expect(
-      page.getByRole("heading", { level: 1, name: /Your library · 4 videos/ }),
+      page.getByRole("heading", { level: 1, name: /Your library/ }),
     ).toBeVisible();
 
     // ── Organizer (M9): folder tree + provider chips ────────────────
@@ -88,7 +88,7 @@ test.describe("Browse page (e2e mock)", () => {
 
     // ── Poster grid ────────────────────────────────────────────────
     await expect(
-      page.getByRole("heading", { name: "All Videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
     // Scope to the grid — the M9 library header also contains "4 videos".
     await expect(
@@ -116,7 +116,7 @@ test.describe("Browse page (e2e mock)", () => {
     await expect(page.getByText("shared-doc.mp4")).toHaveCount(0);
     // Rails + organizer are hidden during active search
     await expect(
-      page.getByRole("heading", { name: "Recently Added" }),
+      page.getByRole("heading", { name: "Recently added" }),
     ).not.toBeVisible();
     await expect(
       page.getByRole("tree", { name: "Folders" }),
@@ -125,7 +125,7 @@ test.describe("Browse page (e2e mock)", () => {
     // Clear search → browse layout restores
     await page.getByRole("button", { name: "Clear search" }).click();
     await expect(
-      page.getByRole("heading", { name: "Recently Added" }),
+      page.getByRole("heading", { name: "Recently added" }),
     ).toBeVisible();
     await expect(
       page.locator("#all-videos").getByText("4 videos"),
@@ -183,7 +183,7 @@ test.describe("Browse page (e2e mock)", () => {
     // Persist both across reload
     await page.reload();
     await expect(
-      page.getByRole("heading", { name: "Recently Added" }),
+      page.getByRole("heading", { name: "Recently added" }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Favorites", exact: true }),

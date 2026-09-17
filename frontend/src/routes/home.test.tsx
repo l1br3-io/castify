@@ -94,9 +94,10 @@ describe("HomePage", () => {
     expect(
       await screen.findByText("Connect your first cloud"),
     ).toBeInTheDocument();
+    // EmptyState primitive: one sentence of value + one primary action.
     expect(
-      screen.getByRole("link", { name: "Connect a provider" }),
-    ).toHaveAttribute("href", "/connections");
+      screen.getByRole("button", { name: "Connect a provider" }),
+    ).toBeInTheDocument();
   });
 
   it("shows a setup-required notice when no providers are configured", async () => {
@@ -116,7 +117,7 @@ describe("HomePage", () => {
       fetchImplementation: fetchFor([SAMPLE_CONNECTION]),
     });
 
-    expect(await screen.findByText("All Videos")).toBeInTheDocument();
+    expect(await screen.findByText("All files")).toBeInTheDocument();
     // "sample.mp4" appears in the hero, Recently Added shelf, and grid.
     expect((await screen.findAllByText("sample.mp4")).length).toBeGreaterThanOrEqual(1);
   });
@@ -126,8 +127,8 @@ describe("HomePage", () => {
       fetchImplementation: () => new Promise<Response>(() => {}),
     });
     // Skeleton placeholders render while the connections query is pending.
-    // No browse content (hero, shelves, "All Videos") should be visible yet.
-    expect(screen.queryByText("All Videos")).not.toBeInTheDocument();
+    // No browse content (hero, shelves, "All files") should be visible yet.
+    expect(screen.queryByText("All files")).not.toBeInTheDocument();
     expect(screen.queryByText("Connect your first cloud")).not.toBeInTheDocument();
   });
 });

@@ -152,32 +152,72 @@ describe("BrowsePage", () => {
   });
   afterEach(() => setCsrfToken(null));
 
-  // --- Compact library header (M9 FR-7.1/7.2: hero removed) ---
+  // --- Classical stat cards row (task 011) ---
 
-  it("renders the compact library header with stats and no featured hero", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+  it("renders the Classical stat cards row with honest figures and no featured hero", async () => {
+    renderWithProviders(<BrowsePage />, {
+      fetchImplementation: browseFetch({
+        connections: [
+          {
+            id: "c1",
+            provider: "google_drive",
+            provider_account_email: "u@example.com",
+            connected_at: "2026-01-01T00:00:00Z",
+            scan_status: "idle",
+            last_scan_at: null,
+            video_count: 10,
+          },
+        ],
+      }),
+    });
 
-    // Header h1 carries the library stats (60 videos from VIDEO_PAGE_ONE,
-    // 1 connection); the featured-video hero is gone entirely — no h2 with
-    // a video name.
-    expect(
-      await screen.findByRole("heading", { level: 1, name: /Your library · 60 videos/ }),
-    ).toBeInTheDocument();
+    // Stat cards: Files (catalog total), Providers (connection count),
+    // Now scanning (provider label or an em-dash when idle). The demo's
+    // Cache card has no data source in the app — no endpoint, and the spec
+    // forbids new queries — so it is deliberately absent.
+    expect(await screen.findByText("Files")).toBeInTheDocument();
+    expect(screen.getByText("Providers")).toBeInTheDocument();
+    expect(screen.getByText("Now scanning")).toBeInTheDocument();
+    // 60 videos from VIDEO_PAGE_ONE, 1 connection, nothing scanning.
+    expect(screen.getByText("60")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("—")).toBeInTheDocument();
+    // The featured-video hero stays gone — no h2 with a video name.
     expect(
       screen.queryByRole("heading", { level: 2, name: "cat.mp4" }),
     ).not.toBeInTheDocument();
   });
 
-  it("styles the stats line as the mono instrument strip via .eyebrow (copy frozen)", async () => {
+  it("names the scanning provider in the Now scanning card while a scan runs", async () => {
+    renderWithProviders(<BrowsePage />, {
+      fetchImplementation: browseFetch({
+        connections: [
+          {
+            id: "c1",
+            provider: "dropbox",
+            provider_account_email: "u@example.com",
+            connected_at: "2026-01-01T00:00:00Z",
+            scan_status: "scanning",
+            last_scan_at: null,
+            video_count: 0,
+          },
+        ],
+      }),
+    });
+
+    expect(await screen.findByText("Now scanning")).toBeInTheDocument();
+    // The provider label sits in the same stat card as the kicker.
+    const scanningCard = screen.getByText("Now scanning").closest("div");
+    expect(
+      within(scanningCard as HTMLElement).getByText("Dropbox"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a single page heading for a11y while stats move into cards", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    const h1 = await screen.findByRole("heading", {
-      level: 1,
-      name: /Your library/,
-    });
-    expect(h1).toHaveClass("eyebrow");
-    // DOM text byte-identical — uppercasing is CSS-only (spec § Copy freeze).
-    expect(h1).toHaveTextContent("Your library · 60 videos · 0 clouds");
+    const h1 = await screen.findByRole("heading", { level: 1 });
+    expect(h1).toHaveTextContent("Your library");
   });
 
   it("staggers the four top-level sections with ~60ms offsets on mount", async () => {
@@ -185,13 +225,12 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+    await screen.findByRole("heading", { level: 1 });
 
     const staggered = Array.from(container.querySelectorAll(".animate-stagger-in"));
-    // header → rails → organizer → grid.
+    // stats → rails → all-files grid → folder organizer (spec IA order).
     expect(staggered).toHaveLength(4);
-    expect(staggered[0]).toHaveClass("sticky", "top-0");
-    expect(staggered[3]).toHaveAttribute("id", "all-videos");
+    expect(staggered[2]).toHaveAttribute("id", "all-videos");
     const delays = staggered.map(
       (el) => el.className.match(/animation-delay:(\d+)ms/)?.[1] ?? "0",
     );
@@ -215,7 +254,7 @@ describe("BrowsePage", () => {
 
     // Clear search — rails reappear inside the same wrapper node.
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
-    await screen.findByRole("heading", { name: "Recently Added" });
+    await screen.findByRole("heading", { name: "Recently added" });
 
     // Same DOM node survived the round-trip: the mount-time animation was
     // never canceled by unmounting, so it cannot replay.
@@ -380,13 +419,13 @@ describe("BrowsePage", () => {
 
   // --- Shelves ---
 
-  it("renders the Recently Added shelf with a View All button", async () => {
+  it("renders the Recently added shelf with a View All button", async () => {
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    // "Recently Added" appears as a rail heading (level 2), alongside
-    // "All Videos" in the grid section.
+    // "Recently added" appears as a rail heading (level 2), alongside
+    // "All files" in the grid section.
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    expect(screen.getByRole("heading", { name: "Recently Added" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recently added" })).toBeInTheDocument();
 
     // View All button for Recently Added.
     const viewAllButtons = screen.getAllByRole("button", { name: "View All" });
@@ -518,7 +557,7 @@ describe("BrowsePage", () => {
     expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
 
     // Rails are gone (the poster cards + their headings).
-    expect(screen.queryByRole("heading", { name: "Recently Added" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Recently added" })).not.toBeInTheDocument();
   });
 
   it("shows the search-specific empty state when results are empty", async () => {
@@ -564,7 +603,7 @@ describe("BrowsePage", () => {
     // Should return to browse layout (rails reappear).
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { name: "All Videos" }),
+        screen.getByRole("heading", { name: "All files" }),
       ).toBeInTheDocument();
     });
     expect(screen.queryByRole("heading", { name: /Search results/ })).not.toBeInTheDocument();
@@ -575,7 +614,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch(),
     });
 
-    await screen.findByRole("heading", { level: 1, name: /Your library/ });
+    await screen.findByRole("heading", { level: 1 });
 
     const searchInput = screen.getByLabelText("Search videos");
     expect(searchInput).not.toHaveFocus();
@@ -583,6 +622,20 @@ describe("BrowsePage", () => {
     fireEvent.keyDown(window, { key: "/" });
 
     expect(searchInput).toHaveFocus();
+  });
+
+  it("places the search field in the All-files section, above the grid (Classical IA)", async () => {
+    const { container } = renderWithProviders(<BrowsePage />, {
+      fetchImplementation: browseFetch(),
+    });
+
+    await screen.findByRole("heading", { level: 1 });
+
+    const gridSection = container.querySelector("#all-videos");
+    expect(gridSection).not.toBeNull();
+    expect(
+      within(gridSection as HTMLElement).getByLabelText("Search videos"),
+    ).toBeInTheDocument();
   });
 
   it("does not trigger the shortcut when typing inside an input", async () => {
@@ -888,7 +941,7 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    // Scope to the grid section — the hero + Recently Added shelf also have
+    // Scope to the grid section — the hero + Recently added shelf also have
     // favorite toggles for v1.
     const gridSection = container.querySelector("#all-videos")!;
     const gridFavoriteBtns = within(gridSection as HTMLElement).getAllByRole("button", {
@@ -998,33 +1051,33 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
   });
   afterEach(() => setCsrfToken(null));
 
-  it("hides the Continue Watching shelf when no entries exist (FR-11.5)", async () => {
+  it("hides the Continue watching & listening shelf when no entries exist (FR-11.5)", async () => {
     mockGetInProgressVideos.mockResolvedValue([]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
-      screen.queryByRole("heading", { name: "Continue Watching" }),
+      screen.queryByRole("heading", { name: "Continue watching & listening" }),
     ).not.toBeInTheDocument();
   });
 
-  it("hides the Continue Watching shelf while IndexedDB is still loading", async () => {
+  it("hides the Continue watching & listening shelf while IndexedDB is still loading", async () => {
     // Never-resolving promise keeps the query in `isLoading` state.
     mockGetInProgressVideos.mockReturnValue(new Promise<ProgressEntry[]>(() => {}));
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
-      screen.queryByRole("heading", { name: "Continue Watching" }),
+      screen.queryByRole("heading", { name: "Continue watching & listening" }),
     ).not.toBeInTheDocument();
   });
 
-  it("renders the Continue Watching shelf when entries exist (FR-11.1)", async () => {
+  it("renders the Continue watching & listening shelf when entries exist (FR-11.1)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
     expect(
-      await screen.findByRole("heading", { name: "Continue Watching" }),
+      await screen.findByRole("heading", { name: "Continue watching & listening" }),
     ).toBeInTheDocument();
     // Card renders the entry's name.
     expect(screen.getByText("continue-me.mp4")).toBeInTheDocument();
@@ -1034,7 +1087,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue Watching" });
+    await screen.findByRole("heading", { name: "Continue watching & listening" });
     const bar = screen.getByRole("progressbar", { name: "Watch progress" });
     // 30s of 120s = 25%
     expect(bar).toHaveAttribute("aria-valuenow", "25");
@@ -1044,22 +1097,22 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue Watching" });
+    await screen.findByRole("heading", { name: "Continue watching & listening" });
     const resumeLink = screen.getByRole("link", {
       name: "Resume continue-me.mp4",
     });
     expect(resumeLink).toHaveAttribute("href", "/watch/cw-1");
   });
 
-  it("places the Continue Watching rail between the library header and Recently Added", async () => {
+  it("places the Continue watching & listening rail between the library header and Recently Added", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
     const cwHeading = await screen.findByRole("heading", {
-      name: "Continue Watching",
+      name: "Continue watching & listening",
     });
     const recentlyAddedHeading = screen.getByRole("heading", {
-      name: "Recently Added",
+      name: "Recently added",
     });
 
     // Both headings are h2 siblings in the document; CW must precede
@@ -1070,22 +1123,23 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     ).not.toBe(0);
   });
 
-  it("styles the Continue Watching heading with the eyebrow treatment", async () => {
+  it("styles the Continue watching & listening heading in the display serif voice", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
     const heading = await screen.findByRole("heading", {
-      name: "Continue Watching",
+      name: "Continue watching & listening",
     });
-    expect(heading).toHaveClass("eyebrow");
-    expect(heading).toHaveTextContent("Continue Watching");
+    // Classical rails: display serif, not the mono eyebrow strip.
+    expect(heading).not.toHaveClass("eyebrow");
+    expect(heading).toHaveTextContent("Continue watching & listening");
   });
 
-  it("hides the Continue Watching shelf during active search (T9 focused-results mode)", async () => {
+  it("hides the Continue watching & listening shelf during active search (T9 focused-results mode)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue Watching" });
+    await screen.findByRole("heading", { name: "Continue watching & listening" });
 
     // Type a query — hero + shelves (incl. CW) hide during search.
     fireEvent.change(screen.getByRole("textbox", { name: "Search videos" }), {
@@ -1094,7 +1148,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
     await waitFor(() => {
       expect(
-        screen.queryByRole("heading", { name: "Continue Watching" }),
+        screen.queryByRole("heading", { name: "Continue watching & listening" }),
       ).not.toBeInTheDocument();
     });
   });
@@ -1106,7 +1160,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
     ]);
     renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue Watching" });
+    await screen.findByRole("heading", { name: "Continue watching & listening" });
 
     // Clicking the first card should navigate to /watch/cw-a carrying the
     // full sibling list in router state.

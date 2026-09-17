@@ -69,25 +69,26 @@ describe("Shelf", () => {
     expect(screen.queryByRole("button", { name: "View All" })).not.toBeInTheDocument();
   });
 
-  it("styles the title and count as eyebrow mono with tabular numerals (DOM text unchanged)", () => {
+  it("styles the title in the display serif voice with tabular-numeral count", () => {
     renderWithProviders(
-      <Shelf title="Recently Added" videos={VIDEOS} totalCount={47} />,
+      <Shelf title="Recently added" videos={VIDEOS} totalCount={47} />,
     );
 
-    const heading = screen.getByRole("heading", { name: "Recently Added" });
-    expect(heading).toHaveClass("eyebrow");
-    // Copy freeze: uppercasing is CSS-only — the DOM text stays byte-identical.
-    expect(heading).toHaveTextContent("Recently Added");
+    const heading = screen.getByRole("heading", { name: "Recently added" });
+    // Classical rails: display serif (global heading voice), not the mono
+    // eyebrow strip.
+    expect(heading).not.toHaveClass("eyebrow");
 
     const count = screen.getByText("· 47");
-    expect(count).toHaveClass("eyebrow", "tabular-nums");
+    expect(count).toHaveClass("figure");
   });
 
   it("keeps the View All accent affordance with a visible focus ring", () => {
     renderWithProviders(<Shelf title="T" videos={VIDEOS} onViewAll={() => {}} />);
 
     const button = screen.getByRole("button", { name: "View All" });
-    expect(button).toHaveClass("text-[var(--color-castify-accent)]");
+    // AA-strong accent step for text on paper (task 008 token split).
+    expect(button).toHaveClass("text-[var(--color-castify-accent-strong)]");
     expect(button).toHaveClass("focus-visible:ring-2");
   });
 

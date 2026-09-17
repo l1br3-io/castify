@@ -7,6 +7,11 @@
 // `ProgressEntry` (continue-watching shelf) map into `ThumbnailVideo` at the
 // call site — Thumbnail itself stays decoupled from either DTO.
 //
+// Classical (task 011): the wrapper carries the `.plate` archival treatment
+// (index.css) — every poster/thumbnail is matted, never raw. The fixed
+// aspect-video ratio holds through loading/loaded/error so nothing shifts
+// (FR-3.5).
+//
 // State machine (PRD FR-1.4 / FR-9.3 / FR-9.4):
 //   * `loading` → pulsing skeleton behind a transparent `<img>` (img becomes
 //     opaque on `onLoad`).
@@ -68,7 +73,7 @@ export function Thumbnail({
   const hue = hashHue(video.id);
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden rounded-[var(--radius-button)] bg-[var(--color-castify-rule)]">
+    <div className="plate relative aspect-video w-full overflow-hidden rounded-[var(--radius-button)] bg-[var(--color-castify-rule)]">
       {/* Placeholder layer — visible while loading and on error. */}
       {state !== "loaded" && (
         <div

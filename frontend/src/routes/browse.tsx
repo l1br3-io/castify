@@ -1,18 +1,20 @@
 // Browse page — M2 T7 poster-grid view + T8 scrollable shelves + T9 search
-// + T10 filter panel / URL deep-linking + T13 continue-watching. M9 redesign
-// §7: the featured-video hero is gone; a compact library header (stats +
-// search) leads, rails stay compact, and the folder organizer (task 013)
-// becomes the page's spine.
+// + T10 filter panel / URL deep-linking + T13 continue-watching. Task 011
+// (Classical): the page follows the demo's library structure — a stat-cards
+// row (Files / Providers / Now scanning) over the rails, over the All-files
+// grid + search field, then the folder organizer.
 //
-// Layout (M9 FR-7):
-//   0. Compact header: "Your library · N videos · M clouds" + SearchBar
-//      (always at top; "/" focuses it).
-//   1. Continue-watching rail (T13, IndexedDB-backed; hidden when empty).
-//   2. Rails section (horizontal scrollable rows):
-//      - Recently Added (always shown)
-//      - Favorites (shown only when owner has ≥1 favorite)
-//   3. Folder organizer (M9 task 013: tree + contents + provider chips).
-//   4. "All Videos" grid section (poster grid + sort + filter panel + pagination).
+// Layout (spec IA § Library):
+//   0. sr-only h1 "Your library" (a11y page heading — stats live in cards).
+//   1. Stat cards row: Files (catalog total) · Providers (connections) ·
+//      Now scanning (provider label, or an em-dash when idle). The demo's
+//      Cache card is deliberately absent: the app exposes no cache-size
+//      API and the spec forbids new queries.
+//   2. Rails: Continue watching & listening (IndexedDB-backed, hidden when
+//      empty), Recently added, Favorites (when any).
+//   3. All-files section: heading + search field + select/sort + filter
+//      panel + poster grid + pagination.
+//   4. Folder organizer (tree + contents + provider chips).
 //
 // Search (T9, FR-2): when the debounced query is non-empty, the layout enters
 // a focused search-results mode — rails (incl. continue-watching) and the
@@ -57,12 +59,14 @@ import { ShareDialog } from "../components/share-dialog";
 import { describeError } from "../lib/format";
 import { useBrowseFilters } from "../lib/filter-state";
 import {
+  PROVIDER_LABELS,
   VIDEO_SORT_LABELS,
   VIDEO_SORT_OPTIONS,
   type ProviderKey,
   type VideoSortKey,
   type VideoSummaryDto,
 } from "../api/types";
+import { Button } from "../components/ui/button";
 
 // ---------------------------------------------------------------------------
 // BrowsePage
@@ -192,24 +196,36 @@ export function BrowsePage() {
   }
 
   const hasActiveFilter = filters.activeCount > 0;
-  const libraryStats = `Your library · ${recentlyAdded.data.total} ${
-    recentlyAdded.data.total === 1 ? "video" : "videos"
-  } · ${connections.data?.length ?? 0} ${connections.data?.length === 1 ? "cloud" : "clouds"}`;
+  const scanningConnection = connections.data?.find(
+    (c) => c.scan_status === "scanning",
+  );
 
   return (
     <div className="space-y-8">
-      {/* Compact library header (M9 FR-7.2): stats + search in one sticky
-          row. This replaces the old 40vh featured-video hero — an organizer,
-          not a premiere. Identity pass: the stats line is the mono
-          instrument strip (`.eyebrow`, CSS-only uppercase — DOM text frozen)
-          and carries stagger step 1. */}
-      <div className="sticky top-0 z-20 -mx-4 animate-stagger-in bg-[var(--color-castify-canvas)]/95 px-4 py-2 backdrop-blur supports-[backdrop-filter]:bg-[var(--color-castify-canvas)]/80 motion-reduce:animate-none">
-        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-          <h1 className="eyebrow">{libraryStats}</h1>
-          <div className="md:w-96">
-            <SearchBar ref={searchRef} value={query} onChange={setQuery} />
-          </div>
-        </div>
+      {/* A11y page heading — the visible identity is the stat cards below. */}
+      <h1 className="sr-only">Your library</h1>
+
+      {/* Stat cards row (task 011, demo `cf-grid` stats): kicker + display
+          figure per card, stagger step 1. */}
+      <div className="grid animate-stagger-in grid-cols-2 gap-4 sm:grid-cols-3 motion-reduce:animate-none">
+        <StatCard
+          kicker="Files"
+          value={recentlyAdded.data.total.toLocaleString()}
+        />
+        <StatCard
+          kicker="Providers"
+          value={String(connections.data?.length ?? 0)}
+        />
+        <StatCard
+          kicker="Now scanning"
+          value={
+            scanningConnection
+              ? (PROVIDER_LABELS[scanningConnection.provider] ??
+                scanningConnection.provider)
+              : "—"
+          }
+          muted={!scanningConnection}
+        />
       </div>
 
       {/* Stagger steps 2 + 3 (identity-pass task 003): the page-load
@@ -233,7 +249,7 @@ export function BrowsePage() {
             {/* Rails */}
             <div className="space-y-6">
               <Shelf
-                title="Recently Added"
+                title="Recently added"
                 videos={recentlyAdded.data.videos}
                 totalCount={recentlyAdded.data.total}
                 onViewAll={() => handleViewAll({})}
@@ -248,52 +264,48 @@ export function BrowsePage() {
         )}
       </div>
 
-      <div className="animate-stagger-in [animation-delay:120ms] motion-reduce:animate-none">
-        {/* Folder organizer (M9 FR-7.4): tree + contents + provider
-            chips — replaces the old By Provider / By Folder shelves.
-            Child of the stagger wrapper above; hidden during search the
-            same way (wrapper stays mounted). */}
-        {!isSearching && <FolderOrganizer connectedProviders={connectedProviders} />}
-      </div>
-
-      {/* Stagger step 4. */}
-      <div id="all-videos" className="animate-stagger-in space-y-4 pt-2 [animation-delay:180ms] motion-reduce:animate-none">
+      {/* Stagger step 3: the All-files section — heading, search field
+          (demo placement: above the grid), select/sort, filters, grid. */}
+      <div
+        id="all-videos"
+        className="animate-stagger-in space-y-4 pt-2 [animation-delay:120ms] motion-reduce:animate-none"
+      >
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             {isSearching ? (
               <>
-                <h2 className="text-2xl font-semibold tracking-tight">
+                <h2 className="text-2xl">
                   Search results for &ldquo;{filters.values.q}&rdquo;
                 </h2>
                 {videos.data && (
-                  <p className="mt-1 text-sm opacity-60">
+                  <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
                     {videos.data.total}{" "}
                     {videos.data.total === 1 ? "result" : "results"}
                   </p>
                 )}
               </>
             ) : (
-              <h2 className="text-2xl font-semibold tracking-tight">
-                All Videos
-              </h2>
+              <h2 className="text-2xl">All files</h2>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+            <Button
+              variant="secondary"
+              size="sm"
               aria-pressed={selectMode || undefined}
-              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              onClick={() =>
+                selectMode ? exitSelectMode() : setSelectMode(true)
+              }
             >
               {selectMode ? "Cancel" : "Select"}
-            </button>
+            </Button>
             <label className="flex items-center gap-2 text-sm">
-              <span className="opacity-60">Sort</span>
+              <span className="text-[var(--color-castify-muted)]">Sort</span>
               <select
                 aria-label="Sort videos"
                 value={filters.values.sort}
                 onChange={(e) => filters.setSort(e.target.value as VideoSortKey)}
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-transparent px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
               >
                 {VIDEO_SORT_OPTIONS.map((key) => (
                   <option key={key} value={key}>
@@ -305,36 +317,39 @@ export function BrowsePage() {
           </div>
         </div>
 
+        {/* Search field (T9) — Classical placement: its own input line
+            above the filter chips + grid. "/" focuses it from anywhere. */}
+        <div className="max-w-sm">
+          <SearchBar ref={searchRef} value={query} onChange={setQuery} />
+        </div>
+
         {/* Task 012: multi-select action bar — shown while select mode is
             active. "Share N items" opens the same creation dialog the
             watch page uses; it needs ≥1 selection. */}
         {selectMode && (
-          <div
-            className="flex flex-wrap items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-3"
-          >
+          <div className="flex flex-wrap items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] px-4 py-3">
             <span className="text-sm">
               {selectedIds.length}{" "}
               {selectedIds.length === 1 ? "item" : "items"} selected
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               onClick={() => {
                 if (selectedIds.length > 0) setShareOpen(true);
               }}
               disabled={selectedIds.length === 0}
-              className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-1.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
             >
               Share {selectedIds.length}{" "}
               {selectedIds.length === 1 ? "item" : "items"}
-            </button>
+            </Button>
             {selectedIds.length > 0 && (
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setSelectedIds([])}
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]"
               >
                 Clear
-              </button>
+              </Button>
             )}
           </div>
         )}
@@ -360,6 +375,11 @@ export function BrowsePage() {
         />
       </div>
 
+      {/* Stagger step 4: the folder organizer (spec IA: after the grid). */}
+      <div className="animate-stagger-in [animation-delay:180ms] motion-reduce:animate-none">
+        {!isSearching && <FolderOrganizer connectedProviders={connectedProviders} />}
+      </div>
+
       {/* Task 012: creation dialog from the multi-select bar. Closing it
           (Done or Cancel) clears the selection — a second share wants a
           fresh curation, and a cancelled one has nothing to keep. */}
@@ -375,6 +395,33 @@ export function BrowsePage() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stat card (task 011, demo stats row)
+// ---------------------------------------------------------------------------
+
+function StatCard({
+  kicker,
+  value,
+  muted = false,
+}: {
+  kicker: string;
+  value: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+      <span className="eyebrow">{kicker}</span>
+      <span
+        className={`mt-1 block truncate font-display text-2xl figure ${
+          muted ? "text-[var(--color-castify-muted)]" : ""
+        }`}
+      >
+        {value}
+      </span>
     </div>
   );
 }
@@ -411,7 +458,7 @@ function ContinueWatchingShelf() {
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-4">
-        <h2 className="eyebrow">Continue Watching</h2>
+        <h2 className="text-xl">Continue watching &amp; listening</h2>
       </div>
       <div
         className="no-scrollbar flex gap-4 overflow-x-auto pb-2 pr-4"
@@ -459,8 +506,8 @@ function FavoritesShelf({ onViewAll }: { onViewAll: () => void }) {
 function ShelfError({ title }: { title: string }) {
   return (
     <section className="space-y-2">
-      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-      <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-3 text-sm text-[var(--color-castify-muted)]">
+      <h2 className="text-xl">{title}</h2>
+      <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] px-4 py-3 text-sm text-[var(--color-castify-muted)]">
         Couldn't load this shelf.
       </div>
     </section>
@@ -550,7 +597,7 @@ function BrowseGrid({
     <div
       className={`space-y-4 transition-opacity duration-150 ${containerOpacity}`}
     >
-      <p className="text-sm opacity-60">
+      <p className="text-sm text-[var(--color-castify-muted)]">
         {data.total} {data.total === 1 ? "video" : "videos"}
       </p>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
@@ -610,26 +657,26 @@ function Pagination({
 }: PaginationProps) {
   return (
     <div className="flex items-center justify-between gap-4 pt-2">
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => onPageChange(page - 1)}
         disabled={page <= 1 || isFetching}
-        className="rounded-md border border-white/15 px-4 py-2 text-sm transition hover:bg-white/5 disabled:opacity-40 disabled:hover:bg-transparent"
       >
         Previous
-      </button>
-      <span className="text-sm opacity-60">
+      </Button>
+      <span className="figure text-sm text-[var(--color-castify-muted)]">
         Page {page} of {totalPages}
-        {isFetching ? " \u00b7 loading\u2026" : ""}
+        {isFetching ? " · loading…" : ""}
       </span>
-      <button
-        type="button"
+      <Button
+        variant="secondary"
+        size="sm"
         onClick={() => onPageChange(page + 1)}
         disabled={page >= totalPages || isFetching}
-        className="rounded-md border border-white/15 px-4 py-2 text-sm transition hover:bg-white/5 disabled:opacity-40 disabled:hover:bg-transparent"
       >
         Next
-      </button>
+      </Button>
     </div>
   );
 }
@@ -663,17 +710,17 @@ function LibraryEmptyState() {
 function LoadingSkeletonGrid() {
   return (
     <div className="space-y-4">
-      <div className="h-4 w-24 rounded bg-white/10" />
+      <div className="h-4 w-24 rounded bg-[var(--color-castify-hover)]" />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
         {Array.from({ length: 12 }).map((_, i) => (
           <div
             key={i}
-            className="flex flex-col gap-2 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-2"
+            className="flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-2"
           >
-            <div className="aspect-video w-full animate-pulse rounded-md bg-white/10" />
+            <div className="aspect-video w-full animate-pulse rounded-[var(--radius-button)] bg-[var(--color-castify-hover)]" />
             <div className="space-y-1.5 px-1 pb-1">
-              <div className="h-3 w-3/4 rounded bg-white/10" />
-              <div className="h-3 w-1/2 rounded bg-white/5" />
+              <div className="h-3 w-3/4 rounded bg-[var(--color-castify-hover)]" />
+              <div className="h-3 w-1/2 rounded bg-[var(--color-castify-hover)]" />
             </div>
           </div>
         ))}

@@ -35,7 +35,7 @@ test.describe("Auth lifecycle (cold boot)", () => {
     // the embedded single-binary server — the guide only appears after
     // `GET /api/connections` returns an empty array successfully).
     await expect(
-      page.getByRole("heading", { name: "Connect your first cloud" }),
+      page.getByText("Connect your first cloud"),
     ).toBeVisible();
 
     // Header reflects the authenticated session. Use exact match on the

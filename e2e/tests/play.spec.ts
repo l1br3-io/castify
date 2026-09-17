@@ -168,7 +168,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All Videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
 
     const vacation = gdByName("vacation.mp4");
@@ -315,10 +315,10 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All Videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
 
-    // Click the FIRST playable PosterCard in the All Videos grid. The grid's
+    // Click the FIRST playable PosterCard in the All files grid. The grid's
     // queue is `data.videos.map(v => v.id)` (browse.tsx) — the first card is
     // always index 0, so Next is guaranteed enabled (4+ videos seeded).
     // Don't pick a specific named card (alphabetical / insertion order
@@ -514,7 +514,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     // Continue Watching shelf appears.
     await expect(
-      page.getByRole("heading", { name: "Continue Watching" }),
+      page.getByRole("heading", { name: "Continue watching & listening" }),
     ).toBeVisible();
 
     // Card has a progressbar at 50% (60/120).

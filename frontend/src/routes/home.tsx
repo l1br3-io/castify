@@ -17,11 +17,12 @@
 // a retry instead of routing to the wrong state (audit: home.tsx ignored
 // `isError`).
 
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { useAvailableProviders } from "../hooks/use-available-providers";
 import { useConnections } from "../hooks/use-connections";
 import { BrowsePage } from "./browse";
+import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 
@@ -73,41 +74,21 @@ export function HomePage() {
 
 function SetupRequired() {
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">
-          Setup required
-        </h1>
-        <p className="mt-2 opacity-70">
-          Castify needs OAuth credentials for at least one cloud provider before
-          you can connect an account.
-        </p>
-        <p className="mt-3 text-xs opacity-70">
-          See <code>docs/config.md</code> for setup.
-        </p>
-      </div>
-    </section>
+    <EmptyState
+      title="Setup required"
+      body="Castify needs OAuth credentials for at least one cloud provider before you can connect an account — see docs/config.md for setup."
+    />
   );
 }
 
 function FirstRunGuide() {
+  const navigate = useNavigate();
   return (
-    <section className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">
-          Connect your first cloud
-        </h1>
-        <p className="mt-2 opacity-70">
-          Castify scans your cloud storage for videos and unifies them into one
-          library. Connect a provider to get started.
-        </p>
-      </div>
-      <Link
-        to="/connections"
-        className="inline-block rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
-      >
-        Connect a provider
-      </Link>
-    </section>
+    <EmptyState
+      title="Connect your first cloud"
+      body="Castify scans your cloud storage for videos and unifies them into one library."
+      onAction={() => navigate("/connections")}
+      actionLabel="Connect a provider"
+    />
   );
 }
