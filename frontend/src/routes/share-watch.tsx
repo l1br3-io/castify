@@ -53,14 +53,15 @@ import { usePlaybackTracking } from "../hooks/use-playback-tracking";
 import { useInvalidateStreamUrl, useStreamUrl } from "../hooks/use-stream-url";
 import type { VideoDetailDto, VideoSummaryDto } from "../api/types";
 import {
+  containerLabel,
   formatDuration,
-  formatResolution,
   formatSize,
   formatTime,
   resolutionBucket,
 } from "../lib/format";
 import { isAssFormat, isImageFamily } from "../lib/subtitles";
 import { otherProviders } from "../lib/video";
+import { SharedChrome } from "../components/shared-chrome";
 
 /**
  * Probe whether the browser can natively play the given MIME type.
@@ -140,10 +141,12 @@ export function ShareWatchPage() {
 
   if (items.isPending) {
     return (
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
         <BackToShare token={token} />
         <WatchSkeleton />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -154,7 +157,8 @@ export function ShareWatchPage() {
       // gate lives on the landing page — send the recipient there rather
       // than duplicating the password form on the player.
       return (
-        <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+        <SharedChrome dark>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
           <div className="space-y-4 text-center">
             <EmptyState
               title="This share is protected by a password."
@@ -167,12 +171,14 @@ export function ShareWatchPage() {
               Go to the share page
             </Link>
           </div>
-        </main>
+        </div>
+    </SharedChrome>
       );
     }
     if (status === 410 || status === 404) {
       return (
-        <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+        <SharedChrome dark>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
           <EmptyState
             title={
               status === 410
@@ -185,17 +191,20 @@ export function ShareWatchPage() {
                 : "Double-check the link, or ask whoever sent it for a new one."
             }
           />
-        </main>
+        </div>
+    </SharedChrome>
       );
     }
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl">
         <ErrorState
           title="Couldn't load this share."
           body="Something went wrong fetching the shared videos."
           onRetry={() => void items.refetch()}
         />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -204,7 +213,8 @@ export function ShareWatchPage() {
   // byte-fetching) is cheaper and gives honest copy.
   if (video === undefined || videoId === undefined) {
     return (
-      <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
         <div className="space-y-4 text-center">
           <EmptyState
             title="This video isn't part of the share."
@@ -217,16 +227,19 @@ export function ShareWatchPage() {
             Go to the share page
           </Link>
         </div>
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   if (subtitles.isPending) {
     return (
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
         <BackToShare token={token} />
         <WatchSkeleton />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -235,13 +248,15 @@ export function ShareWatchPage() {
       return <ShareVideoRemoved token={token} />;
     }
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl">
         <ErrorState
           title="Couldn't load this share."
           body="Something went wrong fetching the shared videos."
           onRetry={() => void subtitles.refetch()}
         />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -268,36 +283,44 @@ export function ShareWatchPage() {
       return <ShareVideoRemoved token={token} />;
     }
     return (
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
         <BackToShare token={token} />
         <ShareStreamError video={detail} scope={scope!} />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   if (strategy === "transcode" || canPlay(video.mime_type)) {
     return (
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
         <BackToShare token={token} />
         <ShareVideoPlayer video={detail} scope={scope!} streamUrlQuery={streamUrlQuery} />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   if (streamUrlQuery.isLoading) {
     return (
-      <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+      <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
         <BackToShare token={token} />
         <WatchSkeleton />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   return (
-    <main className="mx-auto max-w-5xl space-y-4 px-4 py-10">
+    <SharedChrome dark>
+      <div className="mx-auto max-w-5xl space-y-4">
       <BackToShare token={token} />
       <ShareUnsupportedFormat video={detail} />
-    </main>
+    </div>
+    </SharedChrome>
   );
 }
 
@@ -328,7 +351,8 @@ function BackToShare({ token }: { token: string | undefined }) {
 
 function ShareVideoRemoved({ token }: { token: string | undefined }) {
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+    <SharedChrome dark>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
       <div className="space-y-4 text-center">
         <EmptyState
           title="This video is no longer available in this share"
@@ -341,7 +365,8 @@ function ShareVideoRemoved({ token }: { token: string | undefined }) {
           Go to the share page
         </Link>
       </div>
-    </main>
+    </div>
+    </SharedChrome>
   );
 }
 
@@ -543,17 +568,10 @@ function ShareVideoPlayer({
 function ShareUnsupportedFormat({ video }: { video: VideoDetailDto }) {
   return (
     <div className="space-y-4">
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-6 text-center">
-        <div className="text-4xl">🎬</div>
-        <p className="text-lg font-medium">
-          This format can&apos;t be played in-browser
-        </p>
-        <p className="max-w-md text-sm opacity-70">
-          Shared videos stream only — there&apos;s no download fallback. Ask
-          whoever shared this video to reconnect or check their library if
-          the problem persists.
-        </p>
-      </div>
+      <ErrorState
+        title="This format can't be played in-browser"
+        body="Shared videos stream only — there's no download fallback. If it keeps failing, whoever shared this video may need to check their library."
+      />
       <ShareVideoInfo video={video} />
     </div>
   );
@@ -573,24 +591,11 @@ function ShareStreamError({
   const invalidateStreamUrl = useInvalidateStreamUrl();
   return (
     <div className="space-y-4">
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-6 text-center">
-        <div className="text-4xl">⚠️</div>
-        <p className="text-lg font-medium">Couldn&apos;t load this video</p>
-        <p className="max-w-md text-sm opacity-70">
-          Something went wrong fetching the stream. If it keeps failing,
-          whoever shared this video may need to reconnect their cloud
-          account.
-        </p>
-        <button
-          type="button"
-          onClick={() =>
-            invalidateStreamUrl(video.id, scope)
-          }
-          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
-        >
-          Try again
-        </button>
-      </div>
+      <ErrorState
+        title="Couldn't load this video"
+        body="Something went wrong fetching the stream. If it keeps failing, whoever shared this video may need to reconnect their cloud account."
+        onRetry={() => invalidateStreamUrl(video.id, scope)}
+      />
       <ShareVideoInfo video={video} />
     </div>
   );
@@ -601,35 +606,23 @@ function ShareStreamError({
 // ---------------------------------------------------------------------------
 
 function ShareVideoInfo({ video }: { video: VideoDetailDto }) {
-  const resBucket = resolutionBucket(video.height);
   const others = otherProviders(video);
+  const container = containerLabel(video.mime_type);
+  const resBucket = resolutionBucket(video.height);
 
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-bold tracking-tight">{video.name}</h1>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-white/60">
-        {video.duration_ms !== null && (
-          <span>{formatDuration(video.duration_ms)}</span>
-        )}
-        {video.width !== null && video.height !== null && (
-          <>
-            {video.duration_ms !== null && <span aria-hidden>·</span>}
-            <span>{formatResolution(video.width, video.height)}</span>
-          </>
-        )}
-        <span aria-hidden>·</span>
-        <span>{formatSize(video.size_bytes)}</span>
-        {resBucket !== null && (
-          <>
-            <span aria-hidden>·</span>
-            <span>{resBucket}</span>
-          </>
-        )}
-      </div>
+      <h1 className="text-2xl">{video.name}</h1>
       <div className="flex flex-wrap items-center gap-2">
         <ProviderBadge provider={video.provider} />
         {others.length > 0 && <DedupBadge providers={others} />}
+        {container && <span className="keycap">{container}</span>}
+        {resBucket && <span className="keycap">{resBucket}</span>}
       </div>
+      <p className="figure text-sm text-[var(--color-castify-muted)]">
+        {video.duration_ms !== null && `${formatDuration(video.duration_ms)} · `}
+        {formatSize(video.size_bytes)}
+      </p>
     </div>
   );
 }

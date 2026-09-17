@@ -190,4 +190,42 @@ test.describe("A11y (axe) — redesigned screens", () => {
       await disconnect(page, connId, csrf);
     }
   });
+
+  test("/share/:token list + watch (task 018) — no serious or critical violations", async ({
+    page,
+  }) => {
+    await ensureAuthenticated(page);
+    const csrf = await getCsrfToken(page);
+    const connId = await seedAndScan(
+      page,
+      "google_drive",
+      "axe-pub@example.com",
+      csrf,
+    );
+    const { videos } = await getVideos(page);
+    expect(videos.length).toBeGreaterThan(0);
+    const share = await createShare(
+      page,
+      { video_ids: [videos[0].id], title: "Axe public share" },
+      csrf,
+    );
+    try {
+      // Recipient list — public, no session needed.
+      await page.goto(share.share_url);
+      await page
+        .getByRole("heading", { name: "Axe public share" })
+        .waitFor({ timeout: 10_000 });
+      await scanAxe(page, "share-list");
+
+      // Recipient player — dark editorial, shared player controls.
+      await page.goto(`${share.share_url}/watch/${videos[0].id}`);
+      await page
+        .getByRole("heading", { name: videos[0].name })
+        .waitFor({ timeout: 10_000 });
+      await scanAxe(page, "share-watch");
+    } finally {
+      await revokeShare(page, share.id, csrf);
+      await disconnect(page, connId, csrf);
+    }
+  });
 });

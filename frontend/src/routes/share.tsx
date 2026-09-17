@@ -46,6 +46,9 @@ import { Skeleton } from "../components/ui/skeleton";
 import { fetchShareItems, resolveShare, unlockShare, type ShareResolveDto } from "../api/shares";
 import { ApiError } from "../api/client";
 import { describeError } from "../lib/format";
+import { SharedChrome } from "../components/shared-chrome";
+import { Button } from "../components/ui/button";
+import { Field, Input } from "../components/ui/field";
 
 export function SharePage() {
   const { token } = useParams<{ token: string }>();
@@ -75,11 +78,13 @@ export function SharePage() {
 
   if (resolve.isPending) {
     return (
-      <main className="mx-auto max-w-7xl space-y-4 px-4 py-10">
+      <SharedChrome>
+      <div className="mx-auto max-w-7xl space-y-4">
         <Skeleton className="h-8 w-64" />
         <Skeleton className="h-4 w-40" />
         <SkeletonGrid />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -102,13 +107,15 @@ export function SharePage() {
       );
     }
     return (
-      <main className="mx-auto max-w-7xl px-4 py-10">
+      <SharedChrome>
+      <div className="mx-auto max-w-7xl">
         <ErrorState
           title="Couldn't load this share."
           body={describeError(resolve.error)}
           onRetry={() => resolve.refetch()}
         />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
@@ -120,30 +127,35 @@ export function SharePage() {
 
   if (items.isPending) {
     return (
-      <main className="mx-auto max-w-7xl space-y-4 px-4 py-10">
-        <h1 className="text-2xl font-semibold tracking-tight">{share.title}</h1>
+      <SharedChrome>
+      <div className="mx-auto max-w-7xl space-y-4">
+        <h1 className="text-2xl">{share.title}</h1>
         <SkeletonGrid />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   if (items.isError) {
     return (
-      <main className="mx-auto max-w-7xl px-4 py-10">
+      <SharedChrome>
+      <div className="mx-auto max-w-7xl">
         <ErrorState
           title="Couldn't load this share."
           body={describeError(items.error)}
           onRetry={() => items.refetch()}
         />
-      </main>
+      </div>
+    </SharedChrome>
     );
   }
 
   return (
-    <main className="mx-auto max-w-7xl space-y-4 px-4 py-10">
+    <SharedChrome>
+      <div className="mx-auto max-w-7xl space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{share.title}</h1>
-        <p className="mt-1 text-sm opacity-60">
+        <h1 className="text-2xl">{share.title}</h1>
+        <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
           {items.data.length} {items.data.length === 1 ? "video" : "videos"} shared with you
         </p>
       </div>
@@ -161,7 +173,8 @@ export function SharePage() {
           ))}
         </div>
       )}
-    </main>
+    </div>
+    </SharedChrome>
   );
 }
 
@@ -199,50 +212,45 @@ function PasswordGate({ title, token }: { title: string; token: string }) {
     unlock.error instanceof ApiError ? unlock.error.status : null;
 
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
-      <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8">
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
-        <p className="mt-2 text-sm opacity-60">
-          This share is protected by a password. Enter it to see the videos.
-        </p>
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <label className="block space-y-1.5 text-sm">
-            <span>Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoFocus
-              autoComplete="current-password"
-              aria-invalid={errorStatus === 401}
-              className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-            />
-          </label>
-          {errorStatus === 401 && (
-            <p role="alert" className="text-sm text-[var(--color-castify-muted)]">
-              Wrong password. Try again.
-            </p>
-          )}
-          {errorStatus === 429 && (
-            <p role="alert" className="text-sm text-[var(--color-castify-muted)]">
-              Too many attempts. Please try again in about 15 minutes.
-            </p>
-          )}
-          {unlock.isError && errorStatus !== 401 && errorStatus !== 429 && (
-            <p role="alert" className="text-sm text-[var(--color-castify-muted)]">
-              Couldn't unlock this share: {describeError(unlock.error)}
-            </p>
-          )}
-          <button
-            type="submit"
-            disabled={unlock.isPending}
-            className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)] disabled:opacity-50"
-          >
-            {unlock.isPending ? "Unlocking…" : "Unlock"}
-          </button>
-        </form>
+    <SharedChrome>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
+        <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-8">
+          <h1 className="text-2xl">{title}</h1>
+          <p className="mt-2 text-sm text-[var(--color-castify-muted)]">
+            This share is protected by a password. Enter it to see the videos.
+          </p>
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+            <Field
+              label="Password"
+              error={
+                errorStatus === 401
+                  ? "Wrong password. Try again."
+                  : errorStatus === 429
+                    ? "Too many attempts. Please try again in about 15 minutes."
+                    : unlock.isError
+                      ? `Couldn't unlock this share: ${describeError(unlock.error)}`
+                      : undefined
+              }
+            >
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoFocus
+                autoComplete="current-password"
+              />
+            </Field>
+            <Button
+              type="submit"
+              className="w-full"
+              pending={unlock.isPending}
+            >
+              {unlock.isPending ? "Unlocking…" : "Unlock"}
+            </Button>
+          </form>
+        </div>
       </div>
-    </main>
+    </SharedChrome>
   );
 }
 
@@ -256,9 +264,11 @@ function PasswordGate({ title, token }: { title: string; token: string }) {
 // the result for this mount.
 function TerminalState({ title, body }: { title: string; body: string }) {
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center px-4 py-10">
+    <SharedChrome>
+      <div className="mx-auto flex min-h-[60vh] max-w-md flex-col justify-center">
       <EmptyState title={title} body={body} />
-    </main>
+    </div>
+    </SharedChrome>
   );
 }
 

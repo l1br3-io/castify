@@ -201,6 +201,11 @@ describe("ShareWatchPage", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
+    // Task 018: the playback surface sits on the colophon ground, matching
+    // the owner watch page; the shared-link chip brands the chrome.
+    expect(container.firstElementChild).toHaveClass("dark-editorial");
+    expect(screen.getByText("Shared link")).toBeInTheDocument();
+
     const video = await waitFor(() => {
       const el = container.querySelector("video");
       expect(el).not.toBeNull();

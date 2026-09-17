@@ -105,6 +105,24 @@ describe("SharePage", () => {
     expect(callsTo(fetchSpy, UNLOCK_URL)).toBe(0);
   });
 
+  it("brands the page as a shared link, distinct from the owner shell", async () => {
+    const { fetchSpy } = renderSharePage({
+      resolve: () =>
+        jsonResponse({ title: "Trip footage", locked: false }),
+      items: () => jsonResponse([]),
+    });
+
+    await screen.findByRole("heading", { name: "Trip footage" });
+    // FR-5.4: the "shared link" chip brands the surface; no owner sidebar.
+    expect(screen.getByText("Shared link")).toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    // Empty share renders the EmptyState.
+    expect(
+      await screen.findByText("Nothing in this share."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(callsTo(fetchSpy, ITEMS_URL)).toBe(1));
+  });
+
   it("unlocks and renders items in share order with share watch links", async () => {
     const { fetchSpy } = renderSharePage({
       resolve: () =>
