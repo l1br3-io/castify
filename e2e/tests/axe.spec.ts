@@ -31,4 +31,22 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await page.waitForLoadState("networkidle");
     await scanAxe(page, "shares");
   });
+
+  test("/login (task 006) — no serious or critical violations", async ({
+    page,
+  }) => {
+    // Fresh context per test → no session cookie → the bare login form.
+    await page.goto("/login");
+    await page.waitForLoadState("networkidle");
+    await scanAxe(page, "login");
+  });
+
+  test("404 not-found (task 006) — no serious or critical violations", async ({
+    page,
+  }) => {
+    await ensureAuthenticated(page);
+    await page.goto("/this-page-does-not-exist");
+    await page.waitForLoadState("networkidle");
+    await scanAxe(page, "not-found");
+  });
 });

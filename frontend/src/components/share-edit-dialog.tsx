@@ -285,7 +285,7 @@ export function ShareEditDialog({
               <button
                 type="submit"
                 disabled={selectedIds === null || save.isPending}
-                className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+                className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
               >
                 {save.isPending ? "Saving…" : "Save"}
               </button>

@@ -1,13 +1,17 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+
+import { EmptyState } from "../components/ui/empty-state";
 
 export function NotFoundPage() {
+  const navigate = useNavigate();
   return (
-    <section className="text-center space-y-4 py-16">
-      <h1 className="text-6xl font-bold">404</h1>
-      <p className="opacity-70">This page drifted off into the cloud.</p>
-      <Link to="/" className="inline-block underline">
-        Back to home
-      </Link>
+    <section className="mx-auto max-w-md py-16">
+      <EmptyState
+        title="404"
+        body="This page doesn't exist. The link may be old or mistyped."
+        actionLabel="Go to library"
+        onAction={() => navigate("/")}
+      />
     </section>
   );
 }

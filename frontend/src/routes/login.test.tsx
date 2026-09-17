@@ -10,7 +10,7 @@ import {
 } from "../test/utils";
 
 describe("LoginPage", () => {
-  it("shows 'Wrong password.' on a 401", async () => {
+  it("shows 'Wrong password.' with the reset path on a 401", async () => {
     renderWithProviders(
       <Routes>
         <Route path="/login" element={<LoginPage />} />
@@ -33,8 +33,113 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("Wrong password.")).toBeInTheDocument();
+      expect(
+        screen.getByText("Wrong password. Try again, or reset it below."),
+      ).toBeInTheDocument();
     });
+  });
+
+  it("announces the error assertively and wires it to the input", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/login"],
+        fetchImplementation: (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+          if (url === "/api/session" && method === "POST")
+            return jsonError(401, "invalid credentials");
+          return jsonError(404, `unmocked ${method} ${url}`);
+        },
+      },
+    );
+
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Wrong password.");
+    const input = screen.getByLabelText("Password");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    const describedBy = input.getAttribute("aria-describedby") ?? "";
+    expect(describedBy.split(/\s+/)).toContain(alert.id);
+  });
+
+  it("names the network as the problem when the fetch itself fails", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/login"],
+        fetchImplementation: () => {
+          throw new TypeError("Failed to fetch");
+        },
+      },
+    );
+
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Can't reach the server. Check your connection and try again.",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("names the server as the problem on an unexpected ApiError", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/login"],
+        fetchImplementation: (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+          if (url === "/api/session" && method === "POST")
+            return jsonError(503, "unavailable");
+          return jsonError(404, `unmocked ${method} ${url}`);
+        },
+      },
+    );
+
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "The server couldn't complete the sign-in. Try again in a moment.",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("surfaces the password length rule as helper text", () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>,
+      { initialEntries: ["/login"] },
+    );
+
+    const input = screen.getByLabelText("Password");
+    const describedBy = input.getAttribute("aria-describedby") ?? "";
+    expect(describedBy.split(/\s+/)).toContain(
+      screen.getByText("At least 8 characters.").id,
+    );
   });
 
   it("shows the CLI lockout hint", () => {

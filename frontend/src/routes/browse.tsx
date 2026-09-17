@@ -322,7 +322,7 @@ export function BrowsePage() {
                 if (selectedIds.length > 0) setShareOpen(true);
               }}
               disabled={selectedIds.length === 0}
-              className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-1.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+              className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-1.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
             >
               Share {selectedIds.length}{" "}
               {selectedIds.length === 1 ? "item" : "items"}

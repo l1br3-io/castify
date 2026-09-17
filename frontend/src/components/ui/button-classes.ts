@@ -16,7 +16,7 @@ export const BUTTON_SIZES = {
 
 export const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    "bg-[var(--color-castify-accent)] text-[var(--color-castify-canvas)] hover:brightness-110",
+    "bg-[var(--color-castify-accent)] text-[var(--color-on-accent)] hover:brightness-110",
   secondary:
     "border border-[var(--color-castify-rule)] text-[var(--color-castify-text)] hover:bg-[var(--color-castify-accent-subtle)]",
   ghost: "text-[var(--color-castify-muted)] hover:bg-[var(--color-castify-accent-subtle)] hover:text-[var(--color-castify-text)]",

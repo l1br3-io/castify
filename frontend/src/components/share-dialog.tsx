@@ -379,7 +379,7 @@ export function ShareDialog({
                   <button
                     type="submit"
                     disabled={pwError !== null || create.isPending}
-                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
                   >
                     {create.isPending ? "Creating…" : "Create share"}
                   </button>
@@ -497,7 +497,7 @@ export function ShareDialog({
                       freshIds.length === 0 ||
                       append.isPending
                     }
-                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
                   >
                     {append.isPending ? "Adding…" : "Add to share"}
                   </button>
@@ -529,7 +529,7 @@ function ModeToggleButton({
       onClick={onClick}
       className={`rounded-[calc(var(--radius-button)-2px)] px-3 py-1.5 text-sm font-medium transition ${
         active
-          ? "bg-[var(--color-castify-accent)] text-[var(--color-castify-canvas)]"
+          ? "bg-[var(--color-castify-accent)] text-[var(--color-on-accent)]"
           : "hover:bg-[var(--color-castify-accent-subtle)]"
       }`}
     >
@@ -604,7 +604,7 @@ function CreatedView({
         <button
           type="button"
           onClick={onDone}
-          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
         >
           Done
         </button>

@@ -411,7 +411,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
                   setError(null);
                   setFormOpen(true);
                 }}
-                className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+                className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
               >
                 Connect
               </button>
@@ -438,7 +438,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
             connect.mutate();
           }}
           disabled={connect.isPending}
-          className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+          className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
         >
           {connect.isPending ? "Connecting…" : "Connect"}
         </button>

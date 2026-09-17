@@ -1,10 +1,22 @@
-// Login page: password sign-in.
+// Login page: password sign-in (task 006 restyle).
 //
 // UX flow:
-//   Password form → `POST /api/session` → land at `/`. On 401 → "Wrong password."
+//   Password form → `POST /api/session` → land at `/`. On 401 → "Wrong
+//   password." with the reset path in the same breath.
+//
+// Error surface (spec FR-1.5): every message names the problem and the
+// next step — wrong password (401), unreachable server (network), or a
+// server-side failure (other ApiErrors). No generic "Something went
+// wrong."
 //
 // On success: fetch CSRF token for the new session, invalidate the
 // `['session']` query, navigate to `/`.
+//
+// A11y contract: Field wires label + hint (the 8-character rule that
+// gates the submit button) + error through aria-describedby; the error
+// is assertively announced (role=alert) and flags the input
+// aria-invalid. The submit button exposes its pending state via
+// aria-busy (Button primitive).
 
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -15,12 +27,23 @@ import { fetchCsrfToken } from "../api/client";
 import { loginPassword } from "../api/session";
 import { SESSION_QUERY_KEY } from "../hooks/use-session";
 import { useToast } from "../hooks/use-toast";
+import { Button } from "../components/ui/button";
+import { Field, Input } from "../components/ui/field";
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 256;
 
-const INPUT_CLASS =
-  "w-full rounded-md border border-white/10 bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:text-white/40 focus:border-[var(--color-castify-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]";
+/** FR-1.5: name the problem and the next step, per failure class. */
+function describeLoginError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 401) {
+      return "Wrong password. Try again, or reset it below.";
+    }
+    return "The server couldn't complete the sign-in. Try again in a moment.";
+  }
+  // Fetch-level failure (offline, DNS, refused connection).
+  return "Can't reach the server. Check your connection and try again.";
+}
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -48,11 +71,7 @@ export function LoginPage() {
       void landAtHome();
     },
     onError: (error: unknown) => {
-      if (error instanceof ApiError && error.status === 401) {
-        setPasswordError("Wrong password.");
-      } else {
-        setPasswordError("Something went wrong. Please try again.");
-      }
+      setPasswordError(describeLoginError(error));
     },
   });
 
@@ -60,12 +79,14 @@ export function LoginPage() {
     <section className="mx-auto max-w-sm space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Sign in</h1>
-        <p className="mt-1 text-sm opacity-70">Welcome back.</p>
+        <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
+          Welcome back.
+        </p>
       </div>
 
       {passwordChanged && (
         <div className="flex items-center justify-between gap-3 rounded-[var(--radius-button)] border border-[var(--color-castify-accent)]/40 bg-[var(--color-castify-accent-subtle)] px-4 py-2.5 text-sm">
-          <span>
+          <span role="status">
             Password changed — please sign in with your new password.
           </span>
           <button
@@ -74,7 +95,7 @@ export function LoginPage() {
               searchParams.delete("password_changed");
               setSearchParams(searchParams, { replace: true });
             }}
-            className="shrink-0 opacity-60 transition hover:opacity-100"
+            className="shrink-0 opacity-60 transition hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)] rounded-[var(--radius-button)]"
             aria-label="Dismiss"
           >
             ×
@@ -86,41 +107,39 @@ export function LoginPage() {
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
+          setPasswordError(null);
           if (passwordValid) {
             passwordMutation.mutate();
           }
         }}
       >
-        <div className="space-y-2">
-          <label htmlFor="login-password" className="text-sm font-medium">
-            Password
-          </label>
-          <input
-            id="login-password"
+        <Field
+          label="Password"
+          hint="At least 8 characters."
+          error={passwordError ?? undefined}
+        >
+          <Input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             minLength={PASSWORD_MIN}
             maxLength={PASSWORD_MAX}
             autoComplete="current-password"
-            className={INPUT_CLASS}
           />
-        </div>
-        <button
+        </Field>
+        <Button
           type="submit"
-          disabled={!passwordValid || passwordMutation.isPending}
-          className="w-full rounded-md bg-[var(--color-castify-accent)] px-4 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full"
+          disabled={!passwordValid}
+          pending={passwordMutation.isPending}
         >
           {passwordMutation.isPending ? "Signing in…" : "Sign in"}
-        </button>
-        {passwordError && (
-          <p className="text-sm text-red-400">{passwordError}</p>
-        )}
+        </Button>
       </form>
 
-      <p className="text-xs opacity-60">
+      <p className="text-xs text-[var(--color-castify-muted)]">
         Locked out? Reset your password from the server shell:{" "}
-        <code className="rounded bg-[var(--color-castify-muted)]/20 px-1.5 py-0.5 font-mono">
+        <code className="rounded bg-[var(--color-castify-muted)]/20 px-1.5 py-0.5 font-mono text-[var(--color-castify-text)]">
           castify reset-password
         </code>
       </p>

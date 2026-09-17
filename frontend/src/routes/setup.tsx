@@ -121,7 +121,7 @@ export function SetupPage() {
         <button
           type="submit"
           disabled={!nameValid || !passwordValid || passwordMutation.isPending}
-          className="w-full rounded-md bg-[var(--color-castify-accent)] px-4 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="w-full rounded-md bg-[var(--color-castify-accent)] px-4 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {passwordMutation.isPending ? "Creating account…" : "Create account"}
         </button>

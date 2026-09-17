@@ -121,7 +121,7 @@ export function WatchPage() {
         </p>
         <Link
           to="/"
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
         >
           Back to browse
         </Link>
@@ -222,7 +222,7 @@ function VideoPlayer({
 
   // Reauth-required short-circuit. Surfaced before rendering the `<video>`
   // so the user sees a single clear path forward (reconnect on the
-  // Connections page) rather than a confusing `invalid_grant` 502.
+  // Sources page) rather than a confusing `invalid_grant` 502.
   const reauthError = isReauthLikelyError(streamUrlQuery.error)
     ? streamUrlQuery.error
     : null;
@@ -444,7 +444,7 @@ function VideoPlayer({
                 <button
                   type="button"
                   onClick={autoAdvance.playNextNow}
-                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 >
                   Play next now
                 </button>
@@ -473,7 +473,7 @@ function VideoPlayer({
               <div className="mt-2 flex gap-2">
                 <Link
                   to="/"
-                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 >
                   Back to browse
                 </Link>
@@ -562,7 +562,7 @@ function UnsupportedFormat({ video }: { video: VideoDetailDto }) {
         </p>
         <a
           href={downloadUrl(video.id)}
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90"
+          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
           download
         >
           Download {video.name}
@@ -610,7 +610,7 @@ function StreamUrlError({
               queryKey: streamUrlQueryKey(video.id),
             })
           }
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
         >
           Try again
         </button>
@@ -627,7 +627,7 @@ function StreamUrlError({
 /**
  * Shown when `/stream-url` returns `401 code: "reauth_required"`. This is
  * terminal for the connection — playback can't recover until the user
- * re-grants access on the Connections page. We mirror the recovery path
+ * re-grants access on the Sources page. We mirror the recovery path
  * already documented in `docs/providers.md` and keep the message
  * actionable rather than surfacing the raw `invalid_grant` text.
  *
@@ -681,7 +681,7 @@ function ReconnectProvider({
             type="button"
             onClick={handleReconnect}
             disabled={isRedirecting}
-            className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+            className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
           >
             {isRedirecting ? "Redirecting…" : `Reconnect ${label}`}
           </button>
@@ -689,7 +689,7 @@ function ReconnectProvider({
             to="/connections"
             className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
           >
-            Go to Connections
+            Go to Sources
           </Link>
           <Link
             to="/"

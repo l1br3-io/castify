@@ -236,7 +236,7 @@ function PasswordGate({ title, token }: { title: string; token: string }) {
           <button
             type="submit"
             disabled={unlock.isPending}
-            className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)] disabled:opacity-50"
+            className="w-full rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-5 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)] disabled:opacity-50"
           >
             {unlock.isPending ? "Unlocking…" : "Unlock"}
           </button>

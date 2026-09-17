@@ -58,7 +58,7 @@ export function Field({ label, hint, error, children }: FieldProps) {
           <p
             id={errorId}
             className="text-xs text-[var(--color-danger)]"
-            aria-live="polite"
+            role="alert"
           >
             {error}
           </p>

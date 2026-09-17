@@ -30,6 +30,8 @@ describe("Field", () => {
     const errorText = screen.getByText("Password must be at least 8 characters.");
     expect(errorText.id).toBeTruthy();
     expect(describedBy).toContain(errorText.id);
+    // Assertive announcement: role=alert (task 006 a11y contract).
+    expect(errorText).toHaveAttribute("role", "alert");
   });
 
   it("links hint text through aria-describedby too", () => {

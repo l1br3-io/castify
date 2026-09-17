@@ -121,7 +121,7 @@ export function CredentialsForm({ provider, schema, onCancel }: Props) {
         <button
           type="submit"
           disabled={connect.isPending}
-          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-castify-canvas)] transition hover:opacity-90 disabled:opacity-50"
+          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
         >
           {connect.isPending ? "Verifying…" : "Connect"}
         </button>
