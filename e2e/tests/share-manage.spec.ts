@@ -75,11 +75,10 @@ async function recipientPage(browser: Browser): Promise<{
   return { context, page };
 }
 
-/** Owner's Shares-page row for this spec's share (scoped against leaks). */
+/** Owner's Shares-page row for this spec's share (scoped against leaks).
+ * Task 017: the list is a table — rows carry the title in the first cell. */
 function shareRow(owner: Page) {
-  return owner
-    .getByRole("listitem")
-    .filter({ has: owner.getByRole("heading", { name: SHARE_TITLE }) });
+  return owner.getByRole("row", { name: new RegExp(SHARE_TITLE) });
 }
 
 /** Open the card's kebab menu and click Remove from share. */
@@ -161,7 +160,10 @@ test.describe("Share manage page (docs/specs/share-manage-page task 006)", () =>
       await ensureAuthenticated(owner);
       await owner.goto("/shares");
       const row = shareRow(owner);
-      await expect(row).toContainText("3 items");
+      // Task 017 table: the item count is its own cell ("3"), no longer
+      // the old inline "3 items" run-on.
+      await expect(row).toContainText("Manage page");
+      await expect(row.getByText("3", { exact: true })).toBeVisible();
 
       await row.getByRole("link", { name: "Manage" }).click();
       await expect(owner).toHaveURL(
