@@ -20,7 +20,6 @@ import {
   scanAxe,
   seedAndScan,
 } from "./helpers";
-
 test.describe("A11y (axe) — redesigned screens", () => {
   test("home/library (/) — no serious or critical violations", async ({
     page,
@@ -111,5 +110,47 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await scanAxe(page, "watch");
 
     await disconnect(page, connId, csrf);
+  });
+
+  test("share dialog open state (task 016) — no serious or critical violations", async ({
+    page,
+  }) => {
+    // Open the share-creation dialog from browse's multi-select mode and
+    // scan the open-dialog state (focus trap + labelled panel).
+    await ensureAuthenticated(page);
+    const csrf = await getCsrfToken(page);
+    const connId = await seedAndScan(
+      page,
+      "google_drive",
+      "axe-share@example.com",
+      csrf,
+    );
+    try {
+      const { videos } = await getVideos(page);
+      expect(videos.length).toBeGreaterThan(0);
+
+      await page.goto("/");
+      await page.getByRole("button", { name: "Select" }).click();
+      await page
+        .getByRole("checkbox", { name: `Select ${videos[0].name}` })
+        .click();
+      await page.getByRole("button", { name: /share 1 item/i }).click();
+
+      await page
+        .getByRole("dialog", { name: /share/i })
+        .waitFor({ timeout: 10_000 });
+      // Scope to the dialog panel: the page behind the backdrop is the
+      // poster grid, whose badge/star treatments belong to the 019 sweep.
+      await scanAxe(page, "share-dialog", [], { include: '[role="dialog"]' });
+
+      // Dismiss via the dialog's own Cancel (the page behind also has one
+      // — select mode is still active).
+      await page
+        .getByRole("dialog", { name: /share/i })
+        .getByRole("button", { name: "Cancel" })
+        .click();
+    } finally {
+      await disconnect(page, connId, csrf);
+    }
   });
 });

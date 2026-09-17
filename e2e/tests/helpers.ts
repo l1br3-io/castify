@@ -33,11 +33,16 @@ export const PASSWORD = "e2e-test-password-123";
  * `disableRules` is the escape hatch for a rule that conflicts with a
  * deliberate, documented design decision; record the reason at the call
  * site. Unused by default.
+ *
+ * `options.include` scopes the scan to a CSS selector — e.g. an open
+ * modal's panel, when the page behind the backdrop is a different task's
+ * redesign surface. Unused by default.
  */
 export async function scanAxe(
   page: Page,
   name: string,
   disableRules: string[] = [],
+  options: { include?: string } = {},
 ): Promise<void> {
   let builder = new AxeBuilder({ page }).withTags([
     "wcag2a",
@@ -47,6 +52,7 @@ export async function scanAxe(
     "wcag22aa",
   ]);
   if (disableRules.length > 0) builder = builder.disableRules(disableRules);
+  if (options.include) builder = builder.include(options.include);
   const results = await builder.analyze();
   const blocking = results.violations.filter(
     (v) => v.impact === "serious" || v.impact === "critical",

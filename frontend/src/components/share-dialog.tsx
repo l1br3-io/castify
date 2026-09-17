@@ -56,12 +56,7 @@
 // dismissal is blocked in both modes (a share changed behind a closed
 // dialog leaves the user guessing whether it landed).
 
-import {
-  useEffect,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -83,6 +78,9 @@ import {
   useShareItemsOwned,
 } from "../hooks/use-share-items";
 import { CopyLinkButton } from "./copy-link-button";
+import { Button } from "./ui/button";
+import { Dialog } from "./ui/dialog";
+import { Field, Input } from "./ui/field";
 import { Skeleton } from "./ui/skeleton";
 
 /** Mirrors `MIN_PASSWORD_LEN` / `MAX_PASSWORD_LEN` (crates/api routes). */
@@ -218,20 +216,11 @@ export function ShareDialog({
     },
   });
 
-  // Escape closes only pre-creation: once the link is on screen it must
-  // be dismissed deliberately (Done), never by a stray keypress — and not
-  // mid-POST either, in either mode (same guard as the backdrop below; a
-  // share created or changed behind a closed dialog is recoverable only
-  // via Settings).
-  useEffect(() => {
-    if (created) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !create.isPending && !append.isPending)
-        onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [created, create.isPending, append.isPending, onClose]);
+  // Escape/backdrop dismissal now comes from the Dialog primitive
+  // (task 014): `closeable` is false once the link is on screen (dismissal
+  // must be an explicit "Done") and mid-POST in both modes — a share
+  // created or changed behind a closed dialog is recoverable only via
+  // Settings.
 
   function handleSubmit(e: FormEvent): void {
     e.preventDefault();
@@ -248,266 +237,228 @@ export function ShareDialog({
     append.mutate({ shareId: selectedShare.id, videoIds: freshIds });
   }
 
-  function handleBackdropClick(): void {
-    if (!created && !create.isPending && !append.isPending) onClose();
-  }
-
   return (
-    <div
-      role="presentation"
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+    <Dialog
+      open
+      onClose={onClose}
+      closeable={!created && !create.isPending && !append.isPending}
+      title={created ? "Share link created" : `Share ${itemLabel}`}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="share-dialog-title"
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-xl"
-      >
-        {created ? (
-          <CreatedView created={created} onDone={onClose} />
-        ) : (
-          <div className="space-y-4">
-            <h2
-              id="share-dialog-title"
-              className="text-lg font-semibold tracking-tight"
+      {created ? (
+        <CreatedView created={created} onDone={onClose} />
+      ) : (
+        <div className="space-y-4">
+          <div
+            role="group"
+            aria-label="Share mode"
+            className="grid grid-cols-2 gap-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] p-1"
+          >
+            <ModeToggleButton
+              active={mode === "new"}
+              onClick={() => setMode("new")}
             >
-              Share {itemLabel}
-            </h2>
-
-            <div
-              role="group"
-              aria-label="Share mode"
-              className="grid grid-cols-2 gap-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] p-1"
+              New share
+            </ModeToggleButton>
+            <ModeToggleButton
+              active={mode === "existing"}
+              onClick={() => setMode("existing")}
             >
-              <ModeToggleButton
-                active={mode === "new"}
-                onClick={() => setMode("new")}
-              >
-                New share
-              </ModeToggleButton>
-              <ModeToggleButton
-                active={mode === "existing"}
-                onClick={() => setMode("existing")}
-              >
-                Add to existing
-              </ModeToggleButton>
-            </div>
+              Add to existing
+            </ModeToggleButton>
+          </div>
 
-            {mode === "new" ? (
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <p className="text-sm opacity-60">
-                  Anyone with the link can watch{" "}
-                  {videoIds.length === 1
-                    ? "this video"
-                    : `these ${videoIds.length} videos`}
-                  {" "}without an account.
-                </p>
+          {mode === "new" ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <p className="text-sm text-[var(--color-castify-muted)]">
+                Anyone with the link can watch{" "}
+                {videoIds.length === 1
+                  ? "this video"
+                  : `these ${videoIds.length} videos`}{" "}
+                without an account.
+              </p>
 
-                <div className="space-y-1 text-sm">
-                  <label htmlFor="share-dialog-title-input" className="block opacity-70">
-                    Title (optional)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      id="share-dialog-title-input"
-                      value={title}
-                      maxLength={TITLE_MAX}
-                      onChange={(e) => setTitle(e.target.value)}
-                      className="min-w-0 flex-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-                    />
-                    {/* Reroll sits outside the label so its click targets the
-                        button, not the input's label-forwarding. */}
-                    <button
-                      type="button"
-                      aria-label="Reroll name"
-                      onClick={() => setTitle(generateShareName())}
-                      className="shrink-0 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]"
-                    >
-                      Reroll
-                    </button>
-                  </div>
-                </div>
-
-                <label className="block space-y-1 text-sm">
-                  <span className="opacity-70">Password (optional)</span>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    autoComplete="new-password"
-                    aria-invalid={pwError !== null || undefined}
-                    className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] aria-invalid:border-[var(--color-castify-accent-dim)]"
+              <Field label="Title (optional)">
+                <div className="flex gap-2">
+                  <Input
+                    value={title}
+                    maxLength={TITLE_MAX}
+                    onChange={(e) => setTitle(e.target.value)}
                   />
-                  {pwError !== null && (
-                    <p role="alert" className="text-xs text-[var(--color-castify-accent-dim)]">
-                      {pwError}
-                    </p>
-                  )}
-                </label>
-
-                <label className="block space-y-1 text-sm">
-                  <span className="opacity-70">Expires</span>
-                  <select
-                    value={expiry}
-                    onChange={(e) => setExpiry(e.target.value as ExpiryPreset)}
-                    className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-                  >
-                    {EXPIRY_PRESETS.map((preset) => (
-                      <option key={preset.value} value={preset.value}>
-                        {preset.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {create.isError && (
-                  <p role="alert" className="text-sm text-[var(--color-castify-accent-dim)]">
-                    {describeError(create.error)}
-                  </p>
-                )}
-
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={pwError !== null || create.isPending}
-                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
-                  >
-                    {create.isPending ? "Creating…" : "Create share"}
-                  </button>
+                  {/* Reroll sits outside the label so its click targets the
+                      button, not the input's label-forwarding. */}
+                  <Button type="button" variant="secondary" aria-label="Reroll name" onClick={() => setTitle(generateShareName())}>
+                    Reroll
+                  </Button>
                 </div>
-              </form>
-            ) : (
-              <div className="space-y-4">
-                <input
-                  type="search"
-                  aria-label="Search shares"
-                  placeholder="Search shares…"
-                  value={pickerSearch}
-                  onChange={(e) => setPickerSearch(e.target.value)}
-                  className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              </Field>
+
+              <Field
+                label="Password (optional)"
+                error={pwError ?? undefined}
+              >
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
                 />
+              </Field>
 
-                {shares.isPending && (
-                  <div className="space-y-2">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <Skeleton key={i} className="h-10 w-full" />
-                    ))}
-                  </div>
-                )}
-                {shares.isError && (
-                  <p role="alert" className="text-sm text-[var(--color-castify-accent-dim)]">
-                    Couldn&apos;t load your shares:{" "}
-                    {describeError(shares.error)}{" "}
-                    <button
-                      type="button"
-                      onClick={() => void shares.refetch()}
-                      className="underline"
-                    >
-                      Retry
-                    </button>
-                  </p>
-                )}
-                {shares.data !== undefined && matchingShares.length === 0 && (
-                  <p className="text-sm opacity-60">
-                    {activeShares.length === 0
-                      ? "No active shares yet — create a new one instead."
-                      : "No shares match."}
-                  </p>
-                )}
+              {/* Wrapping label — Field wires Input elements only, and the
+                  select needs the same labelling contract. */}
+              <label className="flex flex-col gap-1.5 text-sm">
+                <span className="text-xs font-medium text-[var(--color-castify-muted)]">
+                  Expires
+                </span>
+                <select
+                  value={expiry}
+                  onChange={(e) => setExpiry(e.target.value as ExpiryPreset)}
+                  className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-transparent px-3 py-2 text-sm text-[var(--color-castify-text)] transition focus:outline-none focus:ring-1 focus:border-[var(--color-castify-accent)] focus:ring-[var(--color-castify-accent)]"
+                >
+                  {EXPIRY_PRESETS.map((preset) => (
+                    <option key={preset.value} value={preset.value}>
+                      {preset.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-                <div className="max-h-56 space-y-1 overflow-y-auto">
-                  {matchingShares.map((share) => (
-                    <ShareOptionRow
-                      key={share.id}
-                      share={share}
-                      selected={share.id === pickerShareId}
-                      onSelect={() => setPickerShareId(share.id)}
-                    />
+              {create.isError && (
+                <p role="alert" className="text-sm text-[var(--color-danger)]">
+                  {describeError(create.error)}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <Button variant="secondary" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={pwError !== null}
+                  pending={create.isPending}
+                >
+                  {create.isPending ? "Creating…" : "Create share"}
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              <Input
+                type="search"
+                aria-label="Search shares"
+                placeholder="Search shares…"
+                value={pickerSearch}
+                onChange={(e) => setPickerSearch(e.target.value)}
+              />
+
+              {shares.isPending && (
+                <div className="space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-10 w-full" />
                   ))}
                 </div>
-
-                {/* Selection panel — appears once a share is picked. The
-                    Add button below stays disabled until the members
-                    check lands, so the fresh/already split is always
-                    server-truth. */}
-                {selectedShare !== null && (
-                  <div className="space-y-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2">
-                    <p
-                      className="truncate text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]"
-                      title={selectedShare.title}
-                    >
-                      {selectedShare.title}
-                    </p>
-                    {members.isPending && (
-                      <p className="text-xs opacity-60">Checking members…</p>
-                    )}
-                    {members.isError && (
-                      <p role="alert" className="text-xs text-[var(--color-castify-accent-dim)]">
-                        Couldn&apos;t check this share&apos;s items:{" "}
-                        {describeError(members.error)}{" "}
-                        <button
-                          type="button"
-                          onClick={() => void members.refetch()}
-                          className="underline"
-                        >
-                          Retry
-                        </button>
-                      </p>
-                    )}
-                    {members.data !== undefined && (
-                      <p role="status" className="text-xs opacity-70">
-                        {alreadyCount > 0
-                          ? `${alreadyCount} of ${videoIds.length} already in this share${alreadyCount === videoIds.length ? " — nothing new to add." : "."}`
-                          : `Not in this share yet — ${videoIds.length} ${videoIds.length === 1 ? "video" : "videos"} will be added.`}
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {append.isError && (
-                  <p role="alert" className="text-sm text-[var(--color-castify-accent-dim)]">
-                    {describeError(append.error)}
-                  </p>
-                )}
-
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    disabled={append.isPending}
-                    className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+              )}
+              {shares.isError && (
+                <p role="alert" className="text-sm text-[var(--color-danger)]">
+                  Couldn&apos;t load your shares:{" "}
+                  {describeError(shares.error)}{" "}
+                  <Button
+                    variant="ghost"
+                    onClick={() => void shares.refetch()}
                   >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAdd}
-                    disabled={
-                      selectedShare === null ||
-                      members.data === undefined ||
-                      freshIds.length === 0 ||
-                      append.isPending
-                    }
-                    className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
-                  >
-                    {append.isPending ? "Adding…" : "Add to share"}
-                  </button>
-                </div>
+                    Retry
+                  </Button>
+                </p>
+              )}
+              {shares.data !== undefined && matchingShares.length === 0 && (
+                <p className="text-sm text-[var(--color-castify-muted)]">
+                  {activeShares.length === 0
+                    ? "No active shares yet — create a new one instead."
+                    : "No shares match."}
+                </p>
+              )}
+
+              <div className="max-h-56 space-y-1 overflow-y-auto">
+                {matchingShares.map((share) => (
+                  <ShareOptionRow
+                    key={share.id}
+                    share={share}
+                    selected={share.id === pickerShareId}
+                    onSelect={() => setPickerShareId(share.id)}
+                  />
+                ))}
               </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
+
+              {/* Selection panel — appears once a share is picked. The
+                  Add button below stays disabled until the members
+                  check lands, so the fresh/already split is always
+                  server-truth. */}
+              {selectedShare !== null && (
+                <div className="space-y-1 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2">
+                  <p
+                    className="truncate text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]"
+                    title={selectedShare.title}
+                  >
+                    {selectedShare.title}
+                  </p>
+                  {members.isPending && (
+                    <p className="text-xs opacity-60">Checking members…</p>
+                  )}
+                  {members.isError && (
+                    <p role="alert" className="text-xs text-[var(--color-danger)]">
+                      Couldn&apos;t check this share&apos;s items:{" "}
+                      {describeError(members.error)}{" "}
+                      <button
+                        type="button"
+                        onClick={() => void members.refetch()}
+                        className="underline"
+                      >
+                        Retry
+                      </button>
+                    </p>
+                  )}
+                  {members.data !== undefined && (
+                    <p role="status" className="text-xs opacity-70">
+                      {alreadyCount > 0
+                        ? `${alreadyCount} of ${videoIds.length} already in this share${alreadyCount === videoIds.length ? " — nothing new to add." : "."}`
+                        : `Not in this share yet — ${videoIds.length} ${videoIds.length === 1 ? "video" : "videos"} will be added.`}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {append.isError && (
+                <p role="alert" className="text-sm text-[var(--color-danger)]">
+                  {describeError(append.error)}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  variant="secondary"
+                  onClick={onClose}
+                  disabled={append.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleAdd}
+                  disabled={
+                    selectedShare === null ||
+                    members.data === undefined ||
+                    freshIds.length === 0
+                  }
+                  pending={append.isPending}
+                >
+                  {append.isPending ? "Adding…" : "Add to share"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Dialog>
   );
 }
 
@@ -570,7 +521,8 @@ function ShareOptionRow({
   );
 }
 
-/** Post-creation view — the one-time link, copy, warning, Done. */
+/** Post-creation view — the one-time link, copy, warning, Done. The
+ * "Share link created" heading is the Dialog primitive's title. */
 function CreatedView({
   created,
   onDone,
@@ -581,14 +533,8 @@ function CreatedView({
   const absoluteUrl = absoluteShareUrl(created.share_url);
   return (
     <div className="space-y-4">
-      <h2
-        id="share-dialog-title"
-        className="text-lg font-semibold tracking-tight"
-      >
-        Share link created
-      </h2>
       <div className="space-y-2">
-        <p className="break-all rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 font-mono text-sm">
+        <p className="break-all rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 font-mono text-sm">
           {absoluteUrl}
         </p>
         <div>
@@ -601,13 +547,7 @@ function CreatedView({
         be recovered anywhere else.
       </p>
       <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={onDone}
-          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
-        >
-          Done
-        </button>
+        <Button onClick={onDone}>Done</Button>
       </div>
     </div>
   );

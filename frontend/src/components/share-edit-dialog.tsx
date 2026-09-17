@@ -38,6 +38,9 @@ import { describeError } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { useShareItemsOwned, shareItemsOwnedKey } from "../hooks/use-share-items";
 import { SHARES_QUERY_KEY } from "../hooks/use-shares";
+import { Button } from "./ui/button";
+import { Dialog } from "./ui/dialog";
+import { Input } from "./ui/field";
 import { Skeleton } from "./ui/skeleton";
 
 /** One generous page — a personal server's catalog fits; search narrows
@@ -103,15 +106,10 @@ export function ShareEditDialog({
     },
   });
 
-  // Escape dismisses only while idle — never mid-PUT (same rationale as
-  // the backdrop guard below).
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !save.isPending) onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [save.isPending, onClose]);
+  // Escape/backdrop dismissal now comes from the Dialog primitive
+  // (task 014); `closeable` guards mid-PUT dismissal, matching the
+  // creation dialog — a PUT fired behind a closed dialog leaves the user
+  // guessing whether it landed.
 
   function toggle(id: string): void {
     setSelectedIds((prev) => {
@@ -128,10 +126,6 @@ export function ShareEditDialog({
     save.mutate();
   }
 
-  function handleBackdropClick(): void {
-    if (!save.isPending) onClose();
-  }
-
   const checked = new Set(selectedIds ?? []);
   const memberIds = new Set((members.data ?? []).map((v) => v.id));
   const catalogRows = (catalog.data?.videos ?? []).filter(
@@ -140,160 +134,146 @@ export function ShareEditDialog({
   const selectionCount = selectedIds?.length ?? 0;
 
   return (
-    <div
-      role="presentation"
-      onClick={handleBackdropClick}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+    <Dialog
+      open
+      onClose={onClose}
+      closeable={!save.isPending}
+      title="Edit share items"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="share-edit-dialog-title"
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[90vh] w-full max-w-md flex-col rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-xl"
+      <form
+        onSubmit={handleSubmit}
+        className="flex min-h-0 flex-1 flex-col gap-4"
       >
-        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
-          <div>
-            <h2
-              id="share-edit-dialog-title"
-              className="text-lg font-semibold tracking-tight"
-            >
-              Edit share items
-            </h2>
-            <p className="mt-0.5 truncate text-sm opacity-60" title={share.title}>
-              {share.title}
-            </p>
-          </div>
+        <p className="-mt-2 truncate text-sm text-[var(--color-castify-muted)]" title={share.title}>
+          {share.title}
+        </p>
 
-          <input
-            type="search"
-            aria-label="Search videos"
-            placeholder="Search videos…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-          />
+        <Input
+          type="search"
+          aria-label="Search videos"
+          placeholder="Search videos…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
 
-          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
-            {/* Current members — always in the server's curation order. */}
-            <fieldset className="space-y-1">
-              <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]">
-                In this share
-              </legend>
-              {members.isPending && (
-                <div className="space-y-2 pt-1">
-                  {Array.from({ length: 2 }).map((_, i) => (
-                    <Skeleton key={i} className="h-8 w-full" />
-                  ))}
-                </div>
-              )}
-              {members.isError && (
-                <p
-                  role="alert"
-                  className="text-sm text-[var(--color-castify-accent-dim)]"
-                >
-                  Couldn&apos;t load this share&apos;s items:{" "}
-                  {describeError(members.error)}{" "}
-                  <button
-                    type="button"
-                    onClick={() => void members.refetch()}
-                    className="underline"
-                  >
-                    Retry
-                  </button>
-                </p>
-              )}
-              {members.data?.map((v) => (
-                <PickerRow
-                  key={v.id}
-                  name={v.name}
-                  checked={checked.has(v.id)}
-                  onToggle={() => toggle(v.id)}
-                  // Add-only picker: members are locked in — removal is
-                  // the manage page's job, not this dialog's.
-                  disabled
-                />
-              ))}
-            </fieldset>
-
-            {/* Catalog — search results minus the members above. */}
-            <fieldset className="space-y-1">
-              <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]">
-                Library
-              </legend>
-              {catalog.isPending && (
-                <div className="space-y-2 pt-1">
-                  {Array.from({ length: 2 }).map((_, i) => (
-                    <Skeleton key={i} className="h-8 w-full" />
-                  ))}
-                </div>
-              )}
-              {catalog.isError && (
-                <p
-                  role="alert"
-                  className="text-sm text-[var(--color-castify-accent-dim)]"
-                >
-                  Couldn&apos;t load the library: {describeError(catalog.error)}{" "}
-                  <button
-                    type="button"
-                    onClick={() => void catalog.refetch()}
-                    className="underline"
-                  >
-                    Retry
-                  </button>
-                </p>
-              )}
-              {catalog.data && catalogRows.length === 0 && (
-                <p className="px-2 py-1.5 text-sm opacity-60">
-                  No other videos match.
-                </p>
-              )}
-              {catalogRows.map((v) => (
-                <PickerRow
-                  key={v.id}
-                  name={v.name}
-                  checked={checked.has(v.id)}
-                  onToggle={() => toggle(v.id)}
-                />
-              ))}
-            </fieldset>
-          </div>
-
-          {save.isError && (
-            <p
-              role="alert"
-              className="text-sm text-[var(--color-castify-accent-dim)]"
-            >
-              {describeError(save.error)}
-            </p>
-          )}
-
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <p aria-live="polite" className="text-xs opacity-60">
-              {selectionCount} {selectionCount === 1 ? "item" : "items"}{" "}
-              selected
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                disabled={save.isPending}
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto pr-1">
+          {/* Current members — always in the server's curation order. */}
+          <fieldset className="space-y-1">
+            <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]">
+              In this share
+            </legend>
+            {members.isPending && (
+              <div className="space-y-2 pt-1">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-8 w-full" />
+                ))}
+              </div>
+            )}
+            {members.isError && (
+              <p
+                role="alert"
+                className="text-sm text-[var(--color-danger)]"
               >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={selectedIds === null || save.isPending}
-                className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
+                Couldn&apos;t load this share&apos;s items:{" "}
+                {describeError(members.error)}{" "}
+                <button
+                  type="button"
+                  onClick={() => void members.refetch()}
+                  className="underline"
+                >
+                  Retry
+                </button>
+              </p>
+            )}
+            {members.data?.map((v) => (
+              <PickerRow
+                key={v.id}
+                name={v.name}
+                checked={checked.has(v.id)}
+                onToggle={() => toggle(v.id)}
+                // Add-only picker: members are locked in — removal is
+                // the manage page's job, not this dialog's.
+                disabled
+              />
+            ))}
+          </fieldset>
+
+          {/* Catalog — search results minus the members above. */}
+          <fieldset className="space-y-1">
+            <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-castify-muted)]">
+              Library
+            </legend>
+            {catalog.isPending && (
+              <div className="space-y-2 pt-1">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-8 w-full" />
+                ))}
+              </div>
+            )}
+            {catalog.isError && (
+              <p
+                role="alert"
+                className="text-sm text-[var(--color-danger)]"
               >
-                {save.isPending ? "Saving…" : "Save"}
-              </button>
-            </div>
+                Couldn&apos;t load the library: {describeError(catalog.error)}{" "}
+                <button
+                  type="button"
+                  onClick={() => void catalog.refetch()}
+                  className="underline"
+                >
+                  Retry
+                </button>
+              </p>
+            )}
+            {catalog.data && catalogRows.length === 0 && (
+              <p className="px-2 py-1.5 text-sm text-[var(--color-castify-muted)]">
+                No other videos match.
+              </p>
+            )}
+            {catalogRows.map((v) => (
+              <PickerRow
+                key={v.id}
+                name={v.name}
+                checked={checked.has(v.id)}
+                onToggle={() => toggle(v.id)}
+              />
+            ))}
+          </fieldset>
+        </div>
+
+        {save.isError && (
+          <p
+            role="alert"
+            className="text-sm text-[var(--color-danger)]"
+          >
+            {describeError(save.error)}
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <p aria-live="polite" className="text-xs opacity-60">
+            {selectionCount} {selectionCount === 1 ? "item" : "items"}{" "}
+            selected
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={onClose}
+              disabled={save.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={selectedIds === null}
+              pending={save.isPending}
+            >
+              {save.isPending ? "Saving…" : "Save"}
+            </Button>
           </div>
-        </form>
-      </div>
-    </div>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
