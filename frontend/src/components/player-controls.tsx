@@ -10,7 +10,7 @@
 // speed + global keyboard shortcuts; T10 adds resume seek + progress tracking;
 // T11 adds queue skip controls.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   FullscreenEnterIcon,
@@ -23,6 +23,8 @@ import {
   VolumeHighIcon,
   VolumeMuteIcon,
 } from "./icons";
+import { Button } from "./ui/button";
+import { Dialog } from "./ui/dialog";
 import { formatTime } from "../lib/format";
 import { isAssFormat, isImageFamily, subtitleLabel } from "../lib/subtitles";
 import {
@@ -298,6 +300,9 @@ export function PlayerControls({
   }, [containerRef]);
 
   // --- Auto-hide: reveal on activity, hide after AUTO_HIDE_MS while playing ---
+  // `revealRef` exposes the reveal routine (visible + fresh hide timer) so
+  // the tap-to-toggle handler below reuses the exact same path as mousemove.
+  const revealRef = useRef<() => void>(() => {});
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -309,6 +314,7 @@ export function PlayerControls({
         if (isPlayingRef.current) setControlsVisible(false);
       }, AUTO_HIDE_MS);
     };
+    revealRef.current = reveal;
     const onMouseMove = () => reveal();
     const onKeyDown = () => reveal();
     container.addEventListener("mousemove", onMouseMove);
@@ -386,6 +392,128 @@ export function PlayerControls({
   useEffect(() => {
     if (settingsOpen) setControlsVisible(true);
   }, [settingsOpen]);
+
+  // Opening the menu moves focus to its first enabled item (APG menu-button
+  // pattern). jsdom renders synchronously; the portal menu is present after
+  // this state commit, so query it fresh here.
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    settingsMenuRef.current
+      ?.querySelector<HTMLElement>('[role="menuitemradio"]:not(:disabled)')
+      ?.focus();
+  }, [settingsOpen]);
+
+  // Arrow/Home/End navigation across the grouped radio items; Escape closes
+  // and restores focus to the gear (APG menu contract, task 014).
+  function handleMenuNav(e: React.KeyboardEvent<HTMLDivElement>) {
+    const menu = settingsMenuRef.current;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setSettingsOpen(false);
+      settingsTriggerRef.current?.focus();
+      return;
+    }
+    if (e.key === "Tab") {
+      setSettingsOpen(false);
+      return;
+    }
+    if (
+      e.key !== "ArrowDown" &&
+      e.key !== "ArrowUp" &&
+      e.key !== "Home" &&
+      e.key !== "End"
+    ) {
+      return;
+    }
+    e.preventDefault();
+    const items = Array.from(
+      menu?.querySelectorAll<HTMLElement>(
+        '[role="menuitemradio"]:not(:disabled)',
+      ) ?? [],
+    );
+    if (items.length === 0) return;
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    let next: number;
+    if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = items.length - 1;
+    else if (e.key === "ArrowDown") next = (current + 1) % items.length;
+    else next = current <= 0 ? items.length - 1 : current - 1;
+    items[next].focus();
+  }
+
+  // --- Polite announcements (FR-4.8) ---
+  // A single aria-live=polite region announces media state changes. Each
+  // source skips its mount-time value (no announcement on page load).
+  const [announcement, setAnnouncement] = useState("");
+
+  const prevPlaying = useRef(isPlaying);
+  useEffect(() => {
+    if (prevPlaying.current !== isPlaying) {
+      prevPlaying.current = isPlaying;
+      setAnnouncement(isPlaying ? "Playing" : "Paused");
+    }
+  }, [isPlaying]);
+
+  const prevMuted = useRef(muted);
+  useEffect(() => {
+    if (prevMuted.current !== muted) {
+      prevMuted.current = muted;
+      setAnnouncement(muted ? "Muted" : "Unmuted");
+    }
+  }, [muted]);
+
+  const prevSubtitle = useRef(activeSubtitle);
+  useEffect(() => {
+    if (prevSubtitle.current !== activeSubtitle) {
+      prevSubtitle.current = activeSubtitle;
+      setAnnouncement(
+        activeSubtitle >= 0
+          ? `Subtitles on: ${subtitleLabel(subtitleTracks[activeSubtitle])}`
+          : "Subtitles off",
+      );
+    }
+  }, [activeSubtitle, subtitleTracks]);
+
+  const prevQuality = useRef<number | null>(qualitySelection);
+  useEffect(() => {
+    if (prevQuality.current !== qualitySelection) {
+      prevQuality.current = qualitySelection;
+      setAnnouncement(
+        qualitySelection === null
+          ? "Quality set to auto"
+          : `Quality set to ${levels?.[qualitySelection]?.height ?? "?"}p`,
+      );
+    }
+  }, [qualitySelection, levels]);
+
+  // --- Tap-to-toggle-controls (FR-4.7) ---
+  // DECISION (recorded per task 014): a tap on the video surface toggles the
+  // controls and does NOT play/pause. The same surface serves scrubbing and
+  // setting adjustments; an accidental pause is harder to undo on a touch
+  // screen than a hidden control layer is to bring back. Keyboard and
+  // pointer users keep the explicit Play/Pause button and Space/K.
+  const controlsVisibleRef = useRef(controlsVisible);
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+  }, [controlsVisible]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onPointerUp = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, [role='menu'], [role='dialog']"))
+        return;
+      if (controlsVisibleRef.current) {
+        setControlsVisible(false);
+      } else {
+        revealRef.current();
+      }
+    };
+    container.addEventListener("pointerup", onPointerUp);
+    return () => container.removeEventListener("pointerup", onPointerUp);
+  }, [containerRef]);
 
   // --- Handlers ---
   //
@@ -505,34 +633,41 @@ export function PlayerControls({
   // burn callback is wired), image tracks are disabled in the menu.
   const burnEnabled = isTranscode && !!onConfirmBurnSubtitle;
 
-  function applySubtitleSelection(index: number) {
-    setActiveSubtitle(index);
-    // Grouped settings: keep the menu open so the user can adjust several
-    // settings in one sitting (closed via gear / Escape / outside click).
-    // Notify the watch page so an ASS selection routes to the libass canvas
-    // overlay (and Off / a non-ASS track tears it down).
-    onActiveSubtitleChangeRef.current?.(index);
-    // Persist per-video subtitle selection (null for "Off"). Image-family
-    // tracks are NOT persisted — burn-in is per-session only (FR-5.4) and
-    // shouldn't restore on reload (there's no guarantee the transcode cache
-    // entry is still warm).
-    const track = index >= 0 ? subtitleTracks[index] : null;
-    if (!track || !isImageFamily(track)) {
-      void saveSubtitlePref(videoId, track?.id ?? null);
-    }
-  }
+  const applySubtitleSelection = useCallback(
+    (index: number) => {
+      setActiveSubtitle(index);
+      // Grouped settings: keep the menu open so the user can adjust several
+      // settings in one sitting (closed via gear / Escape / outside click).
+      // Notify the watch page so an ASS selection routes to the libass canvas
+      // overlay (and Off / a non-ASS track tears it down).
+      onActiveSubtitleChangeRef.current?.(index);
+      // Persist per-video subtitle selection (null for "Off"). Image-family
+      // tracks are NOT persisted — burn-in is per-session only (FR-5.4) and
+      // shouldn't restore on reload (there's no guarantee the transcode cache
+      // entry is still warm).
+      const track = index >= 0 ? subtitleTracks[index] : null;
+      if (!track || !isImageFamily(track)) {
+        void saveSubtitlePref(videoId, track?.id ?? null);
+      }
+    },
+    [subtitleTracks, videoId],
+  );
 
-  function selectSubtitle(index: number) {
-    const track = index >= 0 ? subtitleTracks[index] : null;
-    // Image-family tracks during transcode require burn confirmation (FR-5.2).
-    // Intercept the click and show the dialog instead of selecting immediately.
-    if (track && isImageFamily(track) && burnEnabled) {
-      setPendingBurnIndex(index);
-      setSettingsOpen(false);
-      return;
-    }
-    applySubtitleSelection(index);
-  }
+  const selectSubtitle = useCallback(
+    (index: number) => {
+      const track = index >= 0 ? subtitleTracks[index] : null;
+      // Image-family tracks during transcode require burn confirmation
+      // (FR-5.2). Intercept the click and show the dialog instead of
+      // selecting immediately.
+      if (track && isImageFamily(track) && burnEnabled) {
+        setPendingBurnIndex(index);
+        setSettingsOpen(false);
+        return;
+      }
+      applySubtitleSelection(index);
+    },
+    [subtitleTracks, burnEnabled, applySubtitleSelection],
+  );
 
   function confirmBurn() {
     if (pendingBurnIndex === null) return;
@@ -561,10 +696,21 @@ export function PlayerControls({
     onLevelChangeRef.current?.(level);
   }
 
+  // Task 014 (FR-4.6): the C shortcut cycles subtitles Off → first track →
+  // next → … → Off. Routed through selectSubtitle so image-family tracks
+  // still hit the burn confirmation and the IndexedDB pref stays in sync.
+  const cycleSubtitle = useCallback(() => {
+    const next =
+      activeSubtitle + 1 >= subtitleTracks.length ? -1 : activeSubtitle + 1;
+    selectSubtitle(next);
+  }, [activeSubtitle, subtitleTracks, selectSubtitle]);
+
   // --- Global keyboard shortcuts (T9) ---
-  // Subscribed once on mount; reads refs / live DOM state so it never goes
-  // stale without re-subscribing. Suppressed inside form fields and while a
-  // modifier key is held (same pattern as the M2 `/` search shortcut).
+  // Re-subscribes whenever `cycleSubtitle`'s closure changes (the C shortcut
+  // routes through selectSubtitle, which closes over the track list) — a
+  // single cheap listener swap. Other shortcuts read refs / live DOM state.
+  // Suppressed inside form fields and while a modifier key is held (same
+  // pattern as the M2 `/` search shortcut).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -591,6 +737,8 @@ export function PlayerControls({
       switch (e.key) {
         case " ":
         case "Spacebar": // legacy IE key
+        case "k":
+        case "K":
           // Let a focused <button> activate natively (avoids double-toggle and
           // preserves screen-reader expectations for button activation).
           if (el && el.tagName === "BUTTON") return;
@@ -658,6 +806,11 @@ export function PlayerControls({
           e.preventDefault();
           video.muted = !video.muted;
           break;
+        case "c":
+        case "C":
+          e.preventDefault();
+          cycleSubtitle();
+          break;
         case "?":
           e.preventDefault();
           setShowShortcuts((v) => !v);
@@ -669,7 +822,7 @@ export function PlayerControls({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [videoRef, containerRef]);
+  }, [videoRef, containerRef, cycleSubtitle]);
 
   // --- Derived ---
   const playRatio = duration > 0 ? Math.min(1, currentTime / duration) : 0;
@@ -677,6 +830,13 @@ export function PlayerControls({
 
   return (
     <>
+      {/* Polite announcements (FR-4.8): playing/paused, muted, quality,
+          subtitles. aria-live only — no role, so "status" queries that
+          target the buffering spinner stay unambiguous. */}
+      <div aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
+
       {/* Buffering spinner — centered, shown on `waiting`, hidden on `playing`.
           Rendered outside the control bar so it stays visible when controls
           auto-hide. */}
@@ -705,7 +865,13 @@ export function PlayerControls({
           aria-valuemin={0}
           aria-valuemax={duration > 0 ? Math.floor(duration) : 0}
           aria-valuenow={Math.floor(currentTime)}
-          aria-valuetext={formatTime(currentTime)}
+          aria-valuetext={
+            duration > 0
+              ? `${formatTime(currentTime)} elapsed, ${formatTime(
+                  Math.max(0, duration - currentTime),
+                )} remaining`
+              : formatTime(currentTime)
+          }
           onPointerDown={onScrubberPointerDown}
           onPointerMove={onScrubberPointerMove}
           onPointerUp={onScrubberPointerUp}
@@ -794,6 +960,7 @@ export function PlayerControls({
               value={muted ? 0 : volume}
               onChange={onVolumeInput}
               aria-label="Volume"
+              aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
               className="h-1 w-20 cursor-pointer accent-[var(--color-castify-accent)]"
             />
           </div>
@@ -831,10 +998,18 @@ export function PlayerControls({
             <div ref={settingsMenuRef} className="relative">
               <button
                 type="button"
+                ref={settingsTriggerRef}
                 onClick={() => setSettingsOpen((v) => !v)}
                 aria-label="Settings"
                 aria-haspopup="menu"
                 aria-expanded={settingsOpen}
+                onKeyDown={(e) => {
+                  // APG menu-button: ArrowDown opens + focuses first item.
+                  if (e.key === "ArrowDown" && !settingsOpen) {
+                    e.preventDefault();
+                    setSettingsOpen(true);
+                  }
+                }}
                 className={`rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
                   settingsOpen ? "bg-white/15" : ""
                 }`}
@@ -845,12 +1020,7 @@ export function PlayerControls({
                 <div
                   role="menu"
                   aria-label="Settings"
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setSettingsOpen(false);
-                    }
-                  }}
+                  onKeyDown={handleMenuNav}
                   className="absolute bottom-full right-0 mb-2 max-h-[70vh] w-56 overflow-y-auto rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm text-white shadow-xl"
                 >
                   {levels && levels.length > 0 && onLevelChange && (
@@ -939,82 +1109,53 @@ export function PlayerControls({
         </div>
       </div>
 
-      {/* Keyboard shortcuts help overlay (T9). Toggled by `?`, closed by
-          `?` / Escape / ✕ / backdrop click. The keydown handler suspends
-          other shortcuts while this is open. */}
-      {showShortcuts && (
-        <div
-          role="dialog"
-          aria-label="Keyboard shortcuts"
-          onClick={() => setShowShortcuts(false)}
-          className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-white shadow-xl"
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-white/70">
-                Keyboard shortcuts
-              </h2>
-              <button
-                type="button"
-                onClick={() => setShowShortcuts(false)}
-                aria-label="Close shortcuts"
-                className="rounded p-1 text-white/60 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-              >
-                ✕
-              </button>
-            </div>
-            <dl className="grid grid-cols-[auto_1fr] items-center gap-x-5 gap-y-2 text-sm">
-              <ShortcutsRow keys={["Space"]} desc="Play / Pause" />
-              <ShortcutsRow keys={["←", "→"]} desc="Seek -10s / +10s" />
-              <ShortcutsRow keys={["J", "L"]} desc="Seek -10s / +10s" />
-              <ShortcutsRow keys={["↑", "↓"]} desc="Volume up / down" />
-              <ShortcutsRow keys={["F"]} desc="Fullscreen" />
-              <ShortcutsRow keys={["M"]} desc="Mute" />
-              <ShortcutsRow keys={["?"]} desc="Show / hide this help" />
-            </dl>
-          </div>
-        </div>
-      )}
+      {/* Keyboard shortcuts help overlay (T9, task 014: Dialog consumer —
+          focus trap, Escape, labelled). Toggled by `?`, closed by `?` /
+          Escape / backdrop click. The keydown handler suspends other
+          shortcuts while this is open. */}
+      <Dialog
+        open={showShortcuts}
+        onClose={() => setShowShortcuts(false)}
+        title="Keyboard shortcuts"
+      >
+        <dl className="grid grid-cols-[auto_1fr] items-center gap-x-5 gap-y-2 text-sm">
+          <ShortcutsRow keys={["Space"]} desc="Play / Pause" />
+          <ShortcutsRow keys={["K"]} desc="Play / Pause" />
+          <ShortcutsRow keys={["←", "→"]} desc="Seek -10s / +10s" />
+          <ShortcutsRow keys={["J", "L"]} desc="Seek -10s / +10s" />
+          <ShortcutsRow keys={["↑", "↓"]} desc="Volume up / down" />
+          <ShortcutsRow keys={["F"]} desc="Fullscreen" />
+          <ShortcutsRow keys={["M"]} desc="Mute" />
+          <ShortcutsRow keys={["C"]} desc="Cycle subtitles" />
+          <ShortcutsRow keys={["?"]} desc="Show / hide this help" />
+        </dl>
+      </Dialog>
 
-      {/* M8 Task 010: Burn-in confirmation dialog (FR-5.2 / FR-5.3).
-          Shown when the user selects an image-family subtitle track during
-          transcode playback. Confirming re-requests the transcode with
-          `?burn_subtitles={trackId}`; cancelling leaves playback unchanged. */}
-      {pendingBurnIndex !== null && (
-        <div
-          role="dialog"
-          aria-label="Burn subtitles confirmation"
-          className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-        >
-          <div className="w-full max-w-sm rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-white shadow-xl">
-            <p className="text-sm text-white/80">
-              Subtitles will be burned into the video. Playback may restart.
-            </p>
-            <p className="mt-3 text-sm font-semibold">
-              Restart playback with burned subtitles?
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={cancelBurn}
-                className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={confirmBurn}
-                className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-              >
-                Yes
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* M8 Task 010: Burn-in confirmation dialog (FR-5.2 / FR-5.3), on the
+          Dialog primitive since task 014. Shown when the user selects an
+          image-family subtitle track during transcode playback. Confirming
+          re-requests the transcode with `?burn_subtitles={trackId}`;
+          cancelling leaves playback unchanged. */}
+      <Dialog
+        open={pendingBurnIndex !== null}
+        onClose={cancelBurn}
+        title="Burn subtitles"
+        footer={
+          <>
+            <Button variant="secondary" onClick={cancelBurn}>
+              Cancel
+            </Button>
+            <Button onClick={confirmBurn}>Yes</Button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-castify-muted)]">
+          Subtitles will be burned into the video. Playback may restart.
+        </p>
+        <p className="text-sm font-semibold">
+          Restart playback with burned subtitles?
+        </p>
+      </Dialog>
     </>
   );
 }

@@ -589,6 +589,171 @@ describe("PlayerControls", () => {
     });
   });
 
+  describe("player a11y + keyboard completion (task 014)", () => {
+    it("K toggles play and pause like Space", () => {
+      const playSpy = vi
+        .spyOn(HTMLMediaElement.prototype, "play")
+        .mockResolvedValue(undefined);
+      const pauseSpy = vi
+        .spyOn(HTMLMediaElement.prototype, "pause")
+        .mockImplementation(() => {});
+      render(<Harness />);
+      const video = screen.getByTestId("video");
+
+      fireEvent.keyDown(window, { key: "k" });
+      expect(playSpy).toHaveBeenCalledTimes(1);
+
+      setProp(video, "paused", false);
+      fireEvent(video, new Event("play"));
+
+      fireEvent.keyDown(window, { key: "K" });
+      expect(pauseSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("C cycles subtitles Off → first track → Off and announces", () => {
+      const TRACKS: SubtitleTrackDto[] = [
+        { id: "s1", language: "en", filename: "a.en.vtt", format: "vtt", format_family: "text", embedded_track_id: null },
+      ];
+      render(<Harness subtitleTracks={TRACKS} />);
+
+      fireEvent.keyDown(window, { key: "c" });
+      expect(screen.getByText("Subtitles on: en (VTT)")).toBeInTheDocument();
+
+      // The menu reflects the cycled state when opened.
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(
+        screen.getByRole("menuitemradio", { name: "en (VTT)" }),
+      ).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+      fireEvent.keyDown(window, { key: "c" });
+      expect(screen.getByText("Subtitles off")).toBeInTheDocument();
+    });
+
+    it("the shortcuts overlay lists the K and C rows", () => {
+      render(<Harness />);
+      fireEvent.keyDown(window, { key: "?" });
+      // Both the Space and K rows read "Play / Pause".
+      expect(screen.getAllByText("Play / Pause")).toHaveLength(2);
+      const keys = screen.getAllByRole("term").map((el) => el.textContent);
+      expect(keys).toContain("K");
+      expect(keys).toContain("C");
+    });
+
+    it("the settings menu supports arrow/Home/End navigation and Escape restores focus", () => {
+      render(<Harness />);
+      const gear = screen.getByRole("button", { name: "Settings" });
+      gear.focus();
+      fireEvent.keyDown(gear, { key: "ArrowDown" });
+      // Opening with ArrowDown moves focus to the first enabled item.
+      const firstItem = screen.getByRole("menuitemradio", { name: "0.5×" });
+      expect(firstItem).toHaveFocus();
+
+      fireEvent.keyDown(firstItem, { key: "ArrowDown" });
+      expect(screen.getByRole("menuitemradio", { name: "0.75×" })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement!, { key: "End" });
+      expect(screen.getByRole("menuitemradio", { name: "2×" })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement!, { key: "Home" });
+      expect(screen.getByRole("menuitemradio", { name: "0.5×" })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+      expect(screen.getByRole("menuitemradio", { name: "2×" })).toHaveFocus();
+
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(gear).toHaveFocus();
+    });
+
+    it("announces play/pause and mute changes via a polite live region", () => {
+      vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      render(<Harness />);
+      const video = screen.getByTestId("video");
+
+      fireEvent.click(screen.getByRole("button", { name: "Play" }));
+      fireEvent(video, new Event("play"));
+      expect(screen.getByText("Playing")).toBeInTheDocument();
+
+      fireEvent(video, new Event("pause"));
+      expect(screen.getByText("Paused")).toBeInTheDocument();
+
+      setProp(video, "muted", true);
+      fireEvent(video, new Event("volumechange"));
+      expect(screen.getByText("Muted")).toBeInTheDocument();
+    });
+
+    it("announces quality changes", () => {
+      render(
+        <Harness
+          levels={[
+            { height: 1080, bitrate: 5_000_000, attrs: {} },
+            { height: 720, bitrate: 2_500_000, attrs: {} },
+          ]}
+          currentLevel={-1}
+          onLevelChange={() => {}}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "720p" }));
+      expect(screen.getByText("Quality set to 720p")).toBeInTheDocument();
+    });
+
+    it("tapping the video area toggles the controls (tap-to-toggle, no tap-to-pause)", () => {
+      vi.useFakeTimers();
+      try {
+        render(<Harness />);
+        const container = screen.getByTestId("container");
+        const video = screen.getByTestId("video");
+
+        // Simulate playback inactivity hiding the controls.
+        act(() => {
+          fireEvent(video, new Event("play"));
+        });
+        act(() => {
+          vi.advanceTimersByTime(3000);
+        });
+        expect(container.style.cursor).toBe("none");
+
+        // A tap on the video surface (not a control) reveals them.
+        act(() => {
+          fireEvent.pointerUp(video);
+        });
+        expect(container.style.cursor).toBe("");
+
+        // Tapping again hides them immediately (toggle).
+        act(() => {
+          fireEvent.pointerUp(video);
+        });
+        expect(container.style.cursor).toBe("none");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("the scrubber's valuetext includes elapsed and remaining", () => {
+      render(<Harness />);
+      const video = screen.getByTestId("video");
+      act(() => {
+        setProp(video, "duration", 120);
+        fireEvent(video, new Event("durationchange"));
+        setProp(video, "currentTime", 30);
+        fireEvent(video, new Event("timeupdate"));
+      });
+      const scrubber = screen.getByRole("slider", { name: "Seek" });
+      expect(scrubber).toHaveAttribute(
+        "aria-valuetext",
+        "0:30 elapsed, 1:30 remaining",
+      );
+    });
+
+    it("the volume slider exposes a percent valuetext", () => {
+      render(<Harness />);
+      const volume = screen.getByRole("slider", { name: "Volume" });
+      expect(volume).toHaveAttribute("aria-valuetext", "100%");
+    });
+  });
+
   describe("keyboard shortcuts", () => {
     it("space toggles play and pause", () => {
       const playSpy = vi
@@ -757,17 +922,12 @@ describe("PlayerControls", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
-    it("the close button and backdrop click dismiss the overlay", () => {
+    it("backdrop click dismisses the overlay", () => {
       render(<Harness />);
       fireEvent.keyDown(document.body, { key: "?" });
-      fireEvent.click(screen.getByRole("button", { name: "Close shortcuts" }));
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-
-      fireEvent.keyDown(document.body, { key: "?" });
-      // The dialog element is the backdrop.
-      fireEvent.click(
-        screen.getByRole("dialog", { name: "Keyboard shortcuts" }),
-      );
+      // Dialog primitive: the backdrop (role=presentation wrapper) closes;
+      // clicks inside the panel do not.
+      fireEvent.click(screen.getByRole("presentation"));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
