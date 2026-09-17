@@ -15,11 +15,11 @@ import { useEffect, useRef, useState } from "react";
 import {
   FullscreenEnterIcon,
   FullscreenExitIcon,
+  GearIcon,
   NextIcon,
   PauseIcon,
   PlayIcon,
   PrevIcon,
-  SubtitlesIcon,
   VolumeHighIcon,
   VolumeMuteIcon,
 } from "./icons";
@@ -122,14 +122,24 @@ export function PlayerControls({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [activeSubtitle, setActiveSubtitle] = useState(-1);
-  const [subtitlesOpen, setSubtitlesOpen] = useState(false);
   // M8 Task 010: when non-null, the burn-in confirmation dialog is open
   // for the image-family track at this index. The user must confirm before
   // the selection applies and the parent re-requests the transcode.
   const [pendingBurnIndex, setPendingBurnIndex] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState(1);
-  const [speedOpen, setSpeedOpen] = useState(false);
-  const [qualityOpen, setQualityOpen] = useState(false);
+  // Task 013: one grouped Settings menu replaces the three popovers
+  // (quality / speed / subtitles). Radio selections keep the menu open so
+  // several settings can be adjusted in one sitting; Escape, the gear, or
+  // a click outside close it.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // True while ABR (Auto) is the user's quality selection. `currentLevel`
+  // reports the *actually playing* rung even in Auto (hls.js LEVEL_SWITCHED
+  // fires either way), so the user's Auto-vs-manual choice is local UI
+  // state here — the FR-4.3 "Auto (current: 1080p)" labeling needs both
+  // facts. `null` = Auto; a number = the manually picked rung index.
+  const [qualitySelection, setQualitySelection] = useState<number | null>(
+    null,
+  );
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   // `isPlaying` is also kept in a ref so the auto-hide timer (created once on
@@ -161,6 +171,12 @@ export function PlayerControls({
   const onConfirmBurnSubtitleRef = useRef(onConfirmBurnSubtitle);
   useEffect(() => {
     onConfirmBurnSubtitleRef.current = onConfirmBurnSubtitle;
+  });
+
+  // Task 013: same pattern for the quality selection callback.
+  const onLevelChangeRef = useRef(onLevelChange);
+  useEffect(() => {
+    onLevelChangeRef.current = onLevelChange;
   });
 
   // --- Sync media state from the <video> element via event listeners ---
@@ -349,39 +365,27 @@ export function PlayerControls({
     }
   }, [activeSubtitle, videoRef, subtitleTracks]);
 
-  // --- Popover click-outside (subtitles + speed + quality menus share one listener) ---
-  const subtitleMenuRef = useRef<HTMLDivElement>(null);
-  const speedMenuRef = useRef<HTMLDivElement>(null);
-  const qualityMenuRef = useRef<HTMLDivElement>(null);
+  // --- Settings menu click-outside ---
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!subtitlesOpen && !speedOpen && !qualityOpen) return;
+    if (!settingsOpen) return;
     const onDocDown = (e: MouseEvent) => {
-      const target = e.target as Node;
       if (
-        subtitlesOpen &&
-        subtitleMenuRef.current &&
-        !subtitleMenuRef.current.contains(target)
+        settingsMenuRef.current &&
+        !settingsMenuRef.current.contains(e.target as Node)
       ) {
-        setSubtitlesOpen(false);
-      }
-      if (
-        speedOpen &&
-        speedMenuRef.current &&
-        !speedMenuRef.current.contains(target)
-      ) {
-        setSpeedOpen(false);
-      }
-      if (
-        qualityOpen &&
-        qualityMenuRef.current &&
-        !qualityMenuRef.current.contains(target)
-      ) {
-        setQualityOpen(false);
+        setSettingsOpen(false);
       }
     };
     document.addEventListener("mousedown", onDocDown);
     return () => document.removeEventListener("mousedown", onDocDown);
-  }, [subtitlesOpen, speedOpen, qualityOpen]);
+  }, [settingsOpen]);
+
+  // Controls stay visible while the settings menu is open (same rationale
+  // as the shortcuts overlay below).
+  useEffect(() => {
+    if (settingsOpen) setControlsVisible(true);
+  }, [settingsOpen]);
 
   // --- Handlers ---
   //
@@ -503,7 +507,8 @@ export function PlayerControls({
 
   function applySubtitleSelection(index: number) {
     setActiveSubtitle(index);
-    setSubtitlesOpen(false);
+    // Grouped settings: keep the menu open so the user can adjust several
+    // settings in one sitting (closed via gear / Escape / outside click).
     // Notify the watch page so an ASS selection routes to the libass canvas
     // overlay (and Off / a non-ASS track tears it down).
     onActiveSubtitleChangeRef.current?.(index);
@@ -523,7 +528,7 @@ export function PlayerControls({
     // Intercept the click and show the dialog instead of selecting immediately.
     if (track && isImageFamily(track) && burnEnabled) {
       setPendingBurnIndex(index);
-      setSubtitlesOpen(false);
+      setSettingsOpen(false);
       return;
     }
     applySubtitleSelection(index);
@@ -549,7 +554,11 @@ export function PlayerControls({
     const video = videoRef.current;
     if (video) video.playbackRate = rate;
     setPlaybackRate(rate);
-    setSpeedOpen(false);
+  }
+
+  function selectQuality(level: number) {
+    setQualitySelection(level < 0 ? null : level);
+    onLevelChangeRef.current?.(level);
   }
 
   // --- Global keyboard shortcuts (T9) ---
@@ -722,15 +731,16 @@ export function PlayerControls({
           />
         </div>
 
-        {/* Buttons row */}
-        <div className="flex items-center gap-2 text-white">
+        {/* Buttons row — primary transport larger (≥28px target), support
+            controls ≥24px. */}
+        <div className="flex items-center gap-1.5 text-white">
           {onPrev && (
             <button
               type="button"
               onClick={onPrev}
               disabled={!hasPrev}
               aria-label="Previous video"
-              className="rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
             >
               <PrevIcon className="h-5 w-5" />
             </button>
@@ -741,12 +751,12 @@ export function PlayerControls({
             onClick={togglePlay}
             aria-label={isPlaying ? "Pause" : "Play"}
             aria-pressed={isPlaying}
-            className="rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+            className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
           >
             {isPlaying ? (
-              <PauseIcon className="h-6 w-6" />
+              <PauseIcon className="h-7 w-7" />
             ) : (
-              <PlayIcon className="h-6 w-6" />
+              <PlayIcon className="h-7 w-7" />
             )}
           </button>
 
@@ -756,7 +766,7 @@ export function PlayerControls({
               onClick={onNext}
               disabled={!hasNext}
               aria-label="Next video"
-              className="rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
             >
               <NextIcon className="h-5 w-5" />
             </button>
@@ -768,7 +778,7 @@ export function PlayerControls({
               onClick={toggleMute}
               aria-label={muted || volume === 0 ? "Unmute" : "Mute"}
               aria-pressed={muted}
-              className="rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
             >
               {muted || volume === 0 ? (
                 <VolumeMuteIcon className="h-5 w-5" />
@@ -788,13 +798,19 @@ export function PlayerControls({
             />
           </div>
 
+          {/* Elapsed / remaining (−m:ss), per FR-4.2. */}
           <span className="ml-1 text-xs tabular-nums text-white/90">
-            {formatTime(currentTime)} / {formatTime(duration)}
+            {formatTime(currentTime)} /{" "}
+            {duration > 0
+              ? `−${formatTime(Math.max(0, duration - currentTime))}`
+              : formatTime(0)}
           </span>
 
+          {/* Quiet quality badge — passive indicator; adjustments live in
+              the Settings menu. */}
           {levels && levels.length > 0 && (
             <span
-              className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-wide text-white/90"
+              className="ml-1 px-1 text-[0.65rem] uppercase tracking-wide text-white/50"
               aria-label={`Current quality ${
                 (currentLevel ?? -1) < 0
                   ? "Auto"
@@ -807,130 +823,111 @@ export function PlayerControls({
             </span>
           )}
 
-          <div className="ml-auto flex items-center gap-2">
-            {levels && levels.length > 0 && onLevelChange && (
-              <div ref={qualityMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setQualityOpen((v) => !v)}
-                  aria-label="Quality"
-                  aria-haspopup="menu"
-                  aria-expanded={qualityOpen}
-                  className={`min-w-[2.25rem] rounded px-1.5 py-1.5 text-xs font-semibold uppercase tracking-wide transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
-                    (currentLevel ?? -1) >= 0
-                      ? "text-[var(--color-castify-accent)]"
-                      : ""
-                  }`}
-                >
-                  {(currentLevel ?? -1) < 0
-                    ? "Auto"
-                    : `${levels[currentLevel ?? 0]?.height ?? "?"}p`}
-                </button>
-                {qualityOpen && (
-                  <ul
-                    role="menu"
-                    className="absolute bottom-full right-0 mb-2 min-w-32 overflow-hidden rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm shadow-lg"
-                  >
-                    <QualityMenuItem
-                      label="Auto"
-                      selected={(currentLevel ?? -1) < 0}
-                      onSelect={() => {
-                        onLevelChange(-1);
-                        setQualityOpen(false);
-                      }}
-                    />
-                    {levels.map((l, i) => (
-                      <QualityMenuItem
-                        key={`${l.height}-${i}`}
-                        label={l.height > 0 ? `${l.height}p` : "Unknown"}
-                        selected={currentLevel === i}
-                        onSelect={() => {
-                          onLevelChange(i);
-                          setQualityOpen(false);
-                        }}
-                      />
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            <div ref={speedMenuRef} className="relative">
+          <div className="ml-auto flex items-center gap-1">
+            {/* Task 013: the single Settings menu (FR-4.3) — grouped
+                Quality / Speed / Subtitles sections with the stream mode in
+                a quiet footer. Radio selections keep it open; Escape, the
+                gear, or an outside click close it. */}
+            <div ref={settingsMenuRef} className="relative">
               <button
                 type="button"
-                onClick={() => setSpeedOpen((v) => !v)}
-                aria-label={`Playback speed ${playbackRate}×`}
+                onClick={() => setSettingsOpen((v) => !v)}
+                aria-label="Settings"
                 aria-haspopup="menu"
-                aria-expanded={speedOpen}
-                className={`min-w-[2.25rem] rounded px-1.5 py-1.5 text-xs font-semibold tabular-nums transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
-                  playbackRate !== 1 ? "text-[var(--color-castify-accent)]" : ""
+                aria-expanded={settingsOpen}
+                className={`rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                  settingsOpen ? "bg-white/15" : ""
                 }`}
               >
-                {playbackRate}×
+                <GearIcon className="h-5 w-5" />
               </button>
-              {speedOpen && (
-                <ul
+              {settingsOpen && (
+                <div
                   role="menu"
-                  className="absolute bottom-full right-0 mb-2 min-w-32 overflow-hidden rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm shadow-lg"
+                  aria-label="Settings"
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setSettingsOpen(false);
+                    }
+                  }}
+                  className="absolute bottom-full right-0 mb-2 max-h-[70vh] w-56 overflow-y-auto rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm text-white shadow-xl"
                 >
-                  {PLAYBACK_RATES.map((rate) => (
-                    <SpeedMenuItem
-                      key={rate}
-                      rate={rate}
-                      selected={playbackRate === rate}
-                      onSelect={() => selectSpeed(rate)}
-                    />
-                  ))}
-                </ul>
-              )}
-            </div>
+                  {levels && levels.length > 0 && onLevelChange && (
+                    <div role="none" className="border-b border-white/10 pb-1">
+                      <p className="px-3 pb-1 pt-2 text-[0.65rem] font-semibold uppercase tracking-wide text-white/50">
+                        Quality
+                      </p>
+                      <SettingsMenuItem
+                        label={
+                          (currentLevel ?? -1) >= 0
+                            ? `Auto (current: ${levels[currentLevel ?? 0]?.height ?? "?"}p)`
+                            : "Auto"
+                        }
+                        selected={qualitySelection === null}
+                        onSelect={() => selectQuality(-1)}
+                      />
+                      {levels.map((l, i) => (
+                        <SettingsMenuItem
+                          key={`${l.height}-${i}`}
+                          label={l.height > 0 ? `${l.height}p` : "Unknown"}
+                          selected={qualitySelection === i}
+                          onSelect={() => selectQuality(i)}
+                        />
+                      ))}
+                    </div>
+                  )}
 
-            {subtitleTracks.length > 0 && (
-              <div ref={subtitleMenuRef} className="relative">
-                <button
-                  type="button"
-                  onClick={() => setSubtitlesOpen((v) => !v)}
-                  aria-label="Subtitles"
-                  aria-haspopup="menu"
-                  aria-expanded={subtitlesOpen}
-                  className={`rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
-                    activeSubtitle >= 0
-                      ? "text-[var(--color-castify-accent)]"
-                      : ""
-                  }`}
-                >
-                  <SubtitlesIcon className="h-5 w-5" />
-                </button>
-                {subtitlesOpen && (
-                  <ul
-                    role="menu"
-                    className="absolute bottom-full right-0 mb-2 min-w-40 overflow-hidden rounded-md border border-white/10 bg-[var(--color-castify-surface)] py-1 text-sm shadow-lg"
-                  >
-                    <SubtitleMenuItem
-                      label="Off"
-                      selected={activeSubtitle === -1}
-                      onSelect={() => selectSubtitle(-1)}
-                    />
-                    {subtitleTracks.map((track, i) => (
-                      <SubtitleMenuItem
-                        key={track.id}
-                        label={subtitleLabel(track)}
-                        selected={activeSubtitle === i}
-                        disabled={isImageFamily(track) && !burnEnabled}
-                        onSelect={() => selectSubtitle(i)}
+                  <div role="none" className="border-b border-white/10 pb-1">
+                    <p className="px-3 pb-1 pt-2 text-[0.65rem] font-semibold uppercase tracking-wide text-white/50">
+                      Speed
+                    </p>
+                    {PLAYBACK_RATES.map((rate) => (
+                      <SettingsMenuItem
+                        key={rate}
+                        label={`${rate}×`}
+                        selected={playbackRate === rate}
+                        onSelect={() => selectSpeed(rate)}
                       />
                     ))}
-                  </ul>
-                )}
-              </div>
-            )}
+                  </div>
+
+                  {subtitleTracks.length > 0 && (
+                    <div role="none">
+                      <p className="px-3 pb-1 pt-2 text-[0.65rem] font-semibold uppercase tracking-wide text-white/50">
+                        Subtitles
+                      </p>
+                      <SettingsMenuItem
+                        label="Off"
+                        selected={activeSubtitle === -1}
+                        onSelect={() => selectSubtitle(-1)}
+                      />
+                      {subtitleTracks.map((track, i) => (
+                        <SettingsMenuItem
+                          key={track.id}
+                          label={subtitleLabel(track)}
+                          selected={activeSubtitle === i}
+                          disabled={isImageFamily(track) && !burnEnabled}
+                          onSelect={() => selectSubtitle(i)}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Stream mode lives here — quietly — not on the bar. */}
+                  <p className="border-t border-white/10 px-3 py-1.5 text-[0.65rem] uppercase tracking-wide text-white/40">
+                    {isTranscode ? "Transcoded" : "Direct stream"}
+                  </p>
+                </div>
+              )}
+            </div>
 
             <button
               type="button"
               onClick={toggleFullscreen}
               aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
               aria-pressed={isFullscreen}
-              className="rounded p-1.5 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
             >
               {isFullscreen ? (
                 <FullscreenExitIcon className="h-5 w-5" />
@@ -1022,7 +1019,9 @@ export function PlayerControls({
   );
 }
 
-function SubtitleMenuItem({
+/** One radio row inside the grouped Settings menu. Selecting keeps the
+ * menu open (grouped settings pattern) — Escape / gear / outside close. */
+function SettingsMenuItem({
   label,
   selected,
   disabled = false,
@@ -1034,7 +1033,7 @@ function SubtitleMenuItem({
   onSelect: () => void;
 }) {
   return (
-    <li role="none">
+    <div role="none">
       <button
         type="button"
         role="menuitemradio"
@@ -1042,64 +1041,12 @@ function SubtitleMenuItem({
         disabled={disabled}
         onClick={onSelect}
         className={`block w-full px-3 py-1.5 text-left transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
-          selected ? "text-[var(--color-castify-accent)]" : "text-white"
+          selected ? "text-[var(--color-castify-accent-dim)]" : "text-white"
         }`}
       >
         {label}
       </button>
-    </li>
-  );
-}
-
-function SpeedMenuItem({
-  rate,
-  selected,
-  onSelect,
-}: {
-  rate: number;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <li role="none">
-      <button
-        type="button"
-        role="menuitemradio"
-        aria-checked={selected}
-        onClick={onSelect}
-        className={`block w-full px-3 py-1.5 text-left tabular-nums transition hover:bg-white/10 ${
-          selected ? "text-[var(--color-castify-accent)]" : "text-white"
-        }`}
-      >
-        {rate}×
-      </button>
-    </li>
-  );
-}
-
-function QualityMenuItem({
-  label,
-  selected,
-  onSelect,
-}: {
-  label: string;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <li role="none">
-      <button
-        type="button"
-        role="menuitemradio"
-        aria-checked={selected}
-        onClick={onSelect}
-        className={`block w-full px-3 py-1.5 text-left uppercase tracking-wide transition hover:bg-white/10 ${
-          selected ? "text-[var(--color-castify-accent)]" : "text-white"
-        }`}
-      >
-        {label}
-      </button>
-    </li>
+    </div>
   );
 }
 

@@ -1398,7 +1398,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
 
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
@@ -1420,12 +1420,11 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
     await screen.findByRole("heading", { name: "cat.mp4" });
 
     // Select the ASS track first.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
 
-    // Then switch to Off.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    // Then switch to Off (grouped settings menu stays open).
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
 
     await waitFor(() => expect(libassMock.destroy).toHaveBeenCalledTimes(1));
@@ -1441,7 +1440,7 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "en (SRT)" }));
 
     // SRT renders via the native <track> mechanism — libass is never loaded.
@@ -1461,12 +1460,11 @@ describe("WatchPage — ASS rendering via libass (M8 Task 004)", () => {
     const srcBefore = video.getAttribute("src");
 
     // Toggle ASS on.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "ja (ASS)" }));
     await waitFor(() => expect(libassMock.ctor).toHaveBeenCalledTimes(1));
 
-    // Toggle ASS off.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    // Toggle ASS off (menu stays open — grouped settings).
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
     await waitFor(() => expect(libassMock.destroy).toHaveBeenCalledTimes(1));
 
@@ -1534,7 +1532,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     );
 
     // Select the PGS track → burn confirmation dialog appears.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
     expect(
       screen.getByRole("dialog", { name: /burn/i }),
@@ -1560,7 +1558,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
         "/api/videos/v1/transcode/master.m3u8",
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
     fireEvent.click(screen.getByRole("button", { name: "Yes" }));
     await waitFor(() =>
@@ -1570,7 +1568,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     );
 
     // Selecting Off clears the burn param — the master URL reverts.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
 
     // The last loadSource call should be the base URL (re-attaching to the
@@ -1595,7 +1593,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     const initialCallCount = hlsMock.loadSource.mock.calls.length;
 
     // Open the burn dialog then cancel.
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -1623,7 +1621,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     });
 
     await screen.findByRole("heading", { name: "cat.mp4" });
-    fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     expect(
       screen.getByRole("menuitemradio", { name: /PGS/ }),
     ).toBeDisabled();

@@ -24,6 +24,9 @@ function Harness({
   hasNext = false,
   isTranscode = false,
   onConfirmBurnSubtitle,
+  levels,
+  currentLevel,
+  onLevelChange,
 }: {
   subtitleTracks?: SubtitleTrackDto[];
   onPrev?: () => void;
@@ -32,6 +35,9 @@ function Harness({
   hasNext?: boolean;
   isTranscode?: boolean;
   onConfirmBurnSubtitle?: (trackId: string) => void;
+  levels?: { height: number; bitrate: number; attrs: object }[];
+  currentLevel?: number | null;
+  onLevelChange?: (level: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -62,6 +68,9 @@ function Harness({
         hasNext={hasNext}
         isTranscode={isTranscode}
         onConfirmBurnSubtitle={onConfirmBurnSubtitle}
+        levels={levels}
+        currentLevel={currentLevel}
+        onLevelChange={onLevelChange}
       />
     </div>
   );
@@ -252,23 +261,22 @@ describe("PlayerControls", () => {
     });
   });
 
-  describe("subtitles", () => {
+  describe("subtitles (via the Settings menu)", () => {
     const TRACKS: SubtitleTrackDto[] = [
       { id: "s1", language: "en", filename: "a.en.vtt", format: "vtt", format_family: "text", embedded_track_id: null },
       { id: "s2", language: "es", filename: "a.es.srt", format: "srt", format_family: "text", embedded_track_id: null },
     ];
 
-    it("hides the subtitles button when there are no tracks", () => {
+    it("omits the Subtitles section when there are no tracks", () => {
       render(<Harness />);
-      expect(
-        screen.queryByRole("button", { name: "Subtitles" }),
-      ).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(screen.queryByText("Subtitles")).not.toBeInTheDocument();
     });
 
     it("lists Off + languages, and selecting one marks it checked", () => {
       render(<Harness subtitleTracks={TRACKS} />);
 
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       // Default selection is "Off" (activeSubtitle = -1).
       expect(
         screen.getByRole("menuitemradio", { name: "Off" }),
@@ -283,11 +291,9 @@ describe("PlayerControls", () => {
       );
 
       fireEvent.click(screen.getByRole("menuitemradio", { name: "en (VTT)" }));
-      // Selecting closes the menu.
-      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-
-      // Re-open and verify selection persisted.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      // Grouped settings: radio selection keeps the menu open for further
+      // adjustments (quality + speed + subtitles in one sitting).
+      expect(screen.getByRole("menu")).toBeInTheDocument();
       expect(screen.getByRole("menuitemradio", { name: "en (VTT)" })).toHaveAttribute(
         "aria-checked",
         "true",
@@ -303,16 +309,14 @@ describe("PlayerControls", () => {
 
     it("'Off' clears the active selection", () => {
       render(<Harness subtitleTracks={TRACKS} />);
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: "es (SRT)" }));
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
       expect(screen.getByRole("menuitemradio", { name: "es (SRT)" })).toHaveAttribute(
         "aria-checked",
         "true",
       );
 
       fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
       expect(
         screen.getByRole("menuitemradio", { name: "Off" }),
       ).toHaveAttribute("aria-checked", "true");
@@ -320,7 +324,7 @@ describe("PlayerControls", () => {
 
     it("clicking outside the menu closes it", () => {
       render(<Harness subtitleTracks={TRACKS} />);
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       expect(screen.getByRole("menu")).toBeInTheDocument();
 
       // A mousedown outside the menu (on the body) closes it.
@@ -347,7 +351,7 @@ describe("PlayerControls", () => {
       const video = screen.getByTestId("video");
       const tracks = stubTextTracks(video, TRACKS.length);
 
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: "en (VTT)" }));
 
       expect(tracks[0].mode).toBe("showing");
@@ -360,12 +364,11 @@ describe("PlayerControls", () => {
       const tracks = stubTextTracks(video, TRACKS.length);
 
       // Select a language first.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: "es (SRT)" }));
       expect(tracks[1].mode).toBe("showing");
 
-      // Re-open and switch to Off.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      // Then switch to Off (menu stays open — grouped settings).
       fireEvent.click(screen.getByRole("menuitemradio", { name: "Off" }));
 
       expect(tracks[0].mode).toBe("hidden");
@@ -430,17 +433,12 @@ describe("PlayerControls", () => {
     });
   });
 
-  describe("playback speed", () => {
-    it("renders the default rate (1×) and lists all six rates with the current checked", () => {
+  describe("playback speed (via the Settings menu)", () => {
+    it("lists all six rates with the current checked", () => {
       render(<Harness />);
       // Default playbackRate is 1 (jsdom + seeded state).
-      expect(
-        screen.getByRole("button", { name: "Playback speed 1×" }),
-      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Playback speed 1×" }),
-      );
       expect(screen.getByRole("menuitemradio", { name: "1×" })).toHaveAttribute(
         "aria-checked",
         "true",
@@ -452,44 +450,142 @@ describe("PlayerControls", () => {
         "aria-checked",
         "false",
       );
-      // Six rates present.
+      // Six rates present (no tracks/levels in the default harness).
       expect(screen.getAllByRole("menuitemradio")).toHaveLength(6);
     });
 
-    it("selecting a rate sets video.playbackRate, updates the label, and closes the menu", () => {
+    it("selecting a rate sets video.playbackRate and keeps the menu open", () => {
       render(<Harness />);
       const video = screen.getByTestId("video");
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Playback speed 1×" }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: "1.5×" }));
 
       expect((video as HTMLVideoElement).playbackRate).toBe(1.5);
-      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Playback speed 1.5×" }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      expect(screen.getByRole("menuitemradio", { name: "1.5×" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
     });
 
-    it("clicking outside the speed menu closes it", () => {
+    it("clicking outside the menu closes it", () => {
       render(<Harness />);
-      fireEvent.click(
-        screen.getByRole("button", { name: "Playback speed 1×" }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       expect(screen.getByRole("menu")).toBeInTheDocument();
       fireEvent.mouseDown(document.body);
       expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     });
 
-    it("syncs the label when the video fires ratechange", () => {
+    it("syncs the checked rate when the video fires ratechange", () => {
       render(<Harness />);
       const video = screen.getByTestId("video");
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       setProp(video, "playbackRate", 2);
       fireEvent(video, new Event("ratechange"));
+      expect(screen.getByRole("menuitemradio", { name: "2×" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+    });
+  });
+
+  describe("settings menu — grouped quality/speed/subtitles (task 013)", () => {
+    const LEVELS = [
+      { height: 1080, bitrate: 5_000_000, attrs: {} },
+      { height: 720, bitrate: 2_500_000, attrs: {} },
+    ];
+
+    it("opens one grouped menu from the gear with Quality and Speed sections", () => {
+      render(
+        <Harness levels={LEVELS} currentLevel={-1} onLevelChange={() => {}} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      expect(screen.getByText("Quality")).toBeInTheDocument();
+      expect(screen.getByText("Speed")).toBeInTheDocument();
+      // No tracks → no Subtitles section.
+      expect(screen.queryByText("Subtitles")).not.toBeInTheDocument();
+    });
+
+    it("presents ABR as Auto with the current resolution shown, rungs intact", () => {
+      const onLevelChange = vi.fn();
+      render(
+        <Harness
+          levels={LEVELS}
+          currentLevel={0}
+          onLevelChange={onLevelChange}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+      // currentLevel 0 = the 1080p rung actually playing, while the user is
+      // still in Auto (default) — FR-4.3's "Auto (current: 1080p)".
       expect(
-        screen.getByRole("button", { name: "Playback speed 2×" }),
-      ).toBeInTheDocument();
+        screen.getByRole("menuitemradio", { name: "Auto (current: 1080p)" }),
+      ).toHaveAttribute("aria-checked", "true");
+      expect(screen.getByRole("menuitemradio", { name: "1080p" })).toHaveAttribute(
+        "aria-checked",
+        "false",
+      );
+
+      // Picking a manual rung checks it and calls through unchanged.
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "720p" }));
+      expect(onLevelChange).toHaveBeenCalledWith(1);
+      expect(screen.getByRole("menuitemradio", { name: "720p" })).toHaveAttribute(
+        "aria-checked",
+        "true",
+      );
+
+      // Back to Auto.
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "Auto (current: 1080p)" }));
+      expect(onLevelChange).toHaveBeenCalledWith(-1);
+    });
+
+    it("shows the stream mode quietly in the menu footer, not on the bar", () => {
+      const { unmount } = render(
+        <Harness levels={LEVELS} currentLevel={-1} onLevelChange={() => {}} />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(screen.getByText("Direct stream")).toBeInTheDocument();
+      unmount();
+
+      render(
+        <Harness
+          levels={LEVELS}
+          currentLevel={-1}
+          onLevelChange={() => {}}
+          isTranscode
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(screen.getByText("Transcoded")).toBeInTheDocument();
+      // Closing the menu takes the mode label with it — the main bar stays
+      // free of stream-mode chrome.
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      expect(screen.queryByText("Transcoded")).not.toBeInTheDocument();
+    });
+
+    it("Escape closes the settings menu", () => {
+      render(<Harness />);
+      const gear = screen.getByRole("button", { name: "Settings" });
+      fireEvent.click(gear);
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+
+    it("shows elapsed and remaining time", () => {
+      render(<Harness />);
+      const video = screen.getByTestId("video");
+      act(() => {
+        setProp(video, "duration", 120);
+        fireEvent(video, new Event("durationchange"));
+        setProp(video, "currentTime", 30);
+        fireEvent(video, new Event("timeupdate"));
+      });
+      expect(screen.getByText("0:30 / −1:30")).toBeInTheDocument();
     });
   });
 
@@ -853,7 +949,7 @@ describe("PlayerControls", () => {
 
     it("labels each menu item with a format hint", () => {
       render(<Harness subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]} />);
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       expect(screen.getByRole("menuitemradio", { name: "en (VTT)" })).toBeInTheDocument();
       expect(screen.getByRole("menuitemradio", { name: "ja (ASS)" })).toBeInTheDocument();
       expect(screen.getByRole("menuitemradio", { name: "es (PGS — burned)" })).toBeInTheDocument();
@@ -868,7 +964,7 @@ describe("PlayerControls", () => {
           onConfirmBurnSubtitle={onConfirm}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
 
       expect(
@@ -887,7 +983,7 @@ describe("PlayerControls", () => {
         />,
       );
       // Open menu, click image track.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
       // Cancel.
       fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -895,7 +991,7 @@ describe("PlayerControls", () => {
       // Dialog is gone.
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       // Selection stays Off — re-open menu to verify.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       expect(screen.getByRole("menuitemradio", { name: "Off" })).toHaveAttribute(
         "aria-checked",
         "true",
@@ -915,7 +1011,7 @@ describe("PlayerControls", () => {
       );
       // We can't pass onActiveSubtitleChange through the Harness — verify
       // via the selection state (aria-checked) instead.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
       fireEvent.click(screen.getByRole("button", { name: "Yes" }));
 
@@ -923,7 +1019,7 @@ describe("PlayerControls", () => {
       expect(onConfirm).toHaveBeenCalledWith("p1");
 
       // Selection is now on the PGS track.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       expect(
         screen.getByRole("menuitemradio", { name: /PGS/ }),
       ).toHaveAttribute("aria-checked", "true");
@@ -939,12 +1035,11 @@ describe("PlayerControls", () => {
           onConfirmBurnSubtitle={onConfirm}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: /VTT/ }));
 
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-      // Text track is selected immediately.
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      // Text track is selected immediately; the grouped menu stays open.
       expect(
         screen.getByRole("menuitemradio", { name: /VTT/ }),
       ).toHaveAttribute("aria-checked", "true");
@@ -953,7 +1048,7 @@ describe("PlayerControls", () => {
 
     it("image track is disabled when not transcode (no burn possible)", () => {
       render(<Harness subtitleTracks={[...TEXT_TRACKS, IMAGE_TRACK]} />);
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       const pgsItem = screen.getByRole("menuitemradio", { name: /PGS/ });
       expect(pgsItem).toBeDisabled();
     });
@@ -970,7 +1065,7 @@ describe("PlayerControls", () => {
           onConfirmBurnSubtitle={vi.fn()}
         />,
       );
-      fireEvent.click(screen.getByRole("button", { name: "Subtitles" }));
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
       fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
       fireEvent.click(screen.getByRole("button", { name: "Yes" }));
 

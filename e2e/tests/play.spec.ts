@@ -401,9 +401,10 @@ test.describe("Play lifecycle (M3 T14)", () => {
     // <track kind="subtitles"> is rendered.
     await expect(video.locator("track[kind='subtitles']")).toHaveCount(1);
 
-    // Subtitles toggle is visible (only renders when tracks exist).
-    const subsBtn = page.getByRole("button", { name: "Subtitles" });
-    await expect(subsBtn).toBeVisible();
+    // Settings gear is visible; the Subtitles section lives inside it
+    // (grouped settings menu, task 013).
+    const settingsBtn = page.getByRole("button", { name: "Settings" });
+    await expect(settingsBtn).toBeVisible();
 
     // Initially all tracks are "hidden" (Off is selected by default).
     const initialMode = await video.evaluate((v: HTMLVideoElement) =>
@@ -414,7 +415,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
     );
 
     // Open the menu + select English.
-    await subsBtn.click();
+    await settingsBtn.click();
     await page.getByRole("menuitemradio", { name: "en" }).click();
 
     // mode flips to "showing".
