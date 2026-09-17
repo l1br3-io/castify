@@ -156,7 +156,7 @@ function ToastItem({
             toast.action?.onAction();
             onDismiss();
           }}
-          className="self-center whitespace-nowrap px-2 text-sm font-semibold text-[var(--color-castify-accent)] transition hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+          className="self-center whitespace-nowrap px-2 text-sm font-semibold text-[var(--color-castify-accent-strong)] transition hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)]"
         >
           {toast.action.label}
         </button>

@@ -15,13 +15,15 @@ documented in the player tasks.
 ## Button
 
 `variant`: `primary` (default) · `secondary` · `ghost` · `destructive`.
-`size`: `md` (default) · `sm`. `type` defaults to `button`.
+`size`: `md` (default) · `sm`. `type` defaults to `button`. Labels set in
+the display face (Cormorant Garamond semibold) per D5 — buttons are
+chrome, not prose.
 
 | State                  | Treatment                                                            |
 | ---------------------- | -------------------------------------------------------------------- |
-| Default                | per-variant token fill/border/text                                   |
-| Hover                  | primary: `brightness-110`; others: `accent-subtle` fill (ghost also lifts text) |
-| Active                 | n/a (no pressed transform — spec § Motion: no lifts)                  |
+| Default                | primary: gold **outline** (accent border, transparent ground, AA-strong gold text); secondary: hairline border; ghost: AA-strong gold text; destructive: danger outline |
+| Hover                  | primary/ghost: `accent-subtle` tint; secondary: `hover` wash           |
+| Active                 | tint deepens one step (`accent-press` / `press` — no transform)        |
 | Focus-visible          | 2px `--color-focus` ring + surface offset ring; `outline-none`        |
 | Disabled               | `opacity-50`, `cursor-not-allowed`, still in the a11y tree            |
 | Pending (`pending`)    | + `aria-busy="true"`, disabled, `opacity-70`, `cursor-progress`       |
@@ -30,7 +32,10 @@ A11y contract: renders `<button>` — the label is its accessible name.
 Pending must set `aria-busy` (a plain `disabled` flip is not announced).
 Destructive is an outline treatment: a solid `--color-danger` fill cannot
 hold one fixed label color across both themes (see the contrast table in
-`index.css`).
+`index.css`). Primary is an outline for the same reason the demo is: color
+arrives as stroke, not fill — and the raw gold is only ~3:1 on paper, so
+its text pairs with `--color-castify-accent-strong` (4.5:1+ in both
+themes).
 
 ## IconButton
 

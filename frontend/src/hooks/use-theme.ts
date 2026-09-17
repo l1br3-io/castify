@@ -1,16 +1,15 @@
-// Theme toggle — dark-first light/dark with persistence.
+// Theme toggle — paper-first light/dark with persistence.
 //
 // The inline script in index.html applies the persisted theme before first
 // paint to avoid FOUC. This hook is the React-side counterpart: it tracks
 // the current theme in state, keeps <html data-theme="…"> in sync, and
 // writes the user's choice to localStorage.
 //
-// Castify is dark-first: amber-on-graphite is the identity (media app, TV
-// room), so with no explicit choice anywhere the hook reports dark and the
-// CSS serves the dark block. Only an explicit system-light preference —
-// or a user choice — brings the porcelain theme. Setting a theme always
+// Castify is paper-first (D5): Classical's editorial ground is the default
+// with no explicit choice anywhere. Only an explicit system-dark preference
+// — or a user choice — brings the colophon theme. Setting a theme always
 // writes localStorage, which pins the choice and opts the document out of
-// the `@media (prefers-color-scheme: light)` override in index.css.
+// the `@media (prefers-color-scheme: dark)` override in index.css.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -28,19 +27,19 @@ function readStoredTheme(): Theme | null {
 }
 
 function readInitialTheme(): Theme {
-  if (typeof document === "undefined") return "dark";
+  if (typeof document === "undefined") return "light";
   const explicit = document.documentElement.getAttribute("data-theme");
   if (explicit === "light" || explicit === "dark") return explicit;
-  // No explicit choice — light only when the system asks for it; dark is
-  // the default (dark-first), covering system-dark and no-preference.
+  // No explicit choice — dark only when the system asks for it; paper is
+  // the default (paper-first), covering system-light and no-preference.
   if (
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: light)").matches
+    window.matchMedia("(prefers-color-scheme: dark)").matches
   ) {
-    return "light";
+    return "dark";
   }
-  return "dark";
+  return "light";
 }
 
 export function useTheme() {
@@ -71,10 +70,10 @@ export function useTheme() {
       return;
     }
     if (readStoredTheme() !== null) return;
-    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (e: MediaQueryListEvent) => {
       if (readStoredTheme() !== null) return;
-      const next: Theme = e.matches ? "light" : "dark";
+      const next: Theme = e.matches ? "dark" : "light";
       setThemeState(next);
       // Do not write localStorage — let the choice stay implicit.
       document.documentElement.removeAttribute("data-theme");

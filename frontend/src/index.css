@@ -1,91 +1,146 @@
 @import "tailwindcss";
 
+/* Castify design tokens — Classical edition (app-redesign D5).
+   Source of truth: demo/ (the "Classical" system — demo/readme.md,
+   demo/styles.css, demo/theme.json). Editorial serif (Cormorant Garamond
+   headings over Lora body), paper-light default ground, gold accent applied
+   as stroke rather than fill, hairline rules, whisper elevation. The dark
+   theme is re-derived from the same ramps (the demo's colophon near-black,
+   per its watch page) so the existing toggle keeps working.
+
+   AA notes the demo doesn't give us for free:
+   - The raw gold (#b68235) is ~3.0:1 on paper — enough for borders, rules,
+     and chrome, NOT for body-size text. Accent-text uses the deeper
+     ramp step via --color-castify-accent-strong (light: accent-700,
+     dark: accent-300), per the demo readme's own guidance.
+   - Focus on light uses accent-600 (#a06f24) so the ring clears the 3:1
+     UI floor on the darkest ground (#eae9e9), not just the canvas.
+   - Muted text is a 70% ink mix (demo labels), not the demo's 55%
+     .text-muted, to hold 4.5:1.
+   src/index.test.ts recomputes every gated ratio below — an edit that
+   drops a token below AA fails the suite. */
+
 @theme {
-  /* Type — Fontsource variable packages imported in main.tsx. Spline Sans
-     is the humanist voice (names, prose); Spline Sans Mono is the data
-     voice (paths, counts, instrument strip). */
-  --font-sans: "Spline Sans Variable", system-ui, sans-serif;
-  --font-display: "Spline Sans Variable", system-ui, sans-serif;
+  /* Type — Fontsource variable packages imported in main.tsx. Cormorant
+     Garamond is the heading voice (semibold is the interface ceiling);
+     Lora is the body voice; Spline Sans Mono stays the data voice
+     (tabular figures, paths, counts). */
+  --font-sans: "Lora Variable", Georgia, "Times New Roman", serif;
+  --font-display: "Cormorant Garamond Variable", Georgia, "Times New Roman", serif;
   --font-mono: "Spline Sans Mono Variable", ui-monospace, monospace;
 
-  /* Signal — drive-LED amber; ochre in light so it holds contrast on
-     porcelain. Shared hue family across themes. */
-  --color-castify-accent: oklch(78% 0.15 75);
-  --color-castify-accent-dim: oklch(88% 0.12 80);
-  --color-castify-accent-subtle: oklch(78% 0.15 75 / 14%);
+  /* Signal — mono gold scheme (demo theme.json: scheme "mono"). The
+     -strong step is the AA text pairing; the raw accent is for strokes,
+     chrome, and large marks only. */
+  --color-castify-accent: #b68235;
+  --color-castify-accent-dim: #7d5411;
+  --color-castify-accent-strong: #7d5411;
+  --color-castify-accent-subtle: #b6823526;
 
-  /* Geometry — tight, instrument-panel radii. */
-  --radius-card: 6px;
+  /* Classical tonal ramps (demo styles.css, OKLCH-shared lightness scale).
+     Same step of any ramp matches the others in visual value; light steps
+     (100–300) tint, 500 is the role base, 700–900 carry text on tints and
+     pressed states. */
+  --color-castify-neutral-100: #f8f4f4;
+  --color-castify-neutral-200: #eae7e7;
+  --color-castify-neutral-300: #d7d3d3;
+  --color-castify-neutral-400: #bab6b6;
+  --color-castify-neutral-500: #9b9797;
+  --color-castify-neutral-600: #7d7979;
+  --color-castify-neutral-700: #605d5d;
+  --color-castify-neutral-800: #444141;
+  --color-castify-neutral-900: #2d2b2b;
+  --color-castify-accent-100: #fff3e4;
+  --color-castify-accent-200: #ffe3bf;
+  --color-castify-accent-300: #facb8d;
+  --color-castify-accent-400: #e1ad66;
+  --color-castify-accent-500: #c28d41;
+  --color-castify-accent-600: #a06f24;
+  --color-castify-accent-700: #7d5411;
+  --color-castify-accent-800: #5a3b0a;
+  --color-castify-accent-900: #3a270d;
+
+  /* Geometry — Classical's 2/4/7 set. Cards and controls share the 4px
+     step; the drawer (and top-elevation panels) take 7px; the pill is the
+     tag's 3px (0.75× of 4). */
+  --radius-card: 4px;
   --radius-button: 4px;
-  --radius-pill: 4px;
-  --radius-drawer: 8px;
+  --radius-pill: 3px;
+  --radius-drawer: 7px;
 
-  /* Themeable surface tokens — defaults match the dark theme, which is
-     the no-preference default (dark-first). Light values live in the
-     light blocks below and override these via the cascade. */
-  --color-castify-canvas: oklch(18% 0.008 75);
-  --color-castify-surface: oklch(21.5% 0.009 75);
-  --color-castify-surface-raised: oklch(25% 0.01 75);
-  --color-castify-text: oklch(93% 0.008 80);
-  --color-castify-muted: oklch(70% 0.015 80);
-  --color-castify-rule: oklch(93% 0.008 80 / 14%);
+  /* Elevation — whispers tuned to the paper ground (ink-tinted), per the
+     demo. Heavy drops are off-system. */
+  --shadow-sm: 0 1px 2px rgb(45 43 43 / 14%);
+  --shadow-md: 0 3px 10px rgb(45 43 43 / 16%);
+  --shadow-lg: 0 12px 32px rgb(45 43 43 / 22%);
 
-  /* Kind taxonomy — small-area hues (kind tabs, glyphs) at chroma ≤ 0.13,
+  /* Themeable surface tokens — defaults match the light theme, which is
+     the no-preference default (paper-first per D5). Dark values live in
+     the dark block below and override these via the cascade. */
+  --color-castify-canvas: #f3f2f2;
+  --color-castify-surface: #eae9e9;
+  --color-castify-surface-raised: #f8f4f4;
+  --color-castify-text: #201f1d;
+  --color-castify-muted: color-mix(in srgb, #201f1d 70%, #f3f2f2);
+  --color-castify-rule: color-mix(in srgb, #201f1d 16%, transparent);
+  /* Neutral washes for outlined/ghost hovers (demo: text-tint, not
+     gold-tint, on non-primary chrome). */
+  --color-castify-hover: color-mix(in srgb, #201f1d 7%, transparent);
+  --color-castify-press: color-mix(in srgb, #201f1d 14%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #b68235 22%, transparent);
+
+  /* Kind taxonomy — small-area hues (kind tabs, glyphs) at low chroma,
      never large fills. Video keeps the accent; `other` is muted by
-     design. Defaults are dark-theme values; the light blocks lift
-     luminance per kind where porcelain demands AA. */
-  --color-kind-audio: oklch(76% 0.13 300);
-  --color-kind-image: oklch(78% 0.1 190);
-  --color-kind-document: oklch(76% 0.04 250);
-  --color-kind-archive: oklch(78% 0.11 50);
-  --color-kind-subtitle: oklch(78% 0.12 150);
-  --color-kind-other: oklch(70% 0.015 80);
+     design. Defaults are light-theme values; the dark block lifts
+     luminance per kind where the colophon ground demands AA. */
+  --color-kind-audio: oklch(48% 0.13 300);
+  --color-kind-image: oklch(45% 0.09 200);
+  --color-kind-document: oklch(48% 0.05 250);
+  --color-kind-archive: oklch(52% 0.12 45);
+  --color-kind-subtitle: oklch(45% 0.11 150);
+  --color-kind-other: oklch(51% 0.02 240);
 
   /* Semantic — status hues for text, icons, and small-area fills; the
-     `-subtle` variants (12–14% alpha) are their soft-fill pair. Danger is
-     the only red: destructive actions and errors. Verified at WCAG 2.2 AA
-     text contrast (4.5:1) on canvas/surface/raised in BOTH themes; focus
-     shown at its 3:1 UI floor (non-text contrast). Ratios computed from
-     the oklch values below — src/index.test.ts recomputes them, so an
-     edit that drops a token below AA fails the suite.
+     `-subtle` variants are their soft-fill pair. Danger is the only red:
+     destructive actions and errors. Verified at WCAG 2.2 AA text contrast
+     (4.5:1) on canvas/surface/raised in BOTH themes; focus shown at its
+     3:1 UI floor (non-text contrast). Ratios computed from the values
+     below — src/index.test.ts recomputes them, so an edit that drops a
+     token below AA fails the suite.
 
-     token     dark: canvas/surface/raised          light: canvas/surface/raised
-     success   9.93:1 / 9.25:1 / 8.45:1             4.91:1 / 5.21:1 / 5.43:1
-     warning  11.55:1 / 10.76:1 / 9.83:1            5.02:1 / 5.32:1 / 5.55:1
-     danger    7.65:1 / 7.13:1 / 6.51:1             5.74:1 / 6.08:1 / 6.34:1
-     info      9.17:1 / 8.54:1 / 7.81:1             5.90:1 / 6.25:1 / 6.52:1
-     focus     9.20:1 / 8.57:1 / 7.83:1 (UI ≥3:1)   6.11:1 / 6.47:1 / 6.75:1
-     on-accent vs accent fill: dark 9.20:1, light 4.59:1
-
-     Light-theme subtles use 12% alpha (porcelain saturates faster); dark
-     uses 14%, matching the accent pair above. */
-  --color-success: oklch(78% 0.14 152);
-  --color-success-subtle: oklch(78% 0.14 152 / 14%);
-  --color-warning: oklch(84% 0.13 95);
-  --color-warning-subtle: oklch(84% 0.13 95 / 14%);
-  --color-danger: oklch(74% 0.15 25);
-  --color-danger-subtle: oklch(74% 0.15 25 / 14%);
-  --color-info: oklch(77% 0.11 245);
-  --color-info-subtle: oklch(77% 0.11 245 / 14%);
+     token     light: canvas/surface/raised        dark: canvas/surface/raised
+     success    6.05:1 / 5.58:1 / 6.19:1           8.15:1 / 7.43:1 / 6.41:1
+     warning    6.15:1 / 5.67:1 / 6.29:1           9.48:1 / 8.64:1 / 7.46:1
+     danger     6.97:1 / 6.42:1 / 7.13:1           6.28:1 / 5.73:1 / 4.94:1
+     info       7.24:1 / 6.68:1 / 7.41:1           7.53:1 / 6.86:1 / 5.92:1
+     focus      3.92:1 / 3.62:1 / 4.01:1 (UI ≥3:1) 10.29:1 / 9.38:1 / 8.09:1
+     on-accent vs accent fill: light 4.89:1, dark 7.62:1 */
+  --color-success: oklch(46% 0.11 152);
+  --color-success-subtle: oklch(46% 0.11 152 / 12%);
+  --color-warning: oklch(47% 0.11 85);
+  --color-warning-subtle: oklch(47% 0.11 85 / 12%);
+  --color-danger: oklch(46% 0.17 27);
+  --color-danger-subtle: oklch(46% 0.17 27 / 12%);
+  --color-info: oklch(43% 0.10 250);
+  --color-info-subtle: oklch(43% 0.10 250 / 12%);
 
   /* Focus — ring color for :focus-visible across the app (player chrome
-     keeps its over-video white treatment). The offset is the shared
-     ring-offset convention extracted from the component set. */
-  --color-focus: oklch(78% 0.15 75);
+     keeps its over-video white treatment). Light uses accent-600 so the
+     ring clears 3:1 on the darkest ground, not just the canvas. */
+  --color-focus: #a06f24;
   --focus-ring-offset: 2px;
 
-  /* On-accent — the label color on accent FILLS (buttons, CTAs). Dark
-     reuses the canvas color (9.20:1); porcelain's ochre accent is too
-     bright for near-white labels (4.01:1), so light uses a deep brown
-     (4.59:1) — black-on-amber, like an engraved indicator lamp. Added
-     after axe flagged the FirstRunGuide CTA in the light theme. */
-  --color-on-accent: oklch(18% 0.008 75);
+  /* On-accent — the label color on the few accent FILLS that remain
+     (destructive-adjacent chips, badges). Black-on-gold, like an
+     engraved plate. */
+  --color-on-accent: #201f1d;
 
   /* Player chrome — scrims and overlay chips sit over video, which is dark
      regardless of app theme, so these are theme-invariant (no per-theme
-     override). Tested as white-on-layer over a fully bright frame:
-     scrim-bottom ~12.6:1, scrim-top 4.76:1, overlay chip 5.74:1,
-     caption bg 8.52:1. */
+     override). Gold chrome accents over dark scrims use accent-400
+     (~7.7:1 on the colophon ground). Tested as white-on-layer over a
+     fully bright frame: scrim-bottom ~12.6:1, scrim-top 4.76:1, overlay
+     chip 5.74:1, caption bg 8.52:1. */
   --color-player-scrim-top: oklch(14.5% 0.02 260 / 55%);
   --color-player-scrim-bottom: oklch(14.5% 0.02 260 / 80%);
   --color-player-overlay-surface: oklch(0% 0 0 / 60%);
@@ -139,19 +194,59 @@
   }
 }
 
-/* Dark theme — warm graphite. This is both the explicit dark choice and
-   the no-preference default: dark-first, the identity theme. */
+/* Light theme — Classical paper. This is both the explicit light choice
+   and the no-preference default: paper-first per D5. */
 :root,
+:root[data-theme="light"] {
+  --color-castify-accent: #b68235;
+  --color-castify-accent-dim: #7d5411;
+  --color-castify-accent-strong: #7d5411;
+  --color-castify-accent-subtle: #b6823526;
+  --color-castify-canvas: #f3f2f2;
+  --color-castify-surface: #eae9e9;
+  --color-castify-surface-raised: #f8f4f4;
+  --color-castify-text: #201f1d;
+  --color-castify-muted: color-mix(in srgb, #201f1d 70%, #f3f2f2);
+  --color-castify-rule: color-mix(in srgb, #201f1d 16%, transparent);
+  --color-castify-hover: color-mix(in srgb, #201f1d 7%, transparent);
+  --color-castify-press: color-mix(in srgb, #201f1d 14%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #b68235 22%, transparent);
+  --color-kind-audio: oklch(48% 0.13 300);
+  --color-kind-image: oklch(45% 0.09 200);
+  --color-kind-document: oklch(48% 0.05 250);
+  --color-kind-archive: oklch(52% 0.12 45);
+  --color-kind-subtitle: oklch(45% 0.11 150);
+  --color-kind-other: oklch(51% 0.02 240);
+  --color-success: oklch(46% 0.11 152);
+  --color-success-subtle: oklch(46% 0.11 152 / 12%);
+  --color-warning: oklch(47% 0.11 85);
+  --color-warning-subtle: oklch(47% 0.11 85 / 12%);
+  --color-danger: oklch(46% 0.17 27);
+  --color-danger-subtle: oklch(46% 0.17 27 / 12%);
+  --color-info: oklch(43% 0.10 250);
+  --color-info-subtle: oklch(43% 0.10 250 / 12%);
+  --color-focus: #a06f24;
+  --color-on-accent: #201f1d;
+  color-scheme: light;
+}
+
+/* Dark theme — the colophon page: the demo's deep warm near-black (a
+   shade below neutral-900) with the gold lifted to accent-400, exactly
+   as its watch page does. Explicit opt-in via data-theme="dark". */
 :root[data-theme="dark"] {
-  --color-castify-accent: oklch(78% 0.15 75);
-  --color-castify-accent-dim: oklch(88% 0.12 80);
-  --color-castify-accent-subtle: oklch(78% 0.15 75 / 14%);
-  --color-castify-canvas: oklch(18% 0.008 75);
-  --color-castify-surface: oklch(21.5% 0.009 75);
-  --color-castify-surface-raised: oklch(25% 0.01 75);
-  --color-castify-text: oklch(93% 0.008 80);
-  --color-castify-muted: oklch(70% 0.015 80);
-  --color-castify-rule: oklch(93% 0.008 80 / 14%);
+  --color-castify-accent: #e1ad66;
+  --color-castify-accent-dim: #facb8d;
+  --color-castify-accent-strong: #facb8d;
+  --color-castify-accent-subtle: #e1ad6631;
+  --color-castify-canvas: #262424;
+  --color-castify-surface: #2d2b2b;
+  --color-castify-surface-raised: #383535;
+  --color-castify-text: #f8f4f4;
+  --color-castify-muted: #bab6b6;
+  --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
+  --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
+  --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
   --color-kind-audio: oklch(76% 0.13 300);
   --color-kind-image: oklch(78% 0.1 190);
   --color-kind-document: oklch(76% 0.04 250);
@@ -166,75 +261,48 @@
   --color-danger-subtle: oklch(74% 0.15 25 / 14%);
   --color-info: oklch(77% 0.11 245);
   --color-info-subtle: oklch(77% 0.11 245 / 14%);
-  --color-focus: oklch(78% 0.15 75);
-  --color-on-accent: oklch(18% 0.008 75);
+  --color-focus: #facb8d;
+  --color-on-accent: #262424;
   color-scheme: dark;
 }
 
-/* Light theme — cool porcelain, the quiet reading room. Explicit opt-in
-   via data-theme="light". */
-:root[data-theme="light"] {
-  --color-success: oklch(51% 0.12 152);
-  --color-success-subtle: oklch(51% 0.12 152 / 12%);
-  --color-warning: oklch(52% 0.12 85);
-  --color-warning-subtle: oklch(52% 0.12 85 / 12%);
-  --color-danger: oklch(51% 0.19 27);
-  --color-danger-subtle: oklch(51% 0.19 27 / 12%);
-  --color-info: oklch(48% 0.11 250);
-  --color-info-subtle: oklch(48% 0.11 250 / 12%);
-  --color-focus: oklch(48% 0.14 65);
-  --color-on-accent: oklch(12% 0.03 65);
-  --color-castify-accent: oklch(58% 0.14 65);
-  --color-castify-accent-dim: oklch(48% 0.14 65);
-  --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
-  --color-castify-canvas: oklch(96.5% 0.005 230);
-  --color-castify-surface: oklch(98.5% 0.004 230);
-  --color-castify-surface-raised: oklch(100% 0 0);
-  --color-castify-text: oklch(28% 0.015 250);
-  --color-castify-muted: oklch(51% 0.02 240);
-  --color-castify-rule: oklch(28% 0.015 250 / 10%);
-  --color-kind-audio: oklch(48% 0.13 300);
-  --color-kind-image: oklch(45% 0.09 200);
-  --color-kind-document: oklch(48% 0.05 250);
-  --color-kind-archive: oklch(52% 0.12 45);
-  --color-kind-subtitle: oklch(45% 0.11 150);
-  --color-kind-other: oklch(51% 0.02 240);
-  color-scheme: light;
-}
-
-/* System light-mode preference wins when the user hasn't picked
-   explicitly. NOTE: light — not dark — is the override here. The default
-   (:root above) is already dark, so the cascade only needs to flip users
-   whose system says light; an explicit data-theme="dark" must still win,
+/* System dark-mode preference wins when the user hasn't picked
+   explicitly. NOTE: dark — not light — is the override here. The default
+   (:root above) is already paper, so the cascade only needs to flip users
+   whose system says dark; an explicit data-theme="light" must still win,
    hence the :not() guard. */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --color-success: oklch(51% 0.12 152);
-    --color-success-subtle: oklch(51% 0.12 152 / 12%);
-    --color-warning: oklch(52% 0.12 85);
-    --color-warning-subtle: oklch(52% 0.12 85 / 12%);
-    --color-danger: oklch(51% 0.19 27);
-    --color-danger-subtle: oklch(51% 0.19 27 / 12%);
-    --color-info: oklch(48% 0.11 250);
-    --color-info-subtle: oklch(48% 0.11 250 / 12%);
-    --color-focus: oklch(48% 0.14 65);
-    --color-on-accent: oklch(12% 0.03 65);
-    --color-castify-accent: oklch(58% 0.14 65);
-    --color-castify-accent-dim: oklch(48% 0.14 65);
-    --color-castify-accent-subtle: oklch(58% 0.14 65 / 12%);
-    --color-castify-canvas: oklch(96.5% 0.005 230);
-    --color-castify-surface: oklch(98.5% 0.004 230);
-    --color-castify-surface-raised: oklch(100% 0 0);
-    --color-castify-text: oklch(28% 0.015 250);
-    --color-castify-muted: oklch(51% 0.02 240);
-    --color-castify-rule: oklch(28% 0.015 250 / 10%);
-    --color-kind-audio: oklch(48% 0.13 300);
-    --color-kind-image: oklch(45% 0.09 200);
-    --color-kind-document: oklch(48% 0.05 250);
-    --color-kind-archive: oklch(52% 0.12 45);
-    --color-kind-subtitle: oklch(45% 0.11 150);
-    --color-kind-other: oklch(51% 0.02 240);
-    color-scheme: light;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-castify-accent: #e1ad66;
+    --color-castify-accent-dim: #facb8d;
+    --color-castify-accent-strong: #facb8d;
+    --color-castify-accent-subtle: #e1ad6631;
+    --color-castify-canvas: #262424;
+    --color-castify-surface: #2d2b2b;
+    --color-castify-surface-raised: #383535;
+    --color-castify-text: #f8f4f4;
+    --color-castify-muted: #bab6b6;
+    --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
+    --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
+    --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
+    --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
+    --color-kind-audio: oklch(76% 0.13 300);
+    --color-kind-image: oklch(78% 0.1 190);
+    --color-kind-document: oklch(76% 0.04 250);
+    --color-kind-archive: oklch(78% 0.11 50);
+    --color-kind-subtitle: oklch(78% 0.12 150);
+    --color-kind-other: oklch(70% 0.015 80);
+    --color-success: oklch(78% 0.14 152);
+    --color-success-subtle: oklch(78% 0.14 152 / 14%);
+    --color-warning: oklch(84% 0.13 95);
+    --color-warning-subtle: oklch(84% 0.13 95 / 14%);
+    --color-danger: oklch(74% 0.15 25);
+    --color-danger-subtle: oklch(74% 0.15 25 / 14%);
+    --color-info: oklch(77% 0.11 245);
+    --color-info-subtle: oklch(77% 0.11 245 / 14%);
+    --color-focus: #facb8d;
+    --color-on-accent: #262424;
+    color-scheme: dark;
   }
 }
 
@@ -247,11 +315,33 @@ body,
 body {
   margin: 0;
   font-family: var(--font-sans);
+  /* Classical body: 15px Lora on a 1.55 leading. */
+  font-size: 0.9375rem;
+  line-height: 1.55;
   background-color: var(--color-castify-canvas);
   color: var(--color-castify-text);
   transition:
     background-color 200ms ease-out,
     color 200ms ease-out;
+}
+
+/* Headings speak in the display voice (Cormorant Garamond, semibold —
+   the interface ceiling; never bold). Tight leading, per demo styles.css. */
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display);
+  font-weight: var(--font-heading-weight, 600);
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+}
+
+/* Standing numbers (counts, sizes, timestamps) set tabular; both faces
+   keep their own figure style. Apply via the tabular-nums utility or
+   .figure where a class is handier. */
+.figure {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Honor reduced-motion globally. Components should still gate heavier
@@ -281,8 +371,23 @@ video::cue {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
+/* Plate — the Classical image treatment (demo foundations/image.html):
+   every content photograph/poster is matted like a tipped-in book plate.
+   Warm archival grade inside a thin surface-colored mat with a hairline
+   outline. Dark-context plates (watch page) keep the grade but sit on
+   the dark mat via .plate-dark. */
+.plate {
+  filter: sepia(0.22) saturate(0.82) contrast(1.05);
+  box-sizing: border-box;
+  border: 6px solid var(--color-castify-surface);
+  outline: 1px solid var(--color-castify-rule);
+}
+.plate-dark {
+  border-color: var(--color-castify-neutral-800);
+}
+
 /* Hide scrollbar on horizontal shelf containers while keeping scroll
-   functional (trackpad, swipe, shift+wheel). T8 shelves use this. */
+   functional (trackpad, swipe, shift+wheel). Rails use this. */
 .no-scrollbar {
   scrollbar-width: none;
 }
@@ -291,9 +396,9 @@ video::cue {
 }
 
 /* Keycap — chip primitive for provider/filter segments, breadcrumbs,
-   and other monospaced metadata (organizer). Mono, hairline rule, 4px
-   radius: reads like a keycap on an instrument panel. Interactive
-   variants layer their own hover/active states on top. */
+   and other monospaced metadata (organizer). Mono, hairline rule,
+   3px radius: a small tag from the ramps. Interactive variants layer
+   their own hover/active states on top. */
 .keycap {
   display: inline-flex;
   align-items: center;
@@ -311,11 +416,12 @@ video::cue {
    filters, breadcrumbs). Defined here, not as Tailwind utilities, because
    unlayered .keycap declarations outrank the utilities layer in the
    cascade; only sibling rules can override the primitive. Hover shifts
-   the border only (spec § Motion: no lifts). */
+   the border only (spec § Motion: no lifts). Text uses the AA-strong
+   accent step on paper. */
 .keycap-active {
   border-color: var(--color-castify-accent);
   background-color: var(--color-castify-accent-subtle);
-  color: var(--color-castify-accent);
+  color: var(--color-castify-accent-strong);
 }
 
 .keycap-inactive:hover {
@@ -396,7 +502,7 @@ video::cue {
 .preset-active {
   border: 1px solid var(--color-castify-accent);
   background-color: var(--color-castify-accent-subtle);
-  color: var(--color-castify-accent);
+  color: var(--color-castify-accent-strong);
 }
 
 .preset-inactive {
@@ -405,6 +511,6 @@ video::cue {
 }
 
 .preset-inactive:hover {
-  background-color: var(--color-castify-accent-subtle);
+  background-color: var(--color-castify-hover);
   color: var(--color-castify-text);
 }

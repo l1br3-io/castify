@@ -90,7 +90,7 @@ export function Dialog({
     <div
       role="presentation"
       onClick={closeable ? onClose : undefined}
-      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center bg-black/50 p-4"
     >
       <div
         ref={panelRef}
@@ -100,7 +100,7 @@ export function Dialog({
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
-        className="w-full max-w-md rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-xl"
+        className="w-full max-w-md rounded-[var(--radius-drawer)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-lg"
       >
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">
           {title}

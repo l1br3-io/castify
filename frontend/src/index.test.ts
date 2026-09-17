@@ -34,9 +34,11 @@ function tokenMap(block: string): Record<string, string> {
 }
 
 const theme = tokenMap(extractBlock("@theme"));
-const dark = tokenMap(extractBlock(':root,\n:root[data-theme="dark"]'));
-const light = tokenMap(extractBlock(':root[data-theme="light"]'));
-const systemLight = tokenMap(extractBlock(':root:not([data-theme="dark"])'));
+// D5: paper-light is the default — :root carries the light values; dark is
+// the explicit override (inverse of the old dark-first arrangement).
+const light = tokenMap(extractBlock(':root,\n:root[data-theme="light"]'));
+const dark = tokenMap(extractBlock(':root[data-theme="dark"]'));
+const systemDark = tokenMap(extractBlock(':root:not([data-theme="light"])'));
 
 type Rgb = { r: number; g: number; b: number; alpha: number };
 
@@ -105,7 +107,7 @@ const WHITE_FRAME = { r: 1, g: 1, b: 1, alpha: 1 };
 
 describe("semantic + structural design tokens", () => {
   it("declares every semantic token and subtle variant in @theme and both theme blocks", () => {
-    for (const block of [theme, dark, light, systemLight]) {
+    for (const block of [theme, dark, light, systemDark]) {
       for (const name of SEMANTIC) {
         expect(block[`--color-${name}`], `${name} missing from a block`).toBeTruthy();
         expect(block[`--color-${name}-subtle`], `${name}-subtle missing from a block`).toBeTruthy();

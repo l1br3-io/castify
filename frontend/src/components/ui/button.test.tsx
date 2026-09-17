@@ -21,9 +21,11 @@ describe("Button", () => {
   });
 
   it.each([
-    ["primary", "bg-[var(--color-castify-accent)]"],
+    // D5: primary is an accent outline — marker is the gold border + the
+    // AA-strong text pairing, not a fill.
+    ["primary", "border-[var(--color-castify-accent)] text-[var(--color-castify-accent-strong)]"],
     ["secondary", "border-[var(--color-castify-rule)]"],
-    ["ghost", "text-[var(--color-castify-muted)]"],
+    ["ghost", "text-[var(--color-castify-accent-strong)]"],
     ["destructive", "text-[var(--color-danger)]"],
   ] as const)("%s variant carries its token styling", (variant, marker) => {
     render(<Button variant={variant}>Go</Button>);
@@ -33,7 +35,7 @@ describe("Button", () => {
   it("defaults to the primary variant", () => {
     render(<Button>Go</Button>);
     expect(screen.getByRole("button").className).toContain(
-      "bg-[var(--color-castify-accent)]",
+      "border-[var(--color-castify-accent)]",
     );
   });
 

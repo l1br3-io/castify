@@ -45,7 +45,7 @@ export function Field({ label, hint, error, children }: FieldProps) {
   return (
     <FieldContext.Provider value={{ id, describedBy, invalid: Boolean(error) }}>
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={id} className="text-sm font-medium">
+        <label htmlFor={id} className="text-xs font-medium text-[var(--color-castify-muted)]">
           {label}
         </label>
         {children}
@@ -78,10 +78,10 @@ export function Input({ className, id, ...rest }: InputProps) {
       aria-describedby={field?.describedBy}
       aria-invalid={field?.invalid || undefined}
       className={cn(
-        "w-full min-w-0 rounded-[var(--radius-button)] border bg-[var(--color-castify-canvas)] px-3 py-2 text-sm text-[var(--color-castify-text)] transition placeholder:text-[var(--color-castify-muted)] focus:outline-none focus:ring-1",
+        "w-full min-w-0 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-transparent px-3 py-2 text-sm text-[var(--color-castify-text)] caret-[var(--color-castify-accent)] transition placeholder:text-[var(--color-castify-muted)] focus:outline-none focus:ring-1",
         field?.invalid
           ? "border-[var(--color-danger)] focus:border-[var(--color-danger)] focus:ring-[var(--color-danger)]"
-          : "border-[var(--color-castify-rule)] focus:border-[var(--color-castify-accent)] focus:ring-[var(--color-castify-accent)]",
+          : "focus:border-[var(--color-castify-accent)] focus:ring-[var(--color-castify-accent)]",
         className,
       )}
       {...rest}

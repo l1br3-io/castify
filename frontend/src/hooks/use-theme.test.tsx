@@ -5,12 +5,14 @@ import { useTheme } from "./use-theme";
 
 // The hook branches on matchMedia results; jsdom's media evaluation is a
 // no-op stub. Each test installs the system-preference state it needs.
+// D5: paper-first — the hook listens for system DARK; `matches: true`
+// means the system prefers dark.
 type MediaListener = (e: { matches: boolean }) => void;
 
-function installMatchMedia(prefersLight: boolean) {
+function installMatchMedia(prefersDark: boolean) {
   const listeners = new Set<MediaListener>();
   const mql = {
-    matches: prefersLight,
+    matches: prefersDark,
     addEventListener: (_type: string, l: MediaListener) => listeners.add(l),
     removeEventListener: (_type: string, l: MediaListener) =>
       listeners.delete(l),
@@ -26,7 +28,7 @@ function installMatchMedia(prefersLight: boolean) {
   };
 }
 
-describe("useTheme (dark-first)", () => {
+describe("useTheme (paper-first)", () => {
   beforeEach(() => {
     document.documentElement.removeAttribute("data-theme");
     window.localStorage.clear();
@@ -36,48 +38,48 @@ describe("useTheme (dark-first)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults to dark with no explicit choice and no system preference", () => {
+  it("defaults to light with no explicit choice and no system preference", () => {
     installMatchMedia(false);
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe("dark");
+    expect(result.current.theme).toBe("light");
   });
 
-  it("honors a system-light preference when nothing is pinned", () => {
+  it("honors a system-dark preference when nothing is pinned", () => {
     installMatchMedia(true);
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe("light");
+    expect(result.current.theme).toBe("dark");
   });
 
   it("lets an explicit data-theme attribute win over the system preference", () => {
-    document.documentElement.setAttribute("data-theme", "dark");
+    document.documentElement.setAttribute("data-theme", "light");
     installMatchMedia(true);
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe("dark");
+    expect(result.current.theme).toBe("light");
   });
 
-  it("toggle flips dark→light, pins the attribute, and persists the choice", () => {
+  it("toggle flips light→dark, pins the attribute, and persists the choice", () => {
     installMatchMedia(false);
     const { result } = renderHook(() => useTheme());
     act(() => result.current.toggle());
-    expect(result.current.theme).toBe("light");
-    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
-    expect(window.localStorage.getItem("castify-theme")).toBe("light");
+    expect(result.current.theme).toBe("dark");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(window.localStorage.getItem("castify-theme")).toBe("dark");
   });
 
   it("follows system changes only while no explicit choice is stored", () => {
     const media = installMatchMedia(false);
     const { result } = renderHook(() => useTheme());
-    expect(result.current.theme).toBe("dark");
-
-    // System flips to light while implicit — theme follows, stays unpinned.
-    act(() => media.emit(true));
     expect(result.current.theme).toBe("light");
+
+    // System flips to dark while implicit — theme follows, stays unpinned.
+    act(() => media.emit(true));
+    expect(result.current.theme).toBe("dark");
     expect(document.documentElement.getAttribute("data-theme")).toBeNull();
 
     // Once the user pins a choice, system changes must not move it.
-    act(() => result.current.setTheme("dark"));
+    act(() => result.current.setTheme("light"));
     act(() => media.emit(true));
-    expect(result.current.theme).toBe("dark");
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(result.current.theme).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
 });

@@ -174,7 +174,7 @@ export function Menu({
               aria-label={label}
               onKeyDown={handleMenuKeyDown}
               style={panelStyle}
-              className="z-[var(--z-menu)] min-w-44 space-y-0.5 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface-raised)] p-1 shadow-xl"
+              className="z-[var(--z-menu)] min-w-44 space-y-0.5 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface-raised)] p-1 shadow-md"
             >
               {typeof children === "function" ? children(close) : children}
             </div>
