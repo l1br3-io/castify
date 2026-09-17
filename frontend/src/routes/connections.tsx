@@ -60,6 +60,7 @@ import { describeError } from "../lib/format";
 import { CredentialsForm } from "../components/credentials-form";
 import { ProviderMark } from "../components/badges";
 import { Button } from "../components/ui/button";
+import { Tooltip } from "../components/ui/tooltip";
 import { FOCUS_RING } from "../components/ui/button-classes";
 import { EmptyState } from "../components/ui/empty-state";
 import { cn } from "../components/ui/cn";
@@ -307,26 +308,38 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
     onError: (err: unknown) => setError(describeError(err)),
   });
 
-  const disabled = connection.scan_status === "scanning" || rescan.isPending;
+
 
   return (
     <>
-      <Button
-        variant="secondary"
-        size="sm"
-        onClick={() => {
-          setError(null);
-          rescan.mutate();
-        }}
-        disabled={disabled}
-        pending={rescan.isPending}
-      >
-        {connection.scan_status === "scanning"
-          ? "Scanning…"
-          : rescan.isPending
-            ? "Starting…"
-            : "Rescan"}
-      </Button>
+      {/* While a scan is running the reason is known — keep the button
+          focusable (aria-disabled) so the tooltip is keyboard-reachable
+          (task 019 disabled-action contract). */}
+      {connection.scan_status === "scanning" ? (
+        <Tooltip content="A scan is already running.">
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-disabled
+            className="cursor-not-allowed opacity-50"
+            onClick={() => {}}
+          >
+            Scanning…
+          </Button>
+        </Tooltip>
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            setError(null);
+            rescan.mutate();
+          }}
+          pending={rescan.isPending}
+        >
+          {rescan.isPending ? "Starting…" : "Rescan"}
+        </Button>
+      )}
       {error && (
         <p className="text-xs text-[var(--color-danger)]">{error}</p>
       )}

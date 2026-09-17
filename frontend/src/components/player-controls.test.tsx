@@ -1049,7 +1049,7 @@ describe("PlayerControls", () => {
       ).toBeInTheDocument();
     });
 
-    it("disables Prev when !hasPrev and Next when !hasNext", () => {
+    it("renders skip buttons at the queue ends as aria-disabled with the reason on focus", () => {
       render(
         <Harness
           onPrev={() => {}}
@@ -1058,10 +1058,21 @@ describe("PlayerControls", () => {
           hasNext={false}
         />,
       );
+      // Task 019: known reasons ride a tooltip — aria-disabled keeps the
+      // button focusable so keyboard users can read it.
+      const prev = screen.getByRole("button", { name: "Previous video" });
+      expect(prev).toHaveAttribute("aria-disabled", "true");
+      fireEvent.focus(prev);
       expect(
-        screen.getByRole("button", { name: "Previous video" }),
-      ).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Next video" })).toBeDisabled();
+        screen.getByRole("tooltip", { name: "You're at the start of the queue." }),
+      ).toBeInTheDocument();
+
+      const next = screen.getByRole("button", { name: "Next video" });
+      expect(next).toHaveAttribute("aria-disabled", "true");
+      fireEvent.focus(next);
+      expect(
+        screen.getByRole("tooltip", { name: "You're at the end of the queue." }),
+      ).toBeInTheDocument();
     });
 
     it("clicking Prev fires the callback", () => {

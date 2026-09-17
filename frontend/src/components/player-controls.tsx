@@ -25,6 +25,7 @@ import {
 } from "./icons";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { Tooltip } from "./ui/tooltip";
 import { formatTime } from "../lib/format";
 import { isAssFormat, isImageFamily, subtitleLabel } from "../lib/subtitles";
 import {
@@ -901,15 +902,22 @@ export function PlayerControls({
             controls ≥24px. */}
         <div className="flex items-center gap-1.5 text-white">
           {onPrev && (
-            <button
-              type="button"
-              onClick={onPrev}
-              disabled={!hasPrev}
-              aria-label="Previous video"
-              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-            >
-              <PrevIcon className="h-5 w-5" />
-            </button>
+            <Tooltip content="You're at the start of the queue.">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!hasPrev) return;
+                  onPrev();
+                }}
+                aria-disabled={hasPrev ? undefined : true}
+                aria-label="Previous video"
+                className={`rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                  hasPrev ? "" : "cursor-not-allowed opacity-30"
+                }`}
+              >
+                <PrevIcon className="h-5 w-5" />
+              </button>
+            </Tooltip>
           )}
 
           <button
@@ -927,15 +935,22 @@ export function PlayerControls({
           </button>
 
           {onNext && (
-            <button
-              type="button"
-              onClick={onNext}
-              disabled={!hasNext}
-              aria-label="Next video"
-              className="rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-            >
-              <NextIcon className="h-5 w-5" />
-            </button>
+            <Tooltip content="You're at the end of the queue.">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!hasNext) return;
+                  onNext();
+                }}
+                aria-disabled={hasNext ? undefined : true}
+                aria-label="Next video"
+                className={`rounded p-2 transition hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                  hasNext ? "" : "cursor-not-allowed opacity-30"
+                }`}
+              >
+                <NextIcon className="h-5 w-5" />
+              </button>
+            </Tooltip>
           )}
 
           <div className="flex items-center gap-1">
@@ -952,6 +967,9 @@ export function PlayerControls({
                 <VolumeHighIcon className="h-5 w-5" />
               )}
             </button>
+            {/* Inline volume is a pointer/laptop affordance — below sm the
+                bar would crowd at 360px, and touch users adjust volume with
+                the device's own controls (standard mobile player behavior). */}
             <input
               type="range"
               min={0}
@@ -961,7 +979,7 @@ export function PlayerControls({
               onChange={onVolumeInput}
               aria-label="Volume"
               aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
-              className="h-1 w-20 cursor-pointer accent-[var(--color-castify-accent)]"
+              className="hidden h-1 w-20 cursor-pointer accent-[var(--color-castify-accent)] sm:block"
             />
           </div>
 

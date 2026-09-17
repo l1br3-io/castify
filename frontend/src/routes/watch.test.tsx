@@ -724,8 +724,10 @@ describe("WatchPage", () => {
 
     expect(
       screen.getByRole("button", { name: "Previous video" }),
-    ).toBeDisabled(); // at queue head
-    expect(screen.getByRole("button", { name: "Next video" })).toBeEnabled();
+    ).toHaveAttribute("aria-disabled", "true"); // at queue head (tooltip-reachable, task 019)
+    expect(
+      screen.getByRole("button", { name: "Next video" }),
+    ).not.toHaveAttribute("aria-disabled");
     expect(screen.getByText("Up next")).toBeInTheDocument();
     // Up-next items load asynchronously.
     expect(

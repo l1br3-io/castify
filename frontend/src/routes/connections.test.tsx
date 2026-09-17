@@ -709,15 +709,21 @@ describe("ConnectionsPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("disables the Rescan button while scanning", async () => {
+  it("marks the Rescan button unavailable while scanning, with the reason on focus", async () => {
     const scanning = { ...GOOGLE_CONNECTED, scan_status: "scanning", video_count: 4 };
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([scanning]),
     });
 
+    // Task 019: the reason is known (a scan is already running) — the
+    // button stays focusable (aria-disabled) so the tooltip is reachable.
     const rescanBtn = await screen.findByRole("button", { name: /scanning/i });
-    expect((rescanBtn as HTMLButtonElement).disabled).toBe(true);
+    expect(rescanBtn).toHaveAttribute("aria-disabled", "true");
+    fireEvent.focus(rescanBtn);
+    expect(
+      screen.getByRole("tooltip", { name: "A scan is already running." }),
+    ).toBeInTheDocument();
   });
 
   it("triggers a rescan POST on click", async () => {
