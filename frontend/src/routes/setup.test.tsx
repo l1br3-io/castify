@@ -122,6 +122,69 @@ describe("SetupPage", () => {
       expect(screen.getByText("Password too common")).toBeInTheDocument();
     });
   });
+
+  it("announces errors assertively and wires them to the password input", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/setup" element={<SetupPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/setup"],
+        fetchImplementation: (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+          if (url === "/api/setup" && method === "POST")
+            return jsonError(400, "Password too common");
+          return jsonError(404, "unmocked");
+        },
+      },
+    );
+
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Alex" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Password too common");
+    const input = screen.getByLabelText("Password");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    const describedBy = input.getAttribute("aria-describedby") ?? "";
+    expect(describedBy.split(/\s+/)).toContain(alert.id);
+  });
+
+  it("names the network as the problem when the fetch itself fails", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/setup" element={<SetupPage />} />
+      </Routes>,
+      {
+        initialEntries: ["/setup"],
+        fetchImplementation: () => {
+          throw new TypeError("Failed to fetch");
+        },
+      },
+    );
+
+    fireEvent.change(screen.getByLabelText("Display name"), {
+      target: { value: "Alex" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "testpassword123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Can't reach the server. Check your connection and try again.",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
 });
 
 describe("setupLoader", () => {

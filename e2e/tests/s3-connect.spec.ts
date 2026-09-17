@@ -123,12 +123,15 @@ async function connectAndScan(page: Page): Promise<string> {
   await expect(card).toBeVisible();
 
   await card.getByRole("button", { name: "Connect" }).click();
-  await card.locator("#cred-s3-endpoint").fill(MINIO_ENDPOINT);
-  await card.locator("#cred-s3-region").fill("us-east-1");
-  await card.locator("#cred-s3-bucket").fill(BUCKET);
-  await card.locator("#cred-s3-access_key_id").fill(MINIO_ROOT_USER);
+  // Field primitive owns the input ids now — target by schema label.
+  // `exact` keeps the secret fields from also matching their
+  // "Show {label}" reveal buttons.
+  await card.getByLabel("Endpoint").fill(MINIO_ENDPOINT);
+  await card.getByLabel("Region").fill("us-east-1");
+  await card.getByLabel("Bucket").fill(BUCKET);
+  await card.getByLabel("Access key ID", { exact: true }).fill(MINIO_ROOT_USER);
   await card
-    .locator("#cred-s3-secret_access_key")
+    .getByLabel("Secret access key", { exact: true })
     .fill(MINIO_ROOT_PASSWORD);
 
   await card.getByRole("button", { name: "Connect" }).click();

@@ -373,9 +373,10 @@ describe("ConnectionsPage", () => {
       within(card).getByRole("button", { name: /^connect$/i }),
     );
 
-    // The backend's actionable message surfaces inline on the card…
+    // The backend's actionable message surfaces inline on the card,
+    // framed by what failed…
     expect(
-      await within(card).findByText(/rejected these credentials/),
+      await within(card).findByText(/Verification failed: .*rejected these credentials/),
     ).toBeInTheDocument();
     // …the form stays available for correction, and no connection row
     // appeared (the card is still in its not-connected state).
@@ -383,7 +384,7 @@ describe("ConnectionsPage", () => {
     expect(screen.queryByText("Scanning")).not.toBeInTheDocument();
   });
 
-  it("shows a generic inline error when the network fails", async () => {
+  it("names the network when the connect fetch itself fails", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: (input, init) => {
@@ -404,7 +405,9 @@ describe("ConnectionsPage", () => {
     fireEvent.click(within(card).getByRole("button", { name: /^connect$/i }));
 
     expect(
-      await within(card).findByText(/Something went wrong/),
+      await within(card).findByText(
+        "Can't reach the server. Check your connection and try again.",
+      ),
     ).toBeInTheDocument();
     expect(within(card).getByLabelText("Endpoint")).toBeInTheDocument();
   });

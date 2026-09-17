@@ -49,4 +49,21 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await page.waitForLoadState("networkidle");
     await scanAxe(page, "not-found");
   });
+
+  test("/setup (task 007) — no serious or critical violations", async ({
+    page,
+  }) => {
+    // The owner from earlier specs closes setup (409 → redirect), so stub
+    // the probe open to scan the pre-auth wizard state.
+    await page.route("**/api/setup", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ status: "open" }),
+      }),
+    );
+    await page.goto("/setup");
+    await page.waitForLoadState("networkidle");
+    await scanAxe(page, "setup");
+  });
 });

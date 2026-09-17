@@ -7,12 +7,15 @@
 // secrets are masked with a per-field reveal toggle and never rendered
 // back after submit (values are cleared on success, and the card flips to
 // its connected state once the refreshed list arrives). A failed verify
-// surfaces the backend's actionable message inline — no connection row is
-// persisted on failure, so the form stays up for correction.
+// surfaces the backend's actionable message framed by what failed —
+// verification (fix the values) vs. the network (check the connection) —
+// per spec FR-2.2; no connection row is persisted on failure, so the form
+// stays up for correction.
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import { ApiError } from "../api/client";
 import { connectWithCredentials } from "../api/connections";
 import { AVAILABLE_PROVIDERS_QUERY_KEY } from "../hooks/use-available-providers";
 import { CONNECTIONS_QUERY_KEY } from "../hooks/use-connections";
@@ -20,15 +23,22 @@ import { VIDEOS_QUERY_KEY } from "../hooks/use-videos";
 import { FOLDER_TREE_QUERY_KEY } from "../hooks/use-folder-tree";
 import { FOLDER_CONTENTS_QUERY_KEY } from "../hooks/use-folder-contents";
 import { useToast } from "../hooks/use-toast";
-import { describeError } from "../lib/format";
+import { Button } from "./ui/button";
+import { Field, Input } from "./ui/field";
 import {
   PROVIDER_LABELS,
   type CredentialsSchemaDto,
   type ProviderKey,
 } from "../api/types";
 
-const INPUT_CLASS =
-  "w-full min-w-0 flex-1 rounded-md border border-white/10 bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:text-white/40 focus:border-[var(--color-castify-accent)] focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]";
+/** FR-2.2: say what failed and the recovery path, per failure class. */
+function describeConnectFailure(error: unknown): string {
+  if (error instanceof ApiError) {
+    return `Verification failed: ${error.message}`;
+  }
+  // Fetch-level failure (offline, DNS, refused connection).
+  return "Can't reach the server. Check your connection and try again.";
+}
 
 type Props = {
   provider: ProviderKey;
@@ -76,16 +86,11 @@ export function CredentialsForm({ provider, schema, onCancel }: Props) {
       }}
     >
       {schema.fields.map((field) => {
-        const inputId = `cred-${provider}-${field.key}`;
         const isRevealed = revealed[field.key] ?? false;
         return (
-          <div key={field.key} className="space-y-1">
-            <label htmlFor={inputId} className="text-sm font-medium">
-              {field.label}
-            </label>
+          <Field key={field.key} label={field.label}>
             <div className="flex gap-2">
-              <input
-                id={inputId}
+              <Input
                 type={field.secret && !isRevealed ? "password" : "text"}
                 value={values[field.key] ?? ""}
                 onChange={(e) =>
@@ -96,7 +101,6 @@ export function CredentialsForm({ provider, schema, onCancel }: Props) {
                 }
                 placeholder={field.placeholder ?? undefined}
                 autoComplete={field.secret ? "new-password" : "off"}
-                className={INPUT_CLASS}
               />
               {field.secret && (
                 <button
@@ -108,35 +112,35 @@ export function CredentialsForm({ provider, schema, onCancel }: Props) {
                     }))
                   }
                   aria-label={`${isRevealed ? "Hide" : "Show"} ${field.label}`}
-                  className="shrink-0 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-2 text-xs transition hover:bg-[var(--color-castify-accent-subtle)]"
+                  className="shrink-0 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-2 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]"
                 >
                   {isRevealed ? "Hide" : "Show"}
                 </button>
               )}
             </div>
-          </div>
+          </Field>
         );
       })}
       <div className="flex items-center gap-2">
-        <button
-          type="submit"
-          disabled={connect.isPending}
-          className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-3 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 disabled:opacity-50"
-        >
+        <Button type="submit" size="sm" pending={connect.isPending}>
           {connect.isPending ? "Verifying…" : "Connect"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="secondary"
+          size="sm"
           onClick={onCancel}
           disabled={connect.isPending}
-          className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
         >
           Cancel
-        </button>
+        </Button>
       </div>
       {connect.isError && (
-        <p className="text-xs text-[var(--color-castify-accent-dim)]">
-          {describeError(connect.error)}
+        <p
+          role="alert"
+          className="text-xs text-[var(--color-danger)]"
+        >
+          {describeConnectFailure(connect.error)}
         </p>
       )}
     </form>
