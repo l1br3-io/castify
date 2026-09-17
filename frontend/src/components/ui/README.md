@@ -103,14 +103,18 @@ render-prop `(close) => ReactNode` for custom items (e.g. a `Link` with
 | Hover (trigger/items)    | `accent-subtle` fill; disabled items: no hover fill      |
 | Focus-visible            | standard focus ring (trigger); items highlight via `focus-visible` fill |
 | `ArrowDown` / `ArrowUp`  | cycle items, wrapping, skipping disabled                 |
+| `Home` / `End`           | first / last enabled item                                |
 | `Escape`                 | close, focus returns to trigger                          |
 | `Tab` (in panel)         | dismiss (focus proceeds naturally — no dangling panel)   |
-| Click outside            | dismiss                                                  |
+| Click outside            | dismiss (mousedown outside trigger **and panel** — the portal panel is not inside the trigger subtree) |
+| Scroll / resize          | dismiss (the fixed panel anchors once at open; a detached menu closes instead of re-anchoring) |
 | Select item              | runs `onSelect`, closes, focus back on trigger           |
 
 A11y contract: panel is `role="menu"` named by `label`; items are
 `role="menuitem"` buttons. Disabled items keep their text in the a11y tree;
-pair them with a `Tooltip` for the reason when one exists.
+pair them with a `Tooltip` for the reason when one exists. `triggerClassName`
+re-skins the trigger for dark surfaces (e.g. over thumbnails) without
+touching the contract.
 
 ## Dialog
 
@@ -155,3 +159,35 @@ Shared "no data" / error surfaces. CTAs render through the `Button`
 primitive — primary for EmptyState actions, secondary for ErrorState retry.
 ErrorState is `role="alert"`; copy rules live on the components (sentence
 case, verb-led CTA, no apologies).
+
+ErrorState also takes a `children` slot: extra recovery actions (links
+styled as buttons, secondary actions) render in the CTA row beside the
+retry — the watch page's Reconnect/Go-to-Sources pair uses it. Keep the
+`role="alert"` semantics: children must be actions, not body copy (use
+`body` for that).
+
+## Skeleton / SkeletonGrid
+
+Loading placeholders shaped like the content they stand in for.
+
+| Concern        | Contract                                                      |
+| -------------- | ------------------------------------------------------------- |
+| Shape          | caller owns dimensions — pass the size/aspect of the real content (`aspect-video`, fixed heights) so the swap causes zero layout shift |
+| Motion         | `animate-pulse`; collapses under the global reduced-motion override |
+| A11y           | none — decorative; the loading state belongs to the page (or a `role="status"` wrapper the caller adds) |
+| SkeletonGrid   | responsive poster-grid clone (2/3/4/5/6 cols) for grid sections |
+
+## Toast
+
+`useToast().info/success/error(message, opts?)` — stacked notices with
+`--z-toast` elevation. Success/info are `role="status"`; error is
+`role="alert"`. An optional `action` (e.g. the manage page's Undo) renders
+a button in the toast and receives its dismiss slot. Entrance is the
+sanctioned slide-in; reduced-motion collapses it globally.
+
+## OfflineBanner / ErrorBoundary
+
+Infra chrome, not interaction primitives: OfflineBanner is a `role="status"`
+strip shown while the app is unreachable (fetch health probe); ErrorBoundary
+catches render crashes into an ErrorState with reload. Neither takes part in
+the focus contract.
