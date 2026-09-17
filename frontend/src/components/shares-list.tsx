@@ -1,48 +1,48 @@
-// Shares management section for the Settings page (task 011).
+// Shares list — `/shares` (app-redesign task 005) as the demo's table
+// (task 017): Name / Items / Created / Expires / Status columns with
+// per-row actions. Filters (status chips + search) are visible and
+// resettable; zero-shares and no-results render EmptyState with a next
+// action.
+//
+// Purge (FR-5.3, task 017): the destructive action is a ui/Dialog — it
+// names the share, states exactly what is removed and that it cannot be
+// undone, and its confirm button reads "Purge share", the same verb as the
+// row button and the success toast ("Share purged"). Revoke keeps its
+// lighter window.confirm: it is reversible-ish (the record stays, only the
+// link dies) and predates this task's verb audit.
 //
 // Owner-facing list of every share (active and past) from a single
 // `GET /api/shares` on mount — no polling. The server stays the source of
 // truth for status: revoke confirms → `DELETE /api/shares/{id}` → the
 // query is invalidated and refetched, and the row flips to the server's
-// revoked state in place.
+// revoked state in place. Purge is `DELETE /api/shares/{id}?purge=true` —
+// the row leaves the list on refetch and the recipient link 404s.
 //
-// Copy-link: the raw token crossed the wire only at creation time (task
-// 002), so a row can offer a link only when *this browser* created the
-// share — the link is remembered per-device in IndexedDB
-// (`lib/share-links-db.ts`). Shares created elsewhere render status only;
-// there is nothing to reconstruct from (the server stores a hash). The
-// button itself is the shared `CopyLinkButton` (`copy-link-button.tsx`,
-// also used by the task 012 creation dialog).
-//
-// Manage: active rows get a "Manage" button (share-manage-page task 003)
-// that navigates to `/settings/shares/:id` — the detail page owns removal
-// (task 004) and adding (task 005).
-//
-// Delete (share-management task 005): every row, any status. Revoke is
-// "kill the link, keep the record" — the row flips to revoked in place.
-// Delete is `DELETE /api/shares/{id}?purge=true` — the row leaves the
-// list on refetch and the recipient link 404s. Both confirm first and
-// drop the per-device IndexedDB link entry on success.
+// Copy-link: the raw token crossed the wire only at creation time, so a
+// row can offer a link only when *this browser* created the share
+// (`lib/share-links-db.ts`). Shares created elsewhere render status only.
 //
 // Search + status chips (share-management task 006): everything is a
 // synchronous client-side pass over the cached `useShares` data — zero
-// network requests, and the server's newest-first order is preserved
-// (filtering never re-sorts). The status chips default to Active: past
-// shares stay hidden until their chip (or All) is asked for. Chip counts
-// are scoped to the current search so they double as "how many of each
-// the query still finds".
+// network requests, and the server's newest-first order is preserved.
 
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { deleteShare, revokeShare, type ShareDto } from "../api/shares";
 import { describeError, formatDate } from "../lib/format";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
+import { useToast } from "../hooks/use-toast";
 import { CopyLinkButton } from "./copy-link-button";
 import { StatusBadge } from "./status-badge";
+import { Button } from "./ui/button";
+import { buttonClasses, FOCUS_RING } from "./ui/button-classes";
+import { Dialog } from "./ui/dialog";
+import { EmptyState } from "./ui/empty-state";
 import { ErrorState } from "./ui/error-state";
+import { Input } from "./ui/field";
 import { Skeleton } from "./ui/skeleton";
 
 /** Chip values: the three server statuses plus "all". */
@@ -59,10 +59,10 @@ export function SharesSection() {
   return (
     <section aria-labelledby="shares-heading" className="space-y-4">
       <div>
-        <h2 id="shares-heading" className="text-lg font-semibold">
+        <h2 id="shares-heading" className="text-lg">
           Shares
         </h2>
-        <p className="mt-1 text-sm opacity-70">
+        <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
           Links you've shared. A link can be copied only on the device that
           created it — lost links can't be recovered.
         </p>
@@ -73,6 +73,7 @@ export function SharesSection() {
 }
 
 function SharesList() {
+  const navigate = useNavigate();
   const query = useShares();
 
   // Default Active (spec decision: past shares hide until asked for).
@@ -114,12 +115,12 @@ function SharesList() {
   const shares = query.data;
   if (shares.length === 0) {
     return (
-      <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
-        <p className="font-medium">No shares yet</p>
-        <p className="mt-2 text-sm text-[var(--color-castify-muted)]">
-          Shares you create will appear here.
-        </p>
-      </div>
+      <EmptyState
+        title="No shares yet"
+        body="Share a video from your library and it will appear here."
+        onAction={() => navigate("/")}
+        actionLabel="Share something"
+      />
     );
   }
 
@@ -141,6 +142,11 @@ function SharesList() {
       ? searched.length
       : searched.filter((s) => s.status === filter).length;
 
+  function clearFilters(): void {
+    setSearchQuery("");
+    setStatusFilter("active");
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -155,7 +161,7 @@ function SharesList() {
               type="button"
               aria-pressed={statusFilter === value}
               onClick={() => setStatusFilter(value)}
-              className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+              className={`keycap transition ${FOCUS_RING} ${
                 statusFilter === value
                   ? "keycap-active"
                   : "keycap-inactive"
@@ -165,33 +171,47 @@ function SharesList() {
             </button>
           ))}
         </div>
-        <input
+        <Input
           type="search"
           aria-label="Search shares by title"
           placeholder="Search shares…"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-44 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+          className="w-44"
         />
       </div>
 
       {visible.length === 0 ? (
-        <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-8 text-center">
-          <p className="font-medium">No shares match</p>
-          <p className="mt-2 text-sm text-[var(--color-castify-muted)]">
-            Try a different search or status filter.
-          </p>
-        </div>
+        <EmptyState
+          title="No shares match"
+          body="Try a different search or status filter."
+          onAction={clearFilters}
+          actionLabel="Clear search"
+        />
       ) : (
-        <ul className="space-y-3">
-          {visible.map((share) => (
-            <ShareRow
-              key={share.id}
-              share={share}
-              linkPath={linkMap?.[share.id] ?? null}
-            />
-          ))}
-        </ul>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-[var(--color-castify-rule)] text-left">
+                <th scope="col" className="px-2 py-2 font-medium">Name</th>
+                <th scope="col" className="px-2 py-2 font-medium">Items</th>
+                <th scope="col" className="px-2 py-2 font-medium">Created</th>
+                <th scope="col" className="px-2 py-2 font-medium">Expires</th>
+                <th scope="col" className="px-2 py-2 font-medium">Status</th>
+                <th scope="col" className="px-2 py-2" aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((share) => (
+                <ShareRow
+                  key={share.id}
+                  share={share}
+                  linkPath={linkMap?.[share.id] ?? null}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -199,6 +219,8 @@ function SharesList() {
 
 function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | null }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
+  const [purgeOpen, setPurgeOpen] = useState(false);
 
   const revoke = useMutation({
     mutationFn: () => revokeShare(share.id),
@@ -210,12 +232,16 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
     },
   });
 
-  const del = useMutation({
+  const purge = useMutation({
     mutationFn: () => deleteShare(share.id),
     onSuccess: () => {
       // Refetch rather than patching locally — the server owns the list.
       void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
       void deleteShareLink(share.id);
+      setPurgeOpen(false);
+      // FR-5.3 verb audit: button "Purge share" → confirmation "Purge
+      // share" → toast "Share purged".
+      toast.success("Share purged");
     },
   });
 
@@ -229,75 +255,100 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
     }
   }
 
-  function handleDelete(): void {
-    if (
-      window.confirm(
-        `Delete "${share.title}"? Recipients with the link immediately ` +
-          `lose access, and the share is removed permanently from this list.`,
-      )
-    ) {
-      del.mutate();
-    }
-  }
-
   return (
-    <li className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="truncate font-semibold">{share.title}</h3>
-          <p className="mt-0.5 text-sm text-[var(--color-castify-muted)]">
-            {share.item_count} {share.item_count === 1 ? "item" : "items"} ·
-            created {formatDate(share.created_at)}
-            {share.expires_at
-              ? ` · expires ${formatDate(share.expires_at)}`
-              : ""}
-          </p>
-        </div>
+    <tr className="border-b border-[var(--color-castify-rule)]">
+      <td className="max-w-48 truncate px-2 py-2.5 font-medium" title={share.title}>
+        {share.title}
+      </td>
+      <td className="figure px-2 py-2.5">{share.item_count}</td>
+      <td className="px-2 py-2.5 text-[var(--color-castify-muted)]">
+        {formatDate(share.created_at)}
+      </td>
+      <td className="px-2 py-2.5 text-[var(--color-castify-muted)]">
+        {share.expires_at ? formatDate(share.expires_at) : "Never"}
+      </td>
+      <td className="px-2 py-2.5">
         <StatusBadge status={share.status} />
-      </div>
-      {share.status === "active" && linkPath && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <CopyLinkButton linkPath={linkPath} />
-        </div>
-      )}
-      <div className="mt-3 flex items-center gap-2">
-        {share.status === "active" && (
-          <>
+      </td>
+      <td className="px-2 py-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {share.status === "active" && linkPath && (
+            <CopyLinkButton linkPath={linkPath} />
+          )}
+          {share.status === "active" && (
             <Link
               to={`/settings/shares/${encodeURIComponent(share.id)}`}
-              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)]"
+              className={buttonClasses("secondary", "sm")}
             >
               Manage
             </Link>
-            <button
-              type="button"
+          )}
+          {share.status === "active" && (
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleRevoke}
-              disabled={revoke.isPending}
-              className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+              pending={revoke.isPending}
             >
               {revoke.isPending ? "Revoking…" : "Revoke"}
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={handleDelete}
-          disabled={del.isPending}
-          className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-50"
+            </Button>
+          )}
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setPurgeOpen(true)}
+          >
+            Purge share
+          </Button>
+          {revoke.isError && (
+            <p className="text-xs text-[var(--color-danger)]">
+              {describeError(revoke.error)}
+            </p>
+          )}
+        </div>
+
+        {/* FR-5.3 purge confirmation: names the share, states exactly what
+            is removed and that it cannot be undone; the confirm button
+            carries the row button's verb. Dismissal is blocked mid-DELETE
+            via `closeable` so the outcome can't land behind a closed
+            dialog; failures surface inside the dialog for retry. */}
+        <Dialog
+          open={purgeOpen}
+          onClose={() => setPurgeOpen(false)}
+          closeable={!purge.isPending}
+          title={`Purge "${share.title}"`}
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setPurgeOpen(false)}
+                disabled={purge.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => purge.mutate()}
+                pending={purge.isPending}
+              >
+                {purge.isPending ? "Purging…" : "Purge share"}
+              </Button>
+            </>
+          }
         >
-          {del.isPending ? "Deleting…" : "Delete"}
-        </button>
-        {revoke.isError && (
-          <p className="text-xs text-[var(--color-castify-accent-dim)]">
-            {describeError(revoke.error)}
+          <p className="text-sm text-[var(--color-castify-muted)]">
+            The share and its {share.item_count}{" "}
+            {share.item_count === 1 ? "item" : "items"} will be removed from
+            your list, and recipients with the link immediately lose access.
           </p>
-        )}
-        {del.isError && (
-          <p className="text-xs text-[var(--color-castify-accent-dim)]">
-            {describeError(del.error)}
-          </p>
-        )}
-      </div>
-    </li>
+          <p className="text-sm font-semibold">This cannot be undone.</p>
+          {purge.isError && (
+            <p role="alert" className="text-sm text-[var(--color-danger)]">
+              {describeError(purge.error)}
+            </p>
+          )}
+        </Dialog>
+      </td>
+    </tr>
   );
 }

@@ -87,7 +87,7 @@ export function ShareManagePage() {
         <div className="mt-4 text-center">
           <Link
             to="/shares"
-            className="text-sm text-[var(--color-castify-accent)] hover:underline"
+            className="text-sm text-[var(--color-castify-accent-strong)] hover:underline"
           >
             Back to shares
           </Link>
@@ -234,7 +234,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
       <div>
         <Link
           to="/shares"
-          className="text-sm text-[var(--color-castify-accent)] hover:underline"
+          className="text-sm text-[var(--color-castify-accent-strong)] hover:underline"
         >
           ← Back to shares
         </Link>
@@ -242,13 +242,13 @@ function ShareDetail({ share }: { share: ShareDto }) {
           <h1 className="text-2xl font-semibold tracking-tight">{share.title}</h1>
           <StatusBadge status={share.status} />
         </div>
-        <p className="mt-1 text-sm opacity-60">
+        <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
           {count} {count === 1 ? "item" : "items"} · created{" "}
           {formatDate(share.created_at)}
           {share.expires_at ? ` · expires ${formatDate(share.expires_at)}` : ""}
         </p>
         {share.status !== "active" && (
-          <p className="mt-1 text-sm opacity-60">
+          <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
             This share is {share.status === "revoked" ? "revoked" : "expired"} —
             its link is no longer available. The list below is read-only.
           </p>

@@ -39,6 +39,9 @@ type MenuProps = {
   label: string;
   /** Trigger glyph; defaults to the kebab dots. */
   trigger?: ReactNode;
+  /** Override the trigger classes — e.g. the dark chip used when the
+   * menu rides on a thumbnail overlay. */
+  triggerClassName?: string;
   /** MenuItems, or a render-prop receiving close() for custom items. */
   children: ReactNode | ((close: () => void) => ReactNode);
   /** Panel edge to drop from. Default "end" (right-aligned). */
@@ -49,6 +52,7 @@ type MenuProps = {
 export function Menu({
   label,
   trigger,
+  triggerClassName,
   children,
   align = "end",
   className,
@@ -69,14 +73,37 @@ export function Menu({
   }, [open]);
 
   // Click-outside dismisses (mousedown so a drag starting outside still
-  // counts as outside).
+  // counts as outside). GOTCHA: the panel portals to <body>, so it is NOT
+  // inside rootRef — the check must consult both nodes, or a mousedown on
+  // a menu item closes the menu before its click can fire (real browsers
+  // only; fireEvent.click in unit tests skips mousedown and hides this).
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (
+        !rootRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  // Anchor detachment: the fixed panel is anchored once at open, so a page
+  // scroll or window resize can leave it pointing at the wrong spot —
+  // close instead of re-anchoring; reopening is one click/keypress.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, { passive: true, capture: true });
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, { capture: true });
+      window.removeEventListener("resize", close);
+    };
   }, [open]);
 
   function close(): void {
@@ -155,7 +182,7 @@ export function Menu({
         aria-label={label}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={handleTriggerKeyDown}
-        className={TRIGGER_CLASS}
+        className={triggerClassName ?? TRIGGER_CLASS}
       >
         {trigger ?? (
           <svg viewBox="0 0 16 16" className="h-4 w-4" fill="currentColor" aria-hidden>

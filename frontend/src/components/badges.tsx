@@ -128,7 +128,7 @@ type ProviderBadgeProps = {
 /** Neutral pill showing the provider display name. */
 export function ProviderBadge({ provider }: ProviderBadgeProps) {
   return (
-    <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-medium opacity-80">
+    <span className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-muted)]">
       {PROVIDER_LABELS[provider] ?? provider}
     </span>
   );
@@ -147,7 +147,7 @@ export function DedupBadge({ providers }: DedupBadgeProps) {
   const labels = providers.map((p) => PROVIDER_LABELS[p] ?? p).join(", ");
   return (
     <span
-      className="rounded-full bg-[var(--color-castify-accent)]/20 px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent)]"
+      className="rounded-[var(--radius-pill)] bg-[var(--color-castify-accent-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-strong)]"
       title="This video appears in multiple providers"
     >
       Also in: {labels}

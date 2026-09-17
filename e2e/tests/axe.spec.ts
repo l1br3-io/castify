@@ -13,12 +13,17 @@
 import { test, expect } from "@playwright/test";
 
 import {
+  createShare,
   disconnect,
   ensureAuthenticated,
   getCsrfToken,
   getVideos,
+  revokeShare,
   scanAxe,
   seedAndScan,
+  seedConnection,
+  triggerScan,
+  waitForScanComplete,
 } from "./helpers";
 test.describe("A11y (axe) — redesigned screens", () => {
   test("home/library (/) — no serious or critical violations", async ({
@@ -150,6 +155,38 @@ test.describe("A11y (axe) — redesigned screens", () => {
         .getByRole("button", { name: "Cancel" })
         .click();
     } finally {
+      await disconnect(page, connId, csrf);
+    }
+  });
+
+  test("/settings/shares/:id manage page (task 017) — no serious or critical violations", async ({
+    page,
+  }) => {
+    await ensureAuthenticated(page);
+    const csrf = await getCsrfToken(page);
+    const connId = await seedConnection(
+      page,
+      "google_drive",
+      "axe-manage@example.com",
+      csrf,
+    );
+    await triggerScan(page, connId, csrf);
+    await waitForScanComplete(page, connId);
+    const { videos } = await getVideos(page);
+    expect(videos.length).toBeGreaterThan(0);
+    const share = await createShare(
+      page,
+      { video_ids: [videos[0].id], title: "Axe manage scan" },
+      csrf,
+    );
+    try {
+      await page.goto(`/settings/shares/${share.id}`);
+      await page
+        .getByRole("heading", { name: /axe manage scan/i })
+        .waitFor({ timeout: 10_000 });
+      await scanAxe(page, "share-manage");
+    } finally {
+      await revokeShare(page, share.id, csrf);
       await disconnect(page, connId, csrf);
     }
   });

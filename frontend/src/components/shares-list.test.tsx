@@ -155,7 +155,8 @@ describe("SharesSection", () => {
     });
 
     expect(await screen.findByText("Trip footage")).toBeInTheDocument();
-    expect(screen.getByText(/3 items/)).toBeInTheDocument();
+    // Items is its own column cell now (table layout, task 017).
+    expect(screen.getByText("3")).toBeInTheDocument();
     // Default view (Active chip): two active rows, the revoked one hidden.
     expect(screen.getAllByText("Active")).toHaveLength(2);
     expect(screen.queryByText("Old share")).not.toBeInTheDocument();
@@ -164,9 +165,13 @@ describe("SharesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /^all/i }));
     expect(screen.getByText("Old share")).toBeInTheDocument();
     expect(screen.getByText("Revoked")).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent),
-    ).toEqual(["Trip footage", "Wedding cut", "Old share"]);
+    // Table rows (task 017): data rows in server order, names in the
+    // first cell.
+    const nameCells = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector("td")?.textContent);
+    expect(nameCells).toEqual(["Trip footage", "Wedding cut", "Old share"]);
 
     // Single GET on mount, no polling.
     await waitFor(() =>
@@ -455,9 +460,9 @@ describe("SharesSection", () => {
       ).toBe(true);
     });
 
-    // Row stays in the list and flips to the revoked state in place
+    // Row stays in the table and flips to the revoked state in place
     // (scoped to the row — the status chips also say "Revoked").
-    const row = (await screen.findByText("Trip footage")).closest("li")!;
+    const row = (await screen.findByText("Trip footage")).closest("tr")!;
     await waitFor(() =>
       expect(within(row).getByText(/revoked/i)).toBeInTheDocument(),
     );
@@ -495,7 +500,7 @@ describe("SharesSection", () => {
     confirmSpy.mockRestore();
   });
 
-  it("renders Delete on active, expired, and revoked rows", async () => {
+  it("renders Purge share on active, expired, and revoked rows", async () => {
     renderWithProviders(<SharesSection />, {
       fetchImplementation: sharesFetch([ACTIVE, REVOKED, EXPIRED]),
     });
@@ -505,13 +510,93 @@ describe("SharesSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
 
     expect(
-      screen.getAllByRole("button", { name: /^delete$/i }),
+      screen.getAllByRole("button", { name: /purge share/i }),
     ).toHaveLength(3);
   });
 
-  it("deletes after confirmation: purge DELETE, refetch drops the row, link entry removed", async () => {
+  it("renders the list as a table with scannable columns", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    for (const column of ["Name", "Items", "Created", "Expires", "Status"]) {
+      expect(screen.getByRole("columnheader", { name: column })).toBeInTheDocument();
+    }
+  });
+
+  it("shows an empty state with a next action when there are no shares", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([]),
+    });
+
+    expect(await screen.findByText("No shares yet")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Share something" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a no-results state with a clear action when the search misses", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    await screen.findByText("Trip footage");
+    fireEvent.change(screen.getByLabelText(/search shares/i), {
+      target: { value: "zzz" },
+    });
+    expect(screen.getByText("No shares match")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(screen.getByText("Trip footage")).toBeInTheDocument();
+  });
+
+  it("purge asks first: names the share and warns it cannot be undone", async () => {
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    const dialog = screen.getByRole("dialog", { name: /purge/i });
+    // The confirmation names the share (in the heading)…
+    expect(
+      within(dialog).getByText(/Purge "Trip footage"/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/cannot be undone/i),
+    ).toBeInTheDocument();
+    // The confirm action carries the same verb as the row button.
+    expect(
+      within(dialog).getByRole("button", { name: /purge share/i }),
+    ).toHaveClass("border-[var(--color-danger)]");
+  });
+
+  it("purge: cancelling deletes nothing", async () => {
+    const { fetchSpy } = renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.some(([input, init]) => {
+        const url = String(input);
+        return (
+          url.includes("purge=true") && (init?.method ?? "GET") === "DELETE"
+        );
+      }),
+    ).toBe(false);
+  });
+
+  it("purge: confirming DELETEs, toasts 'Share purged', drops the row, drops the link entry", async () => {
     vi.mocked(getShareLinkMap).mockResolvedValue({ s1: "/share/tok_abc" });
-    // Holder the fetch dispatch reads per call, so the post-delete GET
+    // Holder the fetch dispatch reads per call, so the post-purge GET
     // serves the server's purged (empty) list — the row must vanish via
     // refetch, not local patching.
     let current = [ACTIVE];
@@ -528,14 +613,15 @@ describe("SharesSection", () => {
         return jsonError(404, `unmocked ${method} ${url}`);
       },
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
-
-    // The confirm copy must be distinct from revoke's soft-delete wording.
-    expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining("removed permanently from this list"),
+    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    // The confirm action carries the identical verb (FR-5.3 audit).
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /purge share/i,
+      }),
     );
+
     await waitFor(() => {
       expect(
         fetchSpy.mock.calls.some(([input, init]) => {
@@ -548,6 +634,9 @@ describe("SharesSection", () => {
       ).toBe(true);
     });
 
+    // Success feedback uses the same verb: "Share purged".
+    expect(await screen.findByText("Share purged")).toBeInTheDocument();
+
     // Row disappears after the refetch — the server owns the list.
     await waitFor(() =>
       expect(screen.queryByText("Trip footage")).not.toBeInTheDocument(),
@@ -556,11 +645,9 @@ describe("SharesSection", () => {
     await waitFor(() =>
       expect(deleteShareLink).toHaveBeenCalledWith("s1"),
     );
-
-    confirmSpy.mockRestore();
   });
 
-  it("disables Delete while the purge is in flight", async () => {
+  it("disables the purge while it is in flight", async () => {
     let current = [ACTIVE];
     let resolveDelete: ((response: Response) => void) | undefined;
     renderWithProviders(<SharesSection />, {
@@ -576,12 +663,16 @@ describe("SharesSection", () => {
         return jsonError(404, `unmocked ${method} ${url}`);
       },
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /purge share/i,
+      }),
+    );
 
     expect(
-      await screen.findByRole("button", { name: /deleting/i }),
+      await screen.findByRole("button", { name: /purging/i }),
     ).toBeDisabled();
 
     current = [];
@@ -589,33 +680,9 @@ describe("SharesSection", () => {
     await waitFor(() =>
       expect(screen.queryByText("Trip footage")).not.toBeInTheDocument(),
     );
-
-    confirmSpy.mockRestore();
   });
 
-  it("does not purge when the delete confirm dialog is cancelled", async () => {
-    const { fetchSpy } = renderWithProviders(<SharesSection />, {
-      fetchImplementation: sharesFetch([ACTIVE]),
-    });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-
-    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
-
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(
-      fetchSpy.mock.calls.filter(([input, init]) => {
-        const url = String(input);
-        return (
-          String(url).includes("purge=true") &&
-          (init?.method ?? "GET") === "DELETE"
-        );
-      }),
-    ).toHaveLength(0);
-
-    confirmSpy.mockRestore();
-  });
-
-  it("surfaces a delete failure inline without dropping the row", async () => {
+  it("surfaces a purge failure inside the dialog without dropping the row", async () => {
     renderWithProviders(<SharesSection />, {
       fetchImplementation: (input, init) => {
         const url = String(input);
@@ -627,14 +694,19 @@ describe("SharesSection", () => {
         return jsonError(404, `unmocked ${method} ${url}`);
       },
     });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: /purge share/i,
+      }),
+    );
 
-    expect(await screen.findByText(/purge failed/i)).toBeInTheDocument();
+    // The failure surfaces inside the dialog, and the row (and dialog) stay
+    // for a retry.
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByText(/purge failed/i)).toBeInTheDocument();
     expect(screen.getByText("Trip footage")).toBeInTheDocument();
-
-    confirmSpy.mockRestore();
   });
 
   it('offers "Manage" on active rows only', async () => {
