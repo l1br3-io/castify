@@ -40,11 +40,11 @@ function renderLayout(fetchImpl: FetchHandler) {
   );
 }
 
-describe("AppLayout", () => {
+describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
   beforeEach(() => setCsrfToken(null));
   afterEach(() => setCsrfToken(null));
 
-  it("shows the owner display name and sign-out button when session present", async () => {
+  it("renders the sidebar nav in demo order with the owner chrome when session present", async () => {
     renderLayout(() =>
       jsonResponse({
         owner: { id: "u1", display_name: "Alex" },
@@ -58,24 +58,25 @@ describe("AppLayout", () => {
       screen.getByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
 
-    // Primary nav (spec D4): Library / Shares / Sources / Settings.
-    const nav = screen.getByRole("navigation");
+    // Sidebar nav (demo order): Library / Sources / Shares / Settings —
+    // icons are decorative; the link text is the accessible name.
+    const nav = screen.getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
       "Library",
-      "Shares",
       "Sources",
+      "Shares",
       "Settings",
     ]);
     expect(
       within(nav).getByRole("link", { name: "Library" }),
     ).toHaveAttribute("href", "/");
     expect(
-      within(nav).getByRole("link", { name: "Shares" }),
-    ).toHaveAttribute("href", "/shares");
-    expect(
       within(nav).getByRole("link", { name: "Sources" }),
     ).toHaveAttribute("href", "/connections");
+    expect(
+      within(nav).getByRole("link", { name: "Shares" }),
+    ).toHaveAttribute("href", "/shares");
     expect(
       within(nav).getByRole("link", { name: "Settings" }),
     ).toHaveAttribute("href", "/settings");
@@ -116,21 +117,24 @@ describe("AppLayout", () => {
     });
   });
 
-  it("shows a bare header without auth chrome when no session", async () => {
+  it("renders no shell chrome of its own when no session (auth screens own their brand)", async () => {
     renderLayout(() => jsonError(401, "unauthorized"));
 
     await waitFor(() => {
-      expect(screen.getByText("Castify")).toBeInTheDocument();
+      expect(screen.getByTestId("page")).toBeInTheDocument();
     });
     expect(
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
     expect(screen.queryByText("Sources")).not.toBeInTheDocument();
+    // The sidebar wordmark is session chrome; logged-out pages render
+    // bare (login/setup carry their own brand).
+    expect(screen.queryByRole("link", { name: "Castify" })).not.toBeInTheDocument();
   });
 
-  describe("scan LED", () => {
-    it("announces scanning while any connection has scan_status scanning", async () => {
+  describe("scan indicator", () => {
+    it("names the scanning provider in a status announcement", async () => {
       const { fetchSpy } = renderLayout((input) => {
         if (String(input) === "/api/connections")
           return jsonResponse([connectionFixture("scanning")]);
@@ -138,7 +142,7 @@ describe("AppLayout", () => {
       });
 
       const status = await screen.findByRole("status");
-      expect(status).toHaveTextContent("Scanning your cloud");
+      expect(status).toHaveTextContent("Scanning Google Drive");
       expect(fetchedUrls(fetchSpy)).toContain("/api/connections");
     });
 
@@ -161,7 +165,7 @@ describe("AppLayout", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Castify")).toBeInTheDocument();
+        expect(screen.getByTestId("page")).toBeInTheDocument();
       });
       expect(screen.queryByRole("status")).not.toBeInTheDocument();
       expect(fetchedUrls(fetchSpy)).not.toContain("/api/connections");

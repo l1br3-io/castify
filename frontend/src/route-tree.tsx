@@ -38,6 +38,15 @@ export const routeTree: RouteObject[] = [
     element: <ShareWatchPage />,
   },
   {
+    // Watch is standalone too (task 009/D5): the demo's watch page is a
+    // dark editorial spread with its own back-to-library chrome — it does
+    // not live inside the sidebar shell, and full-bleed playback wants the
+    // width. Session still required.
+    path: "/watch/:id",
+    element: <WatchPage />,
+    loader: requireSessionLoader,
+  },
+  {
     path: "/",
     element: <AppLayout />,
     children: [
@@ -70,11 +79,6 @@ export const routeTree: RouteObject[] = [
         // the page owns its own layout width (wide grid).
         path: "settings/shares/:id",
         element: <ShareManagePage />,
-        loader: requireSessionLoader,
-      },
-      {
-        path: "watch/:id",
-        element: <WatchPage />,
         loader: requireSessionLoader,
       },
       { path: "setup", element: <SetupPage />, loader: setupLoader },
