@@ -266,6 +266,33 @@
   color-scheme: dark;
 }
 
+/* Dark editorial surface (task 012) — the watch page's theme-invariant
+   colophon ground (demo watch spread): near-black regardless of the app
+   theme. Re-maps the themeable tokens to the dark-theme pairings on the
+   subtree, so components consuming tokens (Button, badges, EmptyState…)
+   render their dark-theme treatment inside it. Values mirror the
+   :root[data-theme="dark"] block — edit both together. */
+.dark-editorial {
+  --color-castify-accent: #e1ad66;
+  --color-castify-accent-dim: #facb8d;
+  --color-castify-accent-strong: #facb8d;
+  --color-castify-accent-subtle: #e1ad6631;
+  --color-castify-canvas: #262424;
+  --color-castify-surface: #2d2b2b;
+  --color-castify-surface-raised: #383535;
+  --color-castify-text: #f8f4f4;
+  --color-castify-muted: #bab6b6;
+  --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
+  --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
+  --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
+  --color-focus: #facb8d;
+  --color-on-accent: #262424;
+  background-color: var(--color-castify-canvas);
+  color: var(--color-castify-text);
+  color-scheme: dark;
+}
+
 /* System dark-mode preference wins when the user hasn't picked
    explicitly. NOTE: dark — not light — is the override here. The default
    (:root above) is already paper, so the cascade only needs to flip users

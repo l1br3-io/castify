@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, screen, act, waitFor } from "@testing-library/react";
+import { fireEvent, screen, act, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { WatchPage } from "./watch";
@@ -218,6 +218,61 @@ describe("WatchPage", () => {
     ).toHaveAttribute("href", "/api/videos/v1/download");
   });
 
+  it("renders the dark editorial ground regardless of app theme (colophon)", async () => {
+    mockCanPlayType("probably");
+    const { container } = renderWatchPage();
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Task 012: the whole watch page sits on the theme-invariant colophon
+    // ground — the demo's near-black watch spread — even in light theme.
+    expect(container.firstElementChild).toHaveClass("dark-editorial");
+  });
+
+  it("groups codec facts as plain labels with raw values one interaction away", async () => {
+    const withTracks = {
+      ...VIDEO_DETAIL,
+      subtitle_tracks: [
+        {
+          id: "t1",
+          language: "en",
+          format: "srt",
+          filename: "cat.en.srt",
+          format_family: "text" as const,
+          embedded_track_id: null,
+        },
+        {
+          id: "t2",
+          language: "de",
+          format: "ass",
+          filename: "cat.de.ass",
+          format_family: "image" as const,
+          embedded_track_id: null,
+        },
+      ],
+    };
+    mockCanPlayType("probably");
+    const { container } = renderWatchPage("v1", watchFetch(withTracks));
+
+    await screen.findByRole("heading", { name: "cat.mp4" });
+
+    // Plain labels (FR-3.4): container, resolution bucket, subtitle count.
+    expect(screen.getByText("MP4")).toBeInTheDocument();
+    expect(screen.getByText("1080p")).toBeInTheDocument();
+    expect(screen.getByText("2 subtitle tracks")).toBeInTheDocument();
+
+    // Raw values live in the expandable technical-details group.
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    fireEvent.click(
+      within(details as HTMLElement).getByText("Technical details"),
+    );
+    expect(
+      within(details as HTMLElement).getByText("video/mp4"),
+    ).toBeVisible();
+    expect(within(details as HTMLElement).getByText("1920 × 1080")).toBeVisible();
+  });
+
   it("renders the video optimistically when mime_type is null, then falls back on error", async () => {
     // jsdom canPlayType returns "" by default — no vi.spyOn needed.
     renderWatchPage("v1", (input) => {
@@ -244,7 +299,7 @@ describe("WatchPage", () => {
       screen.getByText("The video you're looking for doesn't exist."),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "Back to browse" }),
+      screen.getByRole("link", { name: "Back to library" }),
     ).toHaveAttribute("href", "/");
     // FR-4.1: a 404 clears the stale IndexedDB progress entry so the dead
     // continue-watching card stops surfacing on every browse.
@@ -256,7 +311,7 @@ describe("WatchPage", () => {
   it("shows a generic error message on 500", async () => {
     renderWatchPage("v1", () => jsonError(500, "database is locked"));
 
-    expect(await screen.findByText("Something went wrong")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load this video")).toBeInTheDocument();
     expect(screen.getByText(/database is locked/)).toBeInTheDocument();
     // FR-4.2: non-404 errors are transient — must NOT wipe the progress entry.
     expect(mockClearProgress).not.toHaveBeenCalled();
@@ -268,11 +323,14 @@ describe("WatchPage", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
+    // Task 012 presentation: title + provider badge; codec facts as plain
+    // chips; duration + size live in the technical-details group.
     expect(screen.getByText("cat.mp4")).toBeInTheDocument();
-    expect(screen.getByText("2:00")).toBeInTheDocument();
-    expect(screen.getByText("1920×1080")).toBeInTheDocument();
-    expect(screen.getByText("5.0 MB")).toBeInTheDocument();
     expect(screen.getByText("Google Drive")).toBeInTheDocument();
+    expect(screen.getByText("MP4")).toBeInTheDocument();
+    expect(screen.getByText("1080p")).toBeInTheDocument();
+    expect(screen.getByText("5.0 MB")).toBeInTheDocument();
+    expect(screen.getByText("2:00")).toBeInTheDocument();
   });
 
   // --- M3 T7 extensions: subtitle <track>, badges, personalization controls ---
@@ -466,7 +524,7 @@ describe("WatchPage", () => {
     await screen.findByRole("heading", { name: "cat.mp4" });
 
     // Back link rendered above the video.
-    // (Not checked via role since the text "Back to browse" isn't present —
+    // (Not checked via role since the text "Back to library" isn't present —
     //  the page only renders the video info. The WatchPage renders the video
     //  section; the back link is part of the overall page structure.)
     expect(document.querySelector("video")).not.toBeNull();
@@ -800,7 +858,7 @@ describe("WatchPage", () => {
       screen.getByRole("status", { name: "End of queue" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "Back to browse" }),
+      screen.getByRole("button", { name: "Back to library" }),
     ).toBeInTheDocument();
   });
 
@@ -1027,9 +1085,7 @@ describe("WatchPage", () => {
     // Card renders with the provider label resolved from the structured
     // error body — no raw `invalid_grant` text leaks to the user.
     expect(
-      await screen.findByRole("heading", {
-        name: "Reconnect Google Drive to play this video",
-      }),
+      await screen.findByText("Reconnect Google Drive to play this video"),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/invalid_grant/),
@@ -1073,9 +1129,7 @@ describe("WatchPage", () => {
 
     // Falls back to VIDEO_DETAIL.provider = "google_drive".
     expect(
-      await screen.findByRole("heading", {
-        name: "Reconnect Google Drive to play this video",
-      }),
+      await screen.findByText("Reconnect Google Drive to play this video"),
     ).toBeInTheDocument();
   });
 
@@ -1103,7 +1157,7 @@ describe("WatchPage", () => {
     // card never appears.
     await screen.findByRole("heading", { name: "cat.mp4" });
     expect(
-      screen.queryByRole("heading", { name: /Reconnect/ }),
+      screen.queryByText(/Reconnect/),
     ).not.toBeInTheDocument();
   });
 
@@ -1119,9 +1173,7 @@ describe("WatchPage", () => {
     const { container } = renderWatchPage("v1", watchFetchReauth());
 
     expect(
-      await screen.findByRole("heading", {
-        name: "Reconnect Google Drive to play this video",
-      }),
+      await screen.findByText("Reconnect Google Drive to play this video"),
     ).toBeInTheDocument();
     // Must NOT fall through to UnsupportedFormat.
     expect(
@@ -1192,9 +1244,7 @@ describe("WatchPage", () => {
     try {
       const { fetchSpy } = renderWatchPage("v1", fetchImpl);
 
-      await screen.findByRole("heading", {
-        name: "Reconnect Google Drive to play this video",
-      });
+      await screen.findByText("Reconnect Google Drive to play this video");
 
       // Primary CTA is now "Reconnect {provider}", not "Try again".
       const reconnect = screen.getByRole("button", {
@@ -1257,9 +1307,7 @@ describe("WatchPage", () => {
 
     // The Reconnect card must render — not the useless "Try again" card.
     expect(
-      await screen.findByRole("heading", {
-        name: "Reconnect Google Drive to play this video",
-      }),
+      await screen.findByText("Reconnect Google Drive to play this video"),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /Try again/i }),

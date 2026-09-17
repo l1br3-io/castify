@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ApiError } from "../api/client";
 import {
+  containerLabel,
   describeError,
   filenameInitial,
   formatDuration,
@@ -162,5 +163,22 @@ describe("describeError", () => {
     expect(describeError("string error")).toBe(
       "Something went wrong. Please try again.",
     );
+  });
+});
+
+describe("containerLabel", () => {
+  it("maps common video mime types to plain container labels", () => {
+    expect(containerLabel("video/mp4")).toBe("MP4");
+    expect(containerLabel("video/x-matroska")).toBe("MKV");
+    expect(containerLabel("video/quicktime")).toBe("MOV");
+    expect(containerLabel("video/webm")).toBe("WebM");
+    expect(containerLabel("video/x-msvideo")).toBe("AVI");
+    // Parameters on the mime type don't break the mapping.
+    expect(containerLabel("video/mp4; codecs=avc1")).toBe("MP4");
+  });
+
+  it("returns null for null or unknown mime types", () => {
+    expect(containerLabel(null)).toBeNull();
+    expect(containerLabel("video/x-newweird")).toBeNull();
   });
 });

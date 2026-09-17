@@ -7,6 +7,8 @@
 // surface becomes informational only (caller should provide guidance in
 // the body about what to do next).
 
+import { type ReactNode } from "react";
+
 import { Button } from "./button";
 
 type ErrorStateProps = {
@@ -16,6 +18,12 @@ type ErrorStateProps = {
   retryLabel?: string;
   /** Compact variant for inline use (shelves, small panels). */
   compact?: boolean;
+  /**
+   * Extra actions rendered beside the retry CTA (links styled as buttons,
+   * secondary actions). Kept as a slot — ErrorState owns the failure
+   * framing; the caller knows the recovery paths.
+   */
+  children?: ReactNode;
 };
 
 export function ErrorState({
@@ -24,6 +32,7 @@ export function ErrorState({
   onRetry,
   retryLabel = "Try again",
   compact = false,
+  children,
 }: ErrorStateProps) {
   const padding = compact ? "p-6" : "p-8 sm:p-12";
   const titleSize = compact ? "text-base" : "text-lg";
@@ -38,11 +47,14 @@ export function ErrorState({
       {body && (
         <p className={`mx-auto mt-2 max-w-sm opacity-70 ${bodySize}`}>{body}</p>
       )}
-      {onRetry && (
-        <div className="mt-5 flex justify-center">
-          <Button variant="secondary" onClick={onRetry}>
-            {retryLabel}
-          </Button>
+      {(onRetry || children) && (
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+          {onRetry && (
+            <Button variant="secondary" onClick={onRetry}>
+              {retryLabel}
+            </Button>
+          )}
+          {children}
         </div>
       )}
     </div>

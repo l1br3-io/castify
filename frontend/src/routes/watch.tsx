@@ -1,4 +1,9 @@
-// Watch page — M3 T7 player shell, T8 custom controls.
+// Watch page — M3 T7 player shell, T8 custom controls. Task 012 (Classical):
+// the standalone dark-editorial spread — the demo's colophon ground,
+// theme-invariant via the `.dark-editorial` token remap (index.css). Below
+// the player: serif title, provider/dedup badges, plain-label codec chips
+// (FR-3.4) with raw values in a collapsed technical-details group, and the
+// queue-driven Up next rail.
 //
 // Fetches `GET /api/videos/{id}` for full video metadata, renders a
 // `<video>` element sourcing from the stream endpoint. Subtitle sidecars
@@ -20,8 +25,8 @@
 // Shelf click navigation in T7) — direct URL access or reload starts with
 // no queue (FR-10.5).
 
-import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { FavoriteToggle } from "../components/favorite-toggle";
@@ -30,6 +35,9 @@ import { DedupBadge, ProviderBadge } from "../components/badges";
 import { PlayerControls } from "../components/player-controls";
 import { ShareDialog } from "../components/share-dialog";
 import { UpNext } from "../components/up-next";
+import { Button } from "../components/ui/button";
+import { buttonClasses } from "../components/ui/button-classes";
+import { ErrorState } from "../components/ui/error-state";
 import { useAutoAdvance } from "../hooks/use-auto-advance";
 import { useHlsStream } from "../hooks/use-hls-stream";
 import { useLibassSubtitles } from "../hooks/use-libass-subtitles";
@@ -43,9 +51,9 @@ import {
 } from "../hooks/use-stream-url";
 import { useVideoDetail } from "../hooks/use-video-detail";
 import {
+  containerLabel,
   describeError,
   formatDuration,
-  formatResolution,
   formatSize,
   formatTime,
   resolutionBucket,
@@ -57,6 +65,34 @@ import { downloadUrl, subtitleTrackUrl } from "../api/videos";
 import { startConnect } from "../api/connections";
 import { useToast } from "../hooks/use-toast";
 import { PROVIDER_LABELS, type ProviderKey, type VideoDetailDto } from "../api/types";
+
+/**
+ * The watch page's chrome: theme-invariant colophon ground (`.dark-editorial`)
+ * with a minimal top bar — back to the library + the wordmark. Everything
+ * below is the spread the demo shows: full-width player over editorial
+ * metadata.
+ */
+function WatchShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="dark-editorial flex min-h-screen flex-col">
+      <header className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 pt-5">
+        <Link
+          to="/"
+          className="text-sm text-[var(--color-castify-muted)] transition hover:text-[var(--color-castify-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
+        >
+          <span aria-hidden>←</span> Back to library
+        </Link>
+        {/* Copy freeze: DOM text stays `Castify`; lowercase mono wordmark. */}
+        <span className="font-mono text-base font-medium lowercase tracking-tight">
+          Castify
+        </span>
+      </header>
+      <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-12 pt-4">
+        {children}
+      </main>
+    </div>
+  );
+}
 
 /**
  * Probe whether the browser can natively play the given MIME type.
@@ -110,22 +146,26 @@ export function WatchPage() {
 
   if (query.isError) {
     return (
-      <div className="flex flex-col items-center gap-4 py-16 text-center">
-        <h1 className="text-2xl font-bold">
-          {isNotFound ? "Video not found" : "Something went wrong"}
-        </h1>
-        <p className="text-sm opacity-60">
-          {isNotFound
-            ? "The video you're looking for doesn't exist."
-            : describeError(query.error)}
-        </p>
-        <Link
-          to="/"
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
-        >
-          Back to browse
-        </Link>
-      </div>
+      <WatchShell>
+        <div className="py-16">
+          <ErrorState
+            title={isNotFound ? "Video not found" : "Couldn't load this video"}
+            body={
+              isNotFound
+                ? "The video you're looking for doesn't exist."
+                : describeError(query.error)
+            }
+          />
+        </div>
+      </WatchShell>
+    );
+  }
+
+  if (query.isLoading || !query.data) {
+    return (
+      <WatchShell>
+        <WatchSkeleton />
+      </WatchShell>
     );
   }
 
@@ -149,17 +189,23 @@ export function WatchPage() {
     : null;
   if (reauthError) {
     return (
-      <ReconnectProvider
-        video={video}
-        provider={
-          (reauthError.body as { provider?: ProviderKey } | null)?.provider ??
-          video.provider
-        }
-      />
+      <WatchShell>
+        <ReconnectProvider
+          video={video}
+          provider={
+            (reauthError.body as { provider?: ProviderKey } | null)?.provider ??
+            video.provider
+          }
+        />
+      </WatchShell>
     );
   }
   if (streamUrlQuery.error) {
-    return <StreamUrlError video={video} error={streamUrlQuery.error} />;
+    return (
+      <WatchShell>
+        <StreamUrlError video={video} error={streamUrlQuery.error} />
+      </WatchShell>
+    );
   }
 
   if (strategy === "transcode" || canPlay(video.mime_type)) {
@@ -171,10 +217,18 @@ export function WatchPage() {
   // stream-url hasn't resolved yet AND the mime type is unplayable — show
   // skeleton. Once strategy lands, the branch above catches "transcode".
   if (streamUrlQuery.isLoading) {
-    return <WatchSkeleton />;
+    return (
+      <WatchShell>
+        <WatchSkeleton />
+      </WatchShell>
+    );
   }
 
-  return <UnsupportedFormat video={video} />;
+  return (
+    <WatchShell>
+      <UnsupportedFormat video={video} />
+    </WatchShell>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +242,7 @@ function VideoPlayer({
   video: VideoDetailDto;
   streamUrlQuery: ReturnType<typeof useStreamUrl>;
 }) {
+  const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -321,17 +376,19 @@ function VideoPlayer({
 
   if (reauthError) {
     return (
-      <ReconnectProvider
-        video={video}
-        provider={
-          // The backend surfaces the dead connection's provider in the
-          // structured error body; fall back to the video's own provider
-          // (they're the same in practice — the connection that owns the
-          // video is the one whose token is dead).
-          (reauthError.body as { provider?: ProviderKey } | null)?.provider ??
-          video.provider
-        }
-      />
+      <WatchShell>
+        <ReconnectProvider
+          video={video}
+          provider={
+            // The backend surfaces the dead connection's provider in the
+            // structured error body; fall back to the video's own provider
+            // (they're the same in practice — the connection that owns the
+            // video is the one whose token is dead).
+            (reauthError.body as { provider?: ProviderKey } | null)?.provider ??
+            video.provider
+          }
+        />
+      </WatchShell>
     );
   }
 
@@ -342,11 +399,19 @@ function VideoPlayer({
   // with `src={undefined}` left Play as a no-op that threw
   // "NotSupportedError: The element has no supported sources."
   if (streamUrlQuery.error) {
-    return <StreamUrlError video={video} error={streamUrlQuery.error} />;
+    return (
+      <WatchShell>
+        <StreamUrlError video={video} error={streamUrlQuery.error} />
+      </WatchShell>
+    );
   }
 
   if (hasError) {
-    return <UnsupportedFormat video={video} />;
+    return (
+      <WatchShell>
+        <UnsupportedFormat video={video} />
+      </WatchShell>
+    );
   }
 
   const posterUrl = `/api/videos/${encodeURIComponent(video.id)}/thumbnail`;
@@ -359,11 +424,12 @@ function VideoPlayer({
   const isHlsLoading = isTranscode && !hlsStream.isReady;
 
   return (
-    <div className="space-y-4">
-      <div
-        ref={containerRef}
-        className="relative w-full overflow-hidden rounded-lg bg-black"
-      >
+    <WatchShell>
+      <div className="space-y-4">
+        <div
+          ref={containerRef}
+          className="relative w-full overflow-hidden rounded-[var(--radius-drawer)] bg-black"
+        >
         <video
           preload="metadata"
           poster={posterUrl}
@@ -471,19 +537,20 @@ function VideoPlayer({
                 You&apos;ve reached the end of the queue.
               </p>
               <div className="mt-2 flex gap-2">
-                <Link
-                  to="/"
-                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                <Button
+                  onClick={() => {
+                    setShowEndOfQueue(false);
+                    navigate("/");
+                  }}
                 >
-                  Back to browse
-                </Link>
-                <button
-                  type="button"
+                  Back to library
+                </Button>
+                <Button
+                  variant="secondary"
                   onClick={() => setShowEndOfQueue(false)}
-                  className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                 >
                   Dismiss
-                </button>
+                </Button>
               </div>
             </div>
           </div>
@@ -544,7 +611,8 @@ function VideoPlayer({
           }}
         />
       )}
-    </div>
+      </div>
+    </WatchShell>
   );
 }
 
@@ -554,20 +622,17 @@ function VideoPlayer({
 
 function UnsupportedFormat({ video }: { video: VideoDetailDto }) {
   return (
-    <div className="space-y-4">
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)]">
-        <div className="text-4xl">🎬</div>
-        <p className="text-lg font-medium">
-          This format can&apos;t be played in-browser
-        </p>
-        <a
-          href={downloadUrl(video.id)}
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90"
-          download
-        >
+    <div className="space-y-4 pt-6">
+      <ErrorState
+        title="This format can't be played in-browser"
+        body={`Castify can't decode ${containerLabel(video.mime_type) ?? "this container"} here — download the file to play it locally.`}
+      >
+        {/* Download is a navigation, not a client-side action — a link
+            styled as the primary button (ui/ README § link-as-button). */}
+        <a href={downloadUrl(video.id)} download className={buttonClasses()}>
           Download {video.name}
         </a>
-      </div>
+      </ErrorState>
       <VideoInfo video={video} />
     </div>
   );
@@ -598,23 +663,16 @@ function StreamUrlError({
 }) {
   const queryClient = useQueryClient();
   return (
-    <div className="space-y-4">
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-6 text-center">
-        <div className="text-4xl">⚠️</div>
-        <p className="text-lg font-medium">Couldn&apos;t load this video</p>
-        <p className="max-w-md text-sm opacity-70">{describeError(error)}</p>
-        <button
-          type="button"
-          onClick={() =>
-            queryClient.invalidateQueries({
-              queryKey: streamUrlQueryKey(video.id),
-            })
-          }
-          className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-        >
-          Try again
-        </button>
-      </div>
+    <div className="space-y-4 pt-6">
+      <ErrorState
+        title="Couldn't load this video"
+        body={describeError(error)}
+        onRetry={() =>
+          queryClient.invalidateQueries({
+            queryKey: streamUrlQueryKey(video.id),
+          })
+        }
+      />
       <VideoInfo video={video} />
     </div>
   );
@@ -665,40 +723,18 @@ function ReconnectProvider({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-6 text-center">
-        <div className="text-4xl">🔌</div>
-        <h2 className="text-lg font-medium">
-          Reconnect {label} to play this video
-        </h2>
-        <p className="max-w-md text-sm opacity-70">
-          {label}&apos;s authorization has expired or was revoked. Castify
-          can&apos;t stream until you reconnect the account — your library
-          stays intact.
-        </p>
-        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-          <button
-            type="button"
-            onClick={handleReconnect}
-            disabled={isRedirecting}
-            className="rounded-md bg-[var(--color-castify-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
-          >
-            {isRedirecting ? "Redirecting…" : `Reconnect ${label}`}
-          </button>
-          <Link
-            to="/connections"
-            className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-          >
-            Go to Sources
-          </Link>
-          <Link
-            to="/"
-            className="rounded-md border border-white/15 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-          >
-            Back to browse
-          </Link>
-        </div>
-      </div>
+    <div className="space-y-4 pt-6">
+      <ErrorState
+        title={`Reconnect ${label} to play this video`}
+        body={`${label}'s authorization has expired or was revoked. Castify can't stream until you reconnect the account — your library stays intact.`}
+      >
+        <Button onClick={handleReconnect} pending={isRedirecting}>
+          {isRedirecting ? "Redirecting…" : `Reconnect ${label}`}
+        </Button>
+        <Link to="/connections" className={buttonClasses("secondary")}>
+          Go to Sources
+        </Link>
+      </ErrorState>
       <VideoInfo video={video} />
     </div>
   );
@@ -709,39 +745,73 @@ function ReconnectProvider({
 // ---------------------------------------------------------------------------
 
 function VideoInfo({ video }: { video: VideoDetailDto }) {
-  const resBucket = resolutionBucket(video.height);
   const others = otherProviders(video);
 
   // Task 012: Share entry point — opens the creation dialog prefilled
   // with this item. Local state; the dialog owns its own mutation.
   const [shareOpen, setShareOpen] = useState(false);
 
+  // Plain-label codec facts (FR-3.4). Raw values stay one interaction away
+  // in the technical-details group below.
+  const container = containerLabel(video.mime_type);
+  const resBucket = resolutionBucket(video.height);
+  const trackCount = video.subtitle_tracks.length;
+
   return (
     <div className="space-y-3">
-      <h1 className="text-xl font-bold tracking-tight">{video.name}</h1>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-white/60">
-        {video.duration_ms !== null && (
-          <span>{formatDuration(video.duration_ms)}</span>
-        )}
-        {video.width !== null && video.height !== null && (
-          <>
-            {video.duration_ms !== null && <span aria-hidden>·</span>}
-            <span>{formatResolution(video.width, video.height)}</span>
-          </>
-        )}
-        <span aria-hidden>·</span>
-        <span>{formatSize(video.size_bytes)}</span>
-        {resBucket !== null && (
-          <>
-            <span aria-hidden>·</span>
-            <span>{resBucket}</span>
-          </>
-        )}
-      </div>
+      <h1 className="text-2xl">{video.name}</h1>
       <div className="flex flex-wrap items-center gap-2">
         <ProviderBadge provider={video.provider} />
         {others.length > 0 && <DedupBadge providers={others} />}
+        {container && <span className="keycap">{container}</span>}
+        {resBucket && <span className="keycap">{resBucket}</span>}
+        {trackCount > 0 && (
+          <span className="keycap">
+            {trackCount} subtitle track{trackCount === 1 ? "" : "s"}
+          </span>
+        )}
       </div>
+      <details className="group max-w-xl text-sm">
+        <summary className="cursor-pointer select-none text-[var(--color-castify-muted)] transition hover:text-[var(--color-castify-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]">
+          Technical details
+        </summary>
+        <dl className="mt-2 space-y-1 border-l border-[var(--color-castify-rule)] pl-3 font-mono text-xs text-[var(--color-castify-muted)]">
+          {video.mime_type !== null && (
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0">Container</dt>
+              <dd>{video.mime_type}</dd>
+            </div>
+          )}
+          {video.width !== null && video.height !== null && (
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0">Resolution</dt>
+              <dd>
+                {video.width} × {video.height}
+              </dd>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <dt className="w-24 shrink-0">Size</dt>
+            <dd>{formatSize(video.size_bytes)}</dd>
+          </div>
+          {video.duration_ms !== null && (
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0">Duration</dt>
+              <dd>{formatDuration(video.duration_ms)}</dd>
+            </div>
+          )}
+          {trackCount > 0 && (
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0">Subtitles</dt>
+              <dd>
+                {video.subtitle_tracks
+                  .map((t) => `${t.language ?? "?"} · ${t.format}`)
+                  .join(", ")}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </details>
       {/* Personalization controls — hero variant. `VideoDetailDto` is a
           structural superset of `VideoSummaryDto`, so both controls accept
           it without adapter code. The Share action (task 012) sits in the
@@ -749,13 +819,9 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
       <div className="flex flex-wrap items-center gap-4 pt-1">
         <FavoriteToggle video={video} variant="hero" />
         <RatingStars video={video} variant="hero" />
-        <button
-          type="button"
-          onClick={() => setShareOpen(true)}
-          className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs transition hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-        >
+        <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
           Share
-        </button>
+        </Button>
       </div>
       {shareOpen && (
         <ShareDialog
@@ -773,12 +839,18 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
 // ---------------------------------------------------------------------------
 
 function WatchSkeleton() {
+  // Content-shaped (FR-6): the 16:9 player surface, then title + chip rows
+  // at the sizes the metadata will actually land at.
   return (
-    <div className="space-y-4">
-      <div className="aspect-video w-full animate-pulse rounded-lg bg-[var(--color-castify-surface)]" />
-      <div className="space-y-2">
-        <div className="h-6 w-64 rounded bg-white/10" />
-        <div className="h-4 w-48 rounded bg-white/5" />
+    <div className="space-y-4 pt-6">
+      <div className="aspect-video w-full animate-pulse rounded-[var(--radius-drawer)] bg-[var(--color-castify-surface)]" />
+      <div className="space-y-3">
+        <div className="h-7 w-72 rounded bg-[var(--color-castify-hover)]" />
+        <div className="flex gap-2">
+          <div className="h-5 w-24 rounded bg-[var(--color-castify-hover)]" />
+          <div className="h-5 w-16 rounded bg-[var(--color-castify-hover)]" />
+          <div className="h-5 w-20 rounded bg-[var(--color-castify-hover)]" />
+        </div>
       </div>
     </div>
   );

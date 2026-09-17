@@ -10,9 +10,16 @@
 // run FIRST — its cold-boot case expects no owner to exist. "axe" sorts
 // after "auth-flow"; "a11y" sorted before it and broke that assumption.
 
-import { test } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 
-import { ensureAuthenticated, scanAxe } from "./helpers";
+import {
+  disconnect,
+  ensureAuthenticated,
+  getCsrfToken,
+  getVideos,
+  scanAxe,
+  seedAndScan,
+} from "./helpers";
 
 test.describe("A11y (axe) — redesigned screens", () => {
   test("home/library (/) — no serious or critical violations", async ({
@@ -78,5 +85,31 @@ test.describe("A11y (axe) — redesigned screens", () => {
       .getByRole("heading", { name: "S3-Compatible Storage" })
       .waitFor();
     await scanAxe(page, "sources");
+  });
+
+  test("/watch/:id (task 012) — no serious or critical violations", async ({
+    page,
+  }) => {
+    // Watch is standalone (no sidebar), so seed a video to view. Seeded
+    // state is torn down (disconnect cascade) so later specs — whose
+    // mocks assume their own state — aren't affected.
+    await ensureAuthenticated(page);
+    const csrf = await getCsrfToken(page);
+    const connId = await seedAndScan(
+      page,
+      "google_drive",
+      "axe-scan@example.com",
+      csrf,
+    );
+    const { videos } = await getVideos(page);
+    expect(videos.length).toBeGreaterThan(0);
+
+    await page.goto(`/watch/${videos[0].id}`);
+    await page
+      .getByRole("heading", { name: videos[0].name })
+      .waitFor({ timeout: 10_000 });
+    await scanAxe(page, "watch");
+
+    await disconnect(page, connId, csrf);
   });
 });

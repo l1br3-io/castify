@@ -55,6 +55,35 @@ export function formatResolution(width: number, height: number): string {
 }
 
 /**
+ * Plain container label for a video MIME type (FR-3.4 codec facts).
+ *
+ * Mapping table (mime → everyday label):
+ *   video/mp4        → MP4   (also handles `; codecs=…` parameters)
+ *   video/x-matroska → MKV
+ *   video/quicktime  → MOV
+ *   video/webm       → WebM
+ *   video/x-msvideo  → AVI
+ *   video/mpeg       → MPEG
+ *
+ * Returns `null` for `null` input or unrecognized types — the caller skips
+ * the chip rather than showing a wrong label; the raw mime stays available
+ * in the watch page's technical-details group.
+ */
+export function containerLabel(mime: string | null): string | null {
+  if (mime === null) return null;
+  const base = mime.split(";")[0].trim().toLowerCase();
+  const LABELS: Record<string, string> = {
+    "video/mp4": "MP4",
+    "video/x-matroska": "MKV",
+    "video/quicktime": "MOV",
+    "video/webm": "WebM",
+    "video/x-msvideo": "AVI",
+    "video/mpeg": "MPEG",
+  };
+  return LABELS[base] ?? null;
+}
+
+/**
  * Map a video's pixel height to a coarse resolution bucket label for badges.
  * Returns the *highest* applicable bucket, or `null` if `height` is below 360
  * (too small to badge) — `null` lets the caller skip rendering entirely.
