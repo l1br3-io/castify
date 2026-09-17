@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="Castify" description="A self-hosted media server product, in Classical's editorial voice — login, first-run setup, a sidebar library of every file type, dark player, connections, shares and a public recipient landing, all clickable" -->
+<helmet>
+<link rel="stylesheet" href="../../styles.css" />
+<title>Castify</title>
+<script src="./ds-base.js"></script>
+<style>
+.cf-plate{position:relative;aspect-ratio:16/9;overflow:hidden;background:repeating-linear-gradient(135deg,var(--color-neutral-200) 0 10px,var(--color-neutral-300) 10px 20px)}
+.cf-plate.dark{background:repeating-linear-gradient(135deg,var(--color-neutral-800) 0 10px,var(--color-neutral-900) 10px 20px)}
+.cf-plate span{position:absolute;bottom:6px;left:8px;font:11px ui-monospace,monospace;color:color-mix(in srgb,var(--color-text) 55%,transparent)}
+.cf-plate.dark span{color:color-mix(in srgb,#fff 55%,transparent)}
+.cf-plate .cf-kicon{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:color-mix(in srgb,var(--color-text) 35%,transparent)}
+.cf-rail{display:flex;gap:var(--space-3);overflow-x:auto;padding-bottom:var(--space-2)}
+.cf-rail::-webkit-scrollbar{height:6px}
+.cf-vcard{flex:0 0 220px;display:flex;flex-direction:column;gap:6px;cursor:pointer}
+.cf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:var(--space-3)}
+.cf-devnav{position:fixed;left:50%;bottom:var(--space-3);transform:translateX(-50%);display:flex;gap:2px;flex-wrap:wrap;justify-content:center;max-width:92vw;padding:6px;border-radius:var(--radius-lg);background:color-mix(in srgb,var(--color-bg) 88%,transparent);border:1px solid var(--color-divider);box-shadow:var(--shadow-md);z-index:999;backdrop-filter:blur(6px)}
+.cf-devnav button{font-family:var(--font-body);font-size:10.5px;letter-spacing:0.02em;padding:5px 9px;border-radius:var(--radius-sm);border:1px solid transparent;background:transparent;color:var(--color-text);cursor:pointer;white-space:nowrap}
+.cf-devnav button:hover{background:color-mix(in srgb,var(--color-text) 8%,transparent)}
+.cf-devnav button.on{color:var(--color-accent);border-color:var(--color-accent)}
+.cf-toggle{display:inline-flex;border:1px solid var(--color-divider);border-radius:var(--radius-md);overflow:hidden}
+.cf-toggle button{font-family:var(--font-body);font-size:13px;padding:6px 14px;border:0;background:transparent;color:var(--color-text);cursor:pointer}
+.cf-toggle button+button{border-left:1px solid var(--color-divider)}
+.cf-toggle button.on{background:color-mix(in srgb,var(--color-accent) 12%,transparent);color:var(--color-accent-700)}
+.cf-favbtn.cf-fav-on{color:var(--color-accent)}
+.cf-favbtn.cf-fav-off{color:var(--color-text)}
+.cf-side{display:flex;flex-direction:column;padding:var(--space-4) var(--space-3);border-right:1px solid var(--color-divider);min-height:100vh}
+.cf-sidelink{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-md);font-size:14px;color:var(--color-text);text-decoration:none;cursor:pointer}
+.cf-sidelink svg{flex:none}
+.cf-sidelink:hover{background:color-mix(in srgb,var(--color-text) 7%,transparent)}
+.cf-sidelink.on{color:var(--color-accent);background:color-mix(in srgb,var(--color-accent) 10%,transparent)}
+.cf-sidehead{font-size:10px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;padding:0 10px;margin:var(--space-3) 0 6px}
+</style>
+</helmet>
+
+<div class="cf-devnav">
+<button class="{{ navCls.login }}" onclick="{{ go_login }}">Login</button>
+<button class="{{ navCls.setup }}" onclick="{{ go_setup }}">Setup</button>
+<button class="{{ navCls.home }}" onclick="{{ go_home }}">Library</button>
+<button class="{{ navCls.watch }}" onclick="{{ go_watch }}">Watch</button>
+<button class="{{ navCls.sources }}" onclick="{{ go_sources }}">Sources</button>
+<button class="{{ navCls.shares }}" onclick="{{ go_shares }}">Shares</button>
+<button class="{{ navCls.recipient }}" onclick="{{ go_recipient }}">Recipient link</button>
+<button class="{{ navCls.settings }}" onclick="{{ go_settings }}">Settings</button>
+</div>
+
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+<div style="min-height:100vh;display:grid;place-items:center;padding:var(--space-6)">
+<div class="card" style="width:min(380px,100%);padding:var(--space-6) var(--space-4);gap:var(--space-4);text-align:center">
+<div style="font-family:var(--font-heading);font-weight:var(--font-heading-weight);font-size:28px">Castify</div>
+<p class="text-muted" style="margin:0;font-size:13px">One home for all your cloud files.</p>
+<div class="hr" style="margin:var(--space-2) 0"></div>
+<div class="field" style="text-align:left"><label>Display name</label><input class="input" placeholder="owner" /></div>
+<div class="field" style="text-align:left"><label>Password</label><input class="input" type="password" placeholder="••••••••" /></div>
+<button class="btn btn-primary btn-block" onclick="{{ go_home }}">Sign in</button>
+<p class="text-muted" style="margin:0;font-size:12px">First run? <a href="#" onclick="{{ go_setup }}">Run setup</a> instead.</p>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSetup }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;display:grid;place-items:center;padding:var(--space-6)">
+<div class="card" style="width:min(460px,100%);padding:var(--space-6) var(--space-4);gap:var(--space-4)">
+<span class="tag tag-outline" style="align-self:flex-start">Step {{ setupStep }} of 2</span>
+<h2 style="margin:0">{{ setupTitle }}</h2>
+<sc-if value="{{ isSetupStep1 }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;flex-direction:column;gap:var(--space-3)">
+<div class="field"><label>Display name</label><input class="input" placeholder="Alex" /></div>
+<div class="field"><label>Password</label><input class="input" type="password" placeholder="••••••••" /></div>
+<div class="field"><label>Confirm password</label><input class="input" type="password" placeholder="••••••••" /></div>
+<button class="btn btn-primary btn-block" onclick="{{ setupNext }}">Continue</button>
+</div>
+</sc-if>
+<sc-if value="{{ isSetupStep2 }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;flex-direction:column;gap:var(--space-3)">
+<p class="text-muted" style="margin:0;font-size:13px">Connect a cloud provider you already pay for. You can add more later.</p>
+<div class="cf-grid" style="grid-template-columns:1fr 1fr">
+<div class="card" style="align-items:center;text-align:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-accent)"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg><span style="font-size:13px">Google Drive</span><button class="btn btn-secondary" style="font-size:12px;padding:4px 10px">Connect</button></div>
+<div class="card" style="align-items:center;text-align:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-accent)"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg><span style="font-size:13px">Dropbox</span><button class="btn btn-secondary" style="font-size:12px;padding:4px 10px">Connect</button></div>
+<div class="card" style="align-items:center;text-align:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-accent)"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg><span style="font-size:13px">OneDrive</span><button class="btn btn-secondary" style="font-size:12px;padding:4px 10px">Connect</button></div>
+<div class="card" style="align-items:center;text-align:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-accent)"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span style="font-size:13px">S3-compatible</span><button class="btn btn-secondary" style="font-size:12px;padding:4px 10px">Connect</button></div>
+</div>
+<div style="display:flex;gap:var(--space-2)"><button class="btn btn-ghost" onclick="{{ go_home }}">Skip for now</button><button class="btn btn-primary" style="margin-left:auto" onclick="{{ go_home }}">Finish setup</button></div>
+</div>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;display:grid;grid-template-columns:220px 1fr">
+<aside class="cf-side"><div class="nav-brand" style="padding:0 10px var(--space-3)">Castify</div>
+<a class="cf-sidelink on" onclick="{{ go_home }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>Library</a>
+<a class="cf-sidelink" onclick="{{ go_sources }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg>Sources</a>
+<a class="cf-sidelink" onclick="{{ go_shares }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Shares</a>
+<a class="cf-sidelink" onclick="{{ go_settings }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+<div class="cf-sidehead">Folders</div>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Travel</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Music</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Family</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Work</a>
+<div style="margin-top:auto;display:flex;align-items:center;gap:8px;padding:var(--space-3) 10px 0;border-top:1px solid var(--color-divider)"><span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 25%,transparent);flex:none"></span><span class="text-muted" style="font-size:12px">Scanning Google Drive…</span></div>
+</aside>
+<div style="padding:var(--space-4) var(--space-4) 80px;min-width:0">
+<div class="cf-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:var(--space-6)">
+<div class="card"><span class="card-kicker">Files</span><span style="font-family:var(--font-heading);font-size:26px;font-variant-numeric:tabular-nums">1,329</span></div>
+<div class="card"><span class="card-kicker">Providers</span><span style="font-family:var(--font-heading);font-size:26px;font-variant-numeric:tabular-nums">4</span></div>
+<div class="card"><span class="card-kicker">Cache</span><span style="font-family:var(--font-heading);font-size:26px;font-variant-numeric:tabular-nums">6.2 <small style="font-size:14px;opacity:.6">/ 10 GiB</small></span></div>
+<div class="card"><span class="card-kicker">Now scanning</span><span style="font-family:var(--font-heading);font-size:26px">Google Drive</span></div>
+</div>
+
+<h3>Continue watching &amp; listening</h3>
+<div class="cf-rail" style="margin-bottom:var(--space-6)">
+<sc-for list="{{ continueWatching }}" as="v" hint-placeholder-count="2">
+<div class="cf-vcard" onclick="{{ playItem }}" data-id="{{ v.id }}">
+<div class="plate cf-plate"><span>{{ v.file }}</span>
+<div style="position:absolute;left:0;right:0;bottom:0;height:3px;background:color-mix(in srgb,#000 30%,transparent)"><div style="height:100%;background:var(--color-accent);width:{{ v.progress }}%"></div></div>
+</div>
+<div style="font-size:13px;font-weight:600">{{ v.title }}</div>
+<div class="card-meta"><span class="tag tag-neutral">{{ v.provider }}</span><span>{{ v.meta }}</span></div>
+</div>
+</sc-for>
+</div>
+
+<h3>Recently added</h3>
+<div class="cf-rail" style="margin-bottom:var(--space-6)">
+<sc-for list="{{ items }}" as="v" hint-placeholder-count="4">
+<div class="cf-vcard" onclick="{{ playItem }}" data-id="{{ v.id }}">
+<div class="plate cf-plate"><span>{{ v.file }}</span></div>
+<div style="font-size:13px;font-weight:600">{{ v.title }}</div>
+<div class="card-meta"><span class="tag tag-neutral">{{ v.provider }}</span><span>{{ v.meta }}</span></div>
+</div>
+</sc-for>
+</div>
+
+<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:var(--space-2)">
+<h3 style="margin:0">All files</h3>
+<div style="display:flex;align-items:center;gap:var(--space-2);font-size:12px" class="text-muted"><nav aria-label="breadcrumb">All Files</nav></div>
+</div>
+<div class="input" style="display:flex;align-items:center;gap:8px;max-width:320px;margin-bottom:var(--space-4)">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:.6"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+<input style="border:0;outline:0;background:transparent;font:inherit;width:100%" placeholder="Search your library" />
+</div>
+<div class="cf-grid">
+<sc-for list="{{ items }}" as="v" hint-placeholder-count="8">
+<div class="card" style="padding:0;border:1px solid var(--color-divider);gap:0;overflow:hidden">
+<div class="plate cf-plate" style="border-width:4px;cursor:pointer" onclick="{{ playItem }}" data-id="{{ v.id }}">
+<span>{{ v.file }}</span>
+<sc-if value="{{ v.isVideo }}" hint-placeholder-val="{{ false }}"><svg class="cf-kicon" width="26" height="26" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg></sc-if>
+<sc-if value="{{ v.isAudio }}" hint-placeholder-val="{{ false }}"><svg class="cf-kicon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></sc-if>
+<sc-if value="{{ v.isImage }}" hint-placeholder-val="{{ false }}"><svg class="cf-kicon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></sc-if>
+<sc-if value="{{ v.isDocument }}" hint-placeholder-val="{{ false }}"><svg class="cf-kicon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></sc-if>
+</div>
+<div style="padding:var(--space-2) var(--space-3) var(--space-3);display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;justify-content:space-between;gap:6px"><span class="card-title" style="font-size:15px">{{ v.title }}</span>
+<button onclick="{{ toggleFav }}" data-id="{{ v.id }}" class="cf-favbtn {{ v.favBtnCls }}" style="background:none;border:0;cursor:pointer;padding:0"><svg width="16" height="16" viewBox="0 0 24 24" fill="{{ v.favFill }}" stroke="currentColor" stroke-width="1.6"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg></button>
+</div>
+<div class="card-meta"><span class="tag tag-neutral">{{ v.provider }}</span><span class="tag tag-outline">{{ v.kindLabel }}</span><span style="margin-left:auto">{{ v.meta }}</span></div>
+</div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isWatch }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;background:var(--color-neutral-900);color:var(--color-neutral-100)">
+<div style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3) var(--space-4)">
+<button onclick="{{ go_home }}" style="background:none;border:0;color:inherit;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:13px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>Library</button>
+</div>
+<div style="max-width:1160px;margin:0 auto;padding:0 var(--space-4) var(--space-6);display:grid;grid-template-columns:minmax(0,2.2fr) minmax(220px,1fr);gap:var(--space-4)">
+<div>
+<div class="cf-plate dark" style="border-radius:var(--radius-md);display:grid;place-items:center;position:relative">
+<sc-if value="{{ watchVideo.isVideo }}" hint-placeholder-val="{{ true }}"><svg width="52" height="52" viewBox="0 0 24 24" fill="var(--color-accent-400)" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg></sc-if>
+<sc-if value="{{ watchVideo.isAudio }}" hint-placeholder-val="{{ false }}"><svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-400)" stroke-width="1.4"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></sc-if>
+<sc-if value="{{ watchVideo.isImage }}" hint-placeholder-val="{{ false }}"><svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-400)" stroke-width="1.4"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></sc-if>
+<sc-if value="{{ watchVideo.isDocument }}" hint-placeholder-val="{{ false }}"><svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-400)" stroke-width="1.4"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></sc-if>
+</div>
+<sc-if value="{{ watchVideo.isPlayable }}" hint-placeholder-val="{{ true }}">
+<div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) 0;font-size:12px;font-variant-numeric:tabular-nums;color:color-mix(in srgb,#fff 75%,transparent)">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+<span>08:41</span>
+<div style="flex:1;height:3px;background:color-mix(in srgb,#fff 20%,transparent);border-radius:2px"><div style="width:41%;height:100%;background:var(--color-accent-400);border-radius:2px"></div></div>
+<span>{{ watchVideo.meta }}</span>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/></svg>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><path d="M7 15h4M7 11h.01M15 15h2M15 11h4"/></svg>
+<span class="tag tag-outline" style="border-color:color-mix(in srgb,#fff 40%,transparent);color:#fff">Auto</span>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+</div>
+</sc-if>
+<sc-if value="{{ watchVideo.isPreviewOnly }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:var(--space-2) 0;font-size:12px;color:color-mix(in srgb,#fff 65%,transparent)">
+<span>{{ watchVideo.meta }} · streamed directly from the source, no local copy</span>
+<button class="btn btn-secondary" style="border-color:color-mix(in srgb,#fff 30%,transparent);color:#fff"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>Download</button>
+</div>
+</sc-if>
+<h2 style="margin:var(--space-2) 0 4px">{{ watchVideo.title }}</h2>
+<div class="card-meta" style="color:color-mix(in srgb,#fff 55%,transparent)"><span class="tag tag-neutral" style="background:color-mix(in srgb,#fff 12%,transparent);color:#fff">{{ watchVideo.provider }}</span><span class="tag tag-outline" style="border-color:color-mix(in srgb,#fff 40%,transparent);color:#fff">{{ watchVideo.kindLabel }}</span><span>{{ watchVideo.folder }}</span></div>
+<div style="display:flex;gap:var(--space-2);margin-top:var(--space-3)">
+<button class="btn btn-secondary" style="border-color:color-mix(in srgb,#fff 30%,transparent);color:#fff"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>Favorite</button>
+<button class="btn btn-secondary" style="border-color:color-mix(in srgb,#fff 30%,transparent);color:#fff" onclick="{{ openShare }}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Share</button>
+</div>
+</div>
+<div>
+<h4 style="color:#fff">Up next</h4>
+<div style="display:flex;flex-direction:column;gap:var(--space-3)">
+<sc-for list="{{ upNext }}" as="v" hint-placeholder-count="3">
+<div style="display:flex;gap:var(--space-2);cursor:pointer" onclick="{{ playItem }}" data-id="{{ v.id }}">
+<div class="cf-plate dark" style="width:96px;flex:none;border-radius:var(--radius-sm)"></div>
+<div style="min-width:0"><div style="font-size:13px;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.title }}</div><div style="font-size:11px;color:color-mix(in srgb,#fff 55%,transparent)">{{ v.meta }}</div></div>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSources }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;display:grid;grid-template-columns:220px 1fr">
+<aside class="cf-side"><div class="nav-brand" style="padding:0 10px var(--space-3)">Castify</div><a class="cf-sidelink" onclick="{{ go_home }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>Library</a><a class="cf-sidelink on" onclick="{{ go_sources }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg>Sources</a><a class="cf-sidelink" onclick="{{ go_shares }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Shares</a><a class="cf-sidelink" onclick="{{ go_settings }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+<div class="cf-sidehead">Folders</div>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Travel</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Music</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Family</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Work</a>
+<div style="margin-top:auto;display:flex;align-items:center;gap:8px;padding:var(--space-3) 10px 0;border-top:1px solid var(--color-divider)"><span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 25%,transparent);flex:none"></span><span class="text-muted" style="font-size:12px">Scanning Google Drive…</span></div>
+</aside>
+<div style="padding:var(--space-4) var(--space-4) 80px;min-width:0">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-4)"><h2 style="margin:0">Connections</h2><button class="btn btn-primary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Add connection</button></div>
+<div class="cf-grid" style="grid-template-columns:1fr 1fr">
+<sc-for list="{{ providers }}" as="p" hint-placeholder-count="4">
+<div class="card elev-sm">
+<div style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--color-accent)"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg><span class="card-title" style="font-size:16px">{{ p.name }}</span><span class="tag {{ p.tagClass }}" style="margin-left:auto">{{ p.status }}</span></div>
+<div class="card-meta"><span>{{ p.count }} files</span><span>·</span><span>Last scan {{ p.lastScan }}</span></div>
+<sc-if value="{{ p.scanning }}" hint-placeholder-val="{{ false }}">
+<div style="display:flex;align-items:center;gap:8px">
+<span style="width:6px;height:6px;border-radius:50%;background:var(--color-accent);flex:none"></span>
+<div style="flex:1;height:3px;background:var(--color-divider);border-radius:2px"><div style="height:100%;width:{{ p.progress }}%;background:var(--color-accent);border-radius:2px"></div></div>
+</div>
+</sc-if>
+<button class="btn btn-secondary" style="align-self:flex-start"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>{{ p.action }}</button>
+</div>
+</sc-for>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isShares }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;display:grid;grid-template-columns:220px 1fr">
+<aside class="cf-side"><div class="nav-brand" style="padding:0 10px var(--space-3)">Castify</div><a class="cf-sidelink" onclick="{{ go_home }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>Library</a><a class="cf-sidelink" onclick="{{ go_sources }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg>Sources</a><a class="cf-sidelink on" onclick="{{ go_shares }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Shares</a><a class="cf-sidelink" onclick="{{ go_settings }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+<div class="cf-sidehead">Folders</div>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Travel</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Music</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Family</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Work</a>
+<div style="margin-top:auto;display:flex;align-items:center;gap:8px;padding:var(--space-3) 10px 0;border-top:1px solid var(--color-divider)"><span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 25%,transparent);flex:none"></span><span class="text-muted" style="font-size:12px">Scanning Google Drive…</span></div>
+</aside>
+<div style="padding:var(--space-4) var(--space-4) 80px;min-width:0">
+<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:var(--space-4)"><h2 style="margin:0">Shares</h2><button class="btn btn-primary" onclick="{{ openShare }}">New share</button></div>
+<table class="table">
+<thead><tr><th>Name</th><th>Items</th><th>Created</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+<tbody>
+<sc-for list="{{ shares }}" as="s" hint-placeholder-count="3">
+<tr><td>{{ s.name }}</td><td style="font-variant-numeric:tabular-nums">{{ s.items }}</td><td>{{ s.created }}</td><td>{{ s.expires }}</td><td><span class="tag {{ s.tagClass }}">{{ s.status }}</span></td>
+<td style="white-space:nowrap"><button class="btn btn-ghost" style="padding:2px 6px;font-size:12px">Manage</button><button class="btn btn-ghost" style="padding:2px 6px;font-size:12px">Revoke</button></td></tr>
+</sc-for>
+</tbody>
+</table>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;display:grid;grid-template-columns:220px 1fr">
+<aside class="cf-side"><div class="nav-brand" style="padding:0 10px var(--space-3)">Castify</div><a class="cf-sidelink" onclick="{{ go_home }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>Library</a><a class="cf-sidelink" onclick="{{ go_sources }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h.79a4.5 4.5 0 1 1 0 9Z"/></svg>Sources</a><a class="cf-sidelink" onclick="{{ go_shares }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>Shares</a><a class="cf-sidelink on" onclick="{{ go_settings }}"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+<div class="cf-sidehead">Folders</div>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Travel</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Music</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Family</a>
+<a class="cf-sidelink"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>Work</a>
+<div style="margin-top:auto;display:flex;align-items:center;gap:8px;padding:var(--space-3) 10px 0;border-top:1px solid var(--color-divider)"><span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 25%,transparent);flex:none"></span><span class="text-muted" style="font-size:12px">Scanning Google Drive…</span></div>
+</aside>
+<div style="padding:var(--space-4) var(--space-4) 80px;min-width:0;display:flex;flex-direction:column;gap:var(--space-4);max-width:640px">
+<div class="card">
+<h4 style="margin:0">Account</h4>
+<div class="field"><label>Display name</label><input class="input" value="Alex" /></div>
+<div class="field"><label>Current password</label><input class="input" type="password" /></div>
+<div class="field"><label>New password</label><input class="input" type="password" /></div>
+<button class="btn btn-primary" style="align-self:flex-start">Save changes</button>
+</div>
+<div class="card">
+<h4 style="margin:0">Transcoding</h4>
+<div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:14px">Enable adaptive-bitrate transcoding</span>
+<div class="cf-toggle"><button class="on">On</button><button>Off</button></div></div>
+<div>
+<span style="font-size:12px;display:block;margin-bottom:6px" class="text-muted">ABR ladder</span>
+<div style="display:flex;gap:6px"><span class="tag tag-outline">360p</span><span class="tag tag-outline">480p</span><span class="tag tag-outline">720p</span><span class="tag tag-outline">1080p</span></div>
+</div>
+<div>
+<div style="display:flex;justify-content:space-between;font-size:12px" class="text-muted"><span>Transcode cache</span><span style="font-variant-numeric:tabular-nums">12.4 / 50 GiB</span></div>
+<div style="height:3px;background:var(--color-divider);border-radius:2px;margin-top:4px"><div style="width:25%;height:100%;background:var(--color-accent);border-radius:2px"></div></div>
+</div>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isRecipient }}" hint-placeholder-val="{{ false }}">
+<div style="min-height:100vh;padding-bottom:80px">
+<div style="padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-divider);font-family:var(--font-heading);font-weight:var(--font-heading-weight)">Castify</div>
+<sc-if value="{{ recipientLocked }}" hint-placeholder-val="{{ true }}">
+<div style="min-height:70vh;display:grid;place-items:center;padding:var(--space-6)">
+<div class="card" style="width:min(380px,100%);padding:var(--space-6) var(--space-4);gap:var(--space-4);text-align:center">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="margin:0 auto;color:var(--color-accent)"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+<h3 style="margin:0">Kenya trip highlights</h3>
+<p class="text-muted" style="margin:0;font-size:13px">Shared by Alex · this share is password-protected.</p>
+<div class="field" style="text-align:left"><label>Password</label><input class="input" type="password" /></div>
+<button class="btn btn-primary btn-block" onclick="{{ unlockRecipient }}">Unlock</button>
+</div>
+</div>
+</sc-if>
+<sc-if value="{{ recipientUnlocked }}" hint-placeholder-val="{{ false }}">
+<div style="max-width:900px;margin:0 auto;padding:var(--space-4)">
+<h2 style="margin-bottom:2px">Kenya trip highlights</h2>
+<p class="text-muted" style="margin-top:0;font-size:13px">Shared by Alex · expires Oct 2 · viewed on this device only</p>
+<div class="cf-grid">
+<sc-for list="{{ items }}" as="v" hint-placeholder-count="4">
+<div class="card" style="padding:0;gap:0;overflow:hidden;cursor:pointer" onclick="{{ playItem }}" data-id="{{ v.id }}">
+<div class="plate cf-plate" style="border-width:4px"><span>{{ v.file }}</span></div>
+<div style="padding:var(--space-2) var(--space-3)"><div class="card-title" style="font-size:14px">{{ v.title }}</div><div class="card-meta">{{ v.meta }}</div></div>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ dialogOpen }}" hint-placeholder-val="{{ false }}">
+<div class="dialog-backdrop">
+<div class="dialog">
+<div class="dialog-title">New share</div>
+<div class="dialog-body">
+<p style="margin:0 0 var(--space-3)">1 item selected — <strong>{{ watchVideo.title }}</strong></p>
+<div class="field"><label>Password-protect</label><div class="cf-toggle"><button>Yes</button><button class="on">No</button></div></div>
+<div class="field"><label>Expires</label><div class="cf-toggle"><button>7 days</button><button class="on">30 days</button><button>Never</button></div></div>
+</div>
+<div class="dialog-actions"><button class="btn btn-secondary" onclick="{{ closeShare }}">Cancel</button><button class="btn btn-primary" onclick="{{ closeShare }}">Create share</button></div>
+</div>
+</div>
+</sc-if>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    screen: 'login',
+    setupStep: 1,
+    dialogOpen: false,
+    recipientUnlocked: false,
+    watchId: 1,
+    items: [
+      { id: 1, title: 'Kholo Falls — Drone Cut', file: 'kholo-falls-drone.mp4', type: 'video', provider: 'Google Drive', folder: 'Travel/Kenya 2025', meta: '12:04 · 4K', fav: true, progress: 62 },
+      { id: 2, title: 'Studio Session, Take 3', file: 'session-take3.mp3', type: 'audio', provider: 'Dropbox', folder: 'Music/Sessions', meta: '34:18', fav: false, progress: 18 },
+      { id: 3, title: 'Wedding — Ceremony', file: 'ceremony.mp4', type: 'video', provider: 'OneDrive', folder: 'Family/2024', meta: '48:52 · 1080p', fav: true, progress: 0 },
+      { id: 4, title: 'Product Demo v9', file: 'demo-v9.mp4', type: 'video', provider: 'S3 · r2-bucket', folder: 'Work/Demos', meta: '6:41 · 1080p', fav: false, progress: 0 },
+      { id: 5, title: 'Coastal Roads, Ep. 4', file: 'coastal-ep4.mp4', type: 'video', provider: 'Google Drive', folder: 'Travel/Coast', meta: '21:09 · 4K', fav: false, progress: 0 },
+      { id: 6, title: 'Recital — Spring', file: 'recital-spring.mp3', type: 'audio', provider: 'Dropbox', folder: 'Family/Recitals', meta: '15:37', fav: true, progress: 0 },
+      { id: 7, title: 'Site Plan — Draft 2', file: 'site-plan-draft2.pdf', type: 'document', provider: 'Google Drive', folder: 'Work/Plans', meta: '2.1 MB', fav: false, progress: 0 },
+      { id: 8, title: 'Kitchen Remodel', file: 'kitchen-remodel.jpg', type: 'image', provider: 'OneDrive', folder: 'Family/Home', meta: '6.4 MB · 4032×3024', fav: false, progress: 0 },
+    ],
+  };
+  providers = [
+    { id: 1, name: 'Google Drive', status: 'Connected', tagClass: 'tag-accent', count: 842, lastScan: '2 min ago', scanning: true, progress: 64, action: 'Scan now' },
+    { id: 2, name: 'Dropbox', status: 'Connected', tagClass: 'tag-accent', count: 311, lastScan: 'this morning', scanning: false, action: 'Scan now' },
+    { id: 3, name: 'OneDrive', status: 'Connected', tagClass: 'tag-accent', count: 120, lastScan: 'yesterday', scanning: false, action: 'Scan now' },
+    { id: 4, name: 'S3 · r2-bucket', status: 'Reauth required', tagClass: 'tag-neutral', count: 56, lastScan: '3 days ago', scanning: false, action: 'Reconnect' },
+  ];
+  shares = [
+    { id: 1, name: 'Kenya trip highlights', items: 4, created: 'Sep 2', expires: 'Oct 2', status: 'Active', tagClass: 'tag-accent' },
+    { id: 2, name: 'Studio session drafts', items: 1, created: 'Aug 28', expires: 'Never', status: 'Active', tagClass: 'tag-accent' },
+    { id: 3, name: 'Wedding — family only', items: 1, created: 'Jul 14', expires: 'Expired', status: 'Expired', tagClass: 'tag-neutral' },
+  ];
+  go(screen) { this.setState({ screen }); }
+  decorate(v) {
+    const kindLabel = { video: 'Video', audio: 'Audio', image: 'Image', document: 'Document' }[v.type];
+    return {
+      ...v, kindLabel,
+      isVideo: v.type === 'video', isAudio: v.type === 'audio', isImage: v.type === 'image', isDocument: v.type === 'document',
+      isPlayable: v.type === 'video' || v.type === 'audio', isPreviewOnly: v.type === 'image' || v.type === 'document',
+      favFill: v.fav ? 'var(--color-accent)' : 'none', favBtnCls: v.fav ? 'cf-fav-on' : 'cf-fav-off',
+    };
+  }
+  renderVals() {
+    const s = this.state;
+    const items = s.items.map(v => this.decorate(v));
+    const cur = s.screen;
+    const navCls = {};
+    ['login', 'setup', 'home', 'watch', 'sources', 'shares', 'recipient', 'settings'].forEach(k => { navCls[k] = k === cur ? 'on' : ''; });
+    const watchVideo = this.decorate(s.items.find(v => v.id === s.watchId) || s.items[0]);
+    return {
+      navCls,
+      isLogin: cur === 'login', isSetup: cur === 'setup', isHome: cur === 'home', isWatch: cur === 'watch',
+      isSources: cur === 'sources', isShares: cur === 'shares', isSettings: cur === 'settings', isRecipient: cur === 'recipient',
+      isSetupStep1: s.setupStep === 1, isSetupStep2: s.setupStep === 2,
+      setupTitle: s.setupStep === 1 ? 'Create your account' : 'Connect a provider',
+      go_login: () => this.go('login'), go_setup: () => this.setState({ screen: 'setup', setupStep: 1 }),
+      go_home: () => this.go('home'), go_watch: () => this.go('watch'), go_sources: () => this.go('sources'),
+      go_shares: () => this.go('shares'), go_settings: () => this.go('settings'),
+      go_recipient: () => this.setState({ screen: 'recipient', recipientUnlocked: false }),
+      setupNext: () => this.setState({ setupStep: 2 }),
+      items,
+      continueWatching: items.filter(v => v.progress > 0),
+      upNext: items.filter(v => v.id !== watchVideo.id).slice(0, 3),
+      providers: this.providers, shares: this.shares,
+      watchVideo,
+      playItem: e => {
+        const id = Number(e.currentTarget.dataset.id);
+        this.setState({ screen: 'watch', watchId: id });
+      },
+      toggleFav: e => {
+        e.stopPropagation();
+        const id = Number(e.currentTarget.dataset.id);
+        this.setState({ items: s.items.map(v => v.id === id ? { ...v, fav: !v.fav } : v) });
+      },
+      openShare: e => { if (e) e.stopPropagation(); this.setState({ dialogOpen: true }); },
+      closeShare: () => this.setState({ dialogOpen: false }),
+      dialogOpen: s.dialogOpen,
+      recipientLocked: !s.recipientUnlocked, recipientUnlocked: s.recipientUnlocked,
+      unlockRecipient: () => this.setState({ recipientUnlocked: true }),
+    };
+  }
+}
+
+</script>
+</body>
+</html>

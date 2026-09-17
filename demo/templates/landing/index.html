@@ -1,0 +1,332 @@
+<!-- @template name="Landing" description="A one-page product landing in the system's own voice — an invented product (Quarto & Sons: an antiquarian bookbindery), a serif hero, hairline-parted columns, a plate photograph and a sign-up close" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Classical — landing</title>
+<script src="./ds-base.js"></script>
+<style>
+/* Template scaffolding — page layout and web-scale sizing only; every color,
+   font, radius and shadow comes from ../../styles.css. The voice is the
+   deck's, re-derived for a scrolling page: an editorial book — Cormorant
+   display over Lora text, hairline rules carrying the structure, gold
+   applied as stroke and small marks (the filled gold moments are counted:
+   one numeral), justified body in columns with real hyphenation, the
+   photograph matted like a tipped-in plate.
+
+   THE RHYTHM: a 28px leading unit (17px Lora body at ~1.65 — Lora's big
+   x-height reads a size larger than its px), 14px half-step; line-heights
+   and block margins in unit multiples, heads cap-trimmed, ?baselines/B to
+   review. The deck's seat-pinning relaxes to per-block discipline on a
+   fluid page. The system's own interface components keep their styles.css
+   leading.
+
+   THE LANDING LAWS (shared by all six systems' landing templates):
+   #1 display headers break per sentence (.line spans); #2 the landing
+   advertises an invented product played straight — classical's is
+   Quarto & Sons, an antiquarian bookbindery, written with a bench's
+   patience; #3 spacing is cluster-scoped (display leading ratio-governed
+   ≈1.08 for the serif's extenders — the display-block lattice exemption —
+   tight single-unit gaps inside a cluster, the air between sections);
+   #4 no hero eyebrow — the nav brand names the product.
+
+   Measured Cormorant/Lora values carry verbatim from the deck template:
+   optical left alignment -0.042em where caps lead a display line (the
+   normal cut — this system sets no bold display), quote hang -0.340em,
+   attribution hang -1.104em. Numbers set tabular wherever they stand as
+   figures (the system's own rule; Lora's tnum also widens word-spaces,
+   so running prose keeps its text figures). */
+:root {
+  --leading: 28px;
+  --half: 14px;
+  --edge: clamp(20px, 5vw, 72px);
+  --measure: 58ch;
+}
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; text-wrap: pretty; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 var(--edge); }
+/* the component demo pads the masthead with its own spacing; on the page the
+   masthead's contents take the page gutter and sit on the wrap's text axis
+   (padding-only — full-width paint such as a masthead rule is untouched) */
+.nav { padding-inline: max(var(--edge), calc((100% - 1200px) / 2 + var(--edge))); }
+.nav a { white-space: nowrap; }
+.nav a[aria-current='location'] { color: var(--color-accent); } /* in-page anchor, not
+   a page link — 'location' is the truthful value; carry the component's active ink */
+@media (max-width: 480px) { .nav a { display: none; } } /* phone width: the nav
+   keeps brand + the one action (layout-only — the component's look is untouched) */
+
+/* — hairline seams (the system's structure: 1px rules in the divider token,
+   solid and full-width — this system's rules do not fade) — */
+.rule { height: 1px; border: 0; margin: 0; background: var(--color-divider); }
+
+/* — kicker (small caps voice, gold at the DEEP step: accent-colored small
+   text takes accent-700 — 6.0:1, where the base gold is a 3.0:1 large-text
+   value; tabular, the system's figure rule) — */
+.kicker {
+  display: block; font-size: 13px; line-height: var(--half);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-accent-700);
+  font-feature-settings: "tnum" 1;
+  margin: 0 0 calc(var(--leading) - var(--half));
+}
+
+/* — hero — */
+.hero { padding: calc(4 * var(--leading)) 0 calc(3 * var(--leading)); }
+.display {
+  font-family: var(--font-heading); font-weight: 400; /* the normal cut — this
+     system retires bold from display sizes */
+  font-size: clamp(46px, 6.6vw, 92px);
+  line-height: clamp(49.5px, 7.13vw, 99.5px); /* law #3: ratio-governed ≈1.08 —
+     the serif's extenders; the display-block lattice exemption */
+  letter-spacing: -0.01em; margin: 0;
+  margin-left: -0.042em; /* optical left alignment — the deck's measured value for the 400 */
+  text-box: trim-both cap alphabetic;
+}
+.display .line { display: block; } /* law #1 */
+.hero .sub { font-size: 17px; line-height: var(--leading); max-width: var(--measure);
+  margin: calc(1.75 * var(--leading) - 1cap) 0 0; /* a quarter-step more than the
+     sibling systems' 1.5 — Cormorant's 400-weight descenders reach ~0.28em
+     below the display's trimmed baseline (vs ~0.2em for the sans systems),
+     so the shared value left the extenders ~5px off the sub's caps;
+     re-derived per face, as the deck's junction values are */
+  text-box: trim-both cap alphabetic; }
+.hero .row { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--leading); }
+
+/* — stat row (tabular figures; the gold fill stays COUNTED — exactly one
+   gold numeral, the deck's one-filled-moment rule; the rest set in ink) — */
+.stats { padding: calc(2.5 * var(--leading)) 0; }
+.stats .grid { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; gap: calc(1.5 * var(--leading)) var(--leading); }
+.stat-num { font-family: var(--font-heading); font-weight: 400;
+  font-size: clamp(36px, 3.6vw, 52px); line-height: calc(2 * var(--leading));
+  font-feature-settings: "tnum" 1; color: var(--color-text);
+  margin: 0; margin-left: -0.042em; /* the class optical value for display
+     figures; a figure that LEADS with the padded tabular "1" overrides it —
+     see .lead-one below */
+  text-box: trim-both cap alphabetic; }
+.stat-num.gilt { color: var(--color-accent); } /* THE one filled gold moment —
+     3.0:1 at display size (large text; the system's documented accent value) */
+.stat-num.lead-one { margin-left: -0.129em; } /* a numeral LEADING with "1":
+     the tabular oldstyle "1" pads its bearing to 0.129em (the deck's
+     measured table), so the lead-digit compensation replaces the class
+     value — keyed on what the figure starts with, not on its color */
+.stat-label { font-size: 13px; line-height: var(--half); letter-spacing: 0.08em; text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); /* small-text ink on the
+     light ground: 70% measures 5.8:1 (55% is a large-text furniture value here — 3.6:1) */
+  margin: var(--half) 0 0; }
+
+/* — the bench's columns (the deck's column grammar: JUSTIFIED Lora with
+   real hyphenation, parted by vertical hairlines at the gutter centers,
+   each side of a drawn column rule keeping a full unit of air) — */
+.features { padding: calc(3 * var(--leading)) 0 calc(2.5 * var(--leading)); }
+.cols { position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
+  --col-gap: calc(2 * var(--leading)); /* a drawn column rule keeps ≥1 unit of air per side */
+  gap: calc(1.5 * var(--leading)) var(--col-gap);
+  margin-top: calc(var(--leading) - var(--half)); }
+.cols::before, .cols::after { content: ""; position: absolute; top: 0; bottom: 0; width: 1px;
+  background: var(--color-divider); }
+.cols::before { left: calc((100% - 2 * var(--col-gap)) / 3 + var(--col-gap) / 2 - 0.5px); }
+.cols::after { left: calc(2 * (100% - 2 * var(--col-gap)) / 3 + 1.5 * var(--col-gap) - 0.5px); }
+.col h2 { font-family: var(--font-heading); font-weight: 400;
+  font-size: 26px; line-height: var(--leading); letter-spacing: -0.005em;
+  margin: 0; text-box: trim-both cap alphabetic; }
+.col p { font-size: 15.5px; line-height: var(--leading); margin: calc(var(--leading) - 1cap) 0 0;
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  text-align: justify; hyphens: auto; hyphenate-limit-chars: 6 3 3;
+  text-box: trim-both cap alphabetic; }
+
+/* — imagery split (the plate: matted, archival, a photograph ON the page —
+   the wrapper carries the grade and the mat; the portrait plate box pins
+   the bundled asset's 1093×1600 ratio so swaps cover-crop into it) — */
+.split { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--leading) clamp(24px, 5vw, 96px); align-items: center;
+  padding: calc(2 * var(--leading)) 0 calc(3 * var(--leading)); }
+.split-title { font-family: var(--font-heading); font-weight: 400;
+  font-size: 34px; line-height: calc(1.5 * var(--leading)); letter-spacing: -0.008em;
+  margin: 0; text-box: trim-both cap alphabetic; }
+.split-copy .note { font-size: 15.5px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  margin: calc(var(--leading) - 1cap) 0 0; max-width: 48ch;
+  text-align: justify; hyphens: auto; hyphenate-limit-chars: 6 3 3;
+  text-box: trim-both cap alphabetic; }
+.split-figure { margin: 0; width: min(420px, 100%); justify-self: end; } /* explicit
+   width: the slot sizes from the figure, so the figure cannot size from the
+   slot — max-width alone collapses the pair to the mat's border */
+.split-figure image-slot { width: 100%; aspect-ratio: 1093 / 1600; }
+
+/* — quote (the serif upright — this system loads no italic face and never
+   synthesizes one; hangs at the deck's measured Cormorant/Lora advances) — */
+.quote { padding: calc(2.5 * var(--leading)) 0 calc(3.5 * var(--leading)); }
+.quote blockquote {
+  font-family: var(--font-heading); font-weight: 400;
+  font-size: clamp(26px, 2.8vw, 36px); line-height: calc(1.5 * var(--leading));
+  letter-spacing: -0.005em; max-width: 34ch; margin: 0;
+  text-indent: -0.340em; /* hang the opening “ (the deck's measured advance in the 400) */
+  text-box: trim-both cap alphabetic;
+}
+.quote figcaption { font-size: 15.5px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); /* 5.8:1 — see .stat-label */
+  margin: calc(2 * var(--leading) - 1cap) 0 0; /* two grid units below the quote's
+     last baseline — one reads as part of the quote block; the attribution needs air */
+  text-indent: -1.104em; /* hang the leading em-dash + space (measured in Lora Regular) */
+  text-box: trim-both cap alphabetic; }
+
+@media (max-width: 720px) {
+  /* the phone gutter (--edge bottoms out at 20px) is narrower than the hung
+     marks' measured advances, so a hung “ or em-dash would press into or past
+     the viewport edge — seat the quote flush below this width; the hang
+     returns with the wider gutter */
+  .quote blockquote, .quote figcaption { text-indent: 0; }
+}
+
+/* — close (paper stays paper; a hairline parts the close from the page,
+   and the buttons keep the system's outlined voice — gold as stroke) — */
+.close { padding: calc(2.5 * var(--leading)) 0 calc(2 * var(--leading)); }
+.close h3 { font-family: var(--font-heading); font-weight: 400;
+  font-size: 26px; line-height: var(--leading); margin: 0; text-box: trim-both cap alphabetic; }
+.close .sub { font-size: 15.5px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 78%, transparent);
+  margin: calc(var(--leading) - 1cap) 0 0; max-width: var(--measure); text-box: trim-both cap alphabetic; }
+.signup { display: flex; gap: var(--space-3); align-items: stretch; max-width: 480px;
+  margin-top: var(--leading); }
+.signup .input { flex: 1; }
+.signup .input, .signup .btn { min-height: 36px; } /* one control height floor; the row
+  stretches, so whichever of the pair is taller sets both and they read as one row */
+footer { padding: calc(2 * var(--leading)) 0; font-size: 13px; line-height: var(--leading);
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); /* 5.8:1 — see .stat-label */ }
+
+/* — responsive collapse — */
+@media (max-width: 1108px) {
+  /* three justified columns fall under ~30ch here (the wider column gutters
+     carrying the drawn rules eat the measure sooner than broadsheet's) and
+     the word spaces open into rivers — the deck's own column rule warns that
+     below ~30ch the justification gaps — so stack them while the measure
+     still reads */
+  .cols { grid-template-columns: 1fr; }
+  .cols::before, .cols::after { content: none; } /* stacked columns: the rules
+     would cross the text; the gutter's job passes to the row gap */
+  .col { max-width: 62ch; } /* a single stacked column would otherwise run the
+     full wrap (~90ch) — hold the justified measure in the readable range */
+}
+
+@media (max-width: 720px) {
+  .hero { padding-top: calc(2.5 * var(--leading)); }
+  .stats .grid { grid-template-columns: repeat(2, 1fr); justify-content: start; }
+  .split { grid-template-columns: 1fr; }
+  .split-figure { order: -1; justify-self: start; }
+}
+
+/* Review aid: the 28px rhythm drawn as hairlines — debug chrome, toggled by
+   ?baselines or the B key, never part of the look. */
+body[data-baselines] { position: relative; }
+body[data-baselines]::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom,
+      color-mix(in srgb, var(--color-accent) 35%, transparent) 0 1px,
+      transparent 1px var(--leading)),
+    repeating-linear-gradient(to bottom,
+      transparent 0 var(--half),
+      color-mix(in srgb, var(--color-accent) 16%, transparent) var(--half) calc(var(--half) + 1px),
+      transparent calc(var(--half) + 1px) var(--leading));
+}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <span class="nav-brand">Quarto &amp; Sons</span>
+  <a href="#bench" aria-current="location">The bench</a>
+  <a href="#plates">The work</a>
+  <a href="#commission">Commission</a>
+  <button type="button" class="btn btn-primary">Bring us a book</button>
+</nav>
+<div class="wrap">
+
+  <section class="hero">
+    <h1 class="display"><span class="line">Old books deserve new lives.</span> <span class="line">Bring us yours.</span></h1>
+    <p class="sub">Quarto &amp; Sons is an antiquarian bookbindery: restoration, conservation and new commissions, sewn by hand at the same benches since 1823. We are slow, we are careful, and we are not sorry about either.</p>
+    <div class="row">
+      <button type="button" class="btn btn-primary">Bring us a book</button>
+      <button type="button" class="btn btn-ghost">Visit the bindery</button>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="stats" aria-label="Quarto &amp; Sons, by the numbers">
+    <div class="grid">
+      <div><p class="stat-num gilt lead-one">1823</p><p class="stat-label">The year of our oldest bench</p></div>
+      <div><p class="stat-num">9,412</p><p class="stat-label">Volumes returned to their shelves</p></div>
+      <div><p class="stat-num">3</p><p class="stat-label">Generations, one apprenticeship</p></div>
+      <div><p class="stat-num">0</p><p class="stat-label">Books we have given up on</p></div>
+    </div>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="features" id="bench">
+    <span class="kicker">What the bench does</span>
+    <div class="cols">
+      <div class="col">
+        <h2>Restoration</h2>
+        <p>Split boards re-backed, broken sewing taken down and resewn on the original stations, spines relaid with their own leather wherever it survives. The book keeps its history; we only mend the parts that stopped working.</p>
+      </div>
+      <div class="col">
+        <h2>Conservation</h2>
+        <p>Paper washed and mended leaf by leaf, archival boxes made to measure, and a written condition report for every volume — what we did, what we deliberately left alone, and why.</p>
+      </div>
+      <div class="col">
+        <h2>Commissions</h2>
+        <p>New bindings in goatskin and handmade paper, titled in gold leaf at a finishing press older than the shop’s electricity. Bring a text you love; collect it in a year. Good books wait well.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="split" id="plates">
+    <div class="split-copy">
+      <span class="kicker">The work</span>
+      <h2 class="split-title">Photographed like a plate</h2>
+      <p class="note">Every photograph sits matted on the page — a warm archival grade inside a surface-colored mat, the way a tipped-in plate sits in a fine edition. The pictures keep their distance politely, as pictures in books should.</p>
+    </div>
+    <figure class="split-figure plate">
+      <image-slot id="photo-split" shape="rect" src="../../assets/photo.jpg" role="img" aria-label="Product photograph matted by the plate treatment"></image-slot>
+    </figure>
+  </section>
+
+  <section class="quote">
+    <figure>
+      <!-- keep the leading “ — the blockquote's negative text-indent hangs it in the margin -->
+      <blockquote>“They kept our 1687 herbal for eleven months and returned it smelling faintly of paste and patience. It opens flat now. I nearly wept.”</blockquote>
+      <!-- keep the leading "— " — the figcaption's negative text-indent hangs it -->
+      <figcaption>— E. Ashworth, special collections librarian</figcaption>
+    </figure>
+  </section>
+
+  <hr class="rule" />
+
+  <section class="close" id="commission">
+    <h3>The bench notes</h3>
+    <p class="sub">A letter from the bindery, four times a year: what came in broken, what left whole, and what we learned in between. No offers, no urgency — the post is slow and so are we.</p>
+    <div class="signup">
+      <input class="input" type="email" placeholder="you@example.com" aria-label="Email address" />
+      <button type="button" class="btn btn-primary">Subscribe</button>
+    </div>
+  </section>
+
+  <footer>Built from this project’s theme.json — see readme.md.</footer>
+</div>
+<script src="image-slot.js"></script>
+<script>
+// Review aid: baseline-grid overlay — add ?baselines to the URL, or press B to toggle.
+(() => {
+  if (new URLSearchParams(location.search).has('baselines')) document.body.setAttribute('data-baselines', '');
+  addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if ((e.key === 'b' || e.key === 'B') && !e.metaKey && !e.ctrlKey && !e.altKey) document.body.toggleAttribute('data-baselines');
+  });
+})();
+</script>
+</body>
+</html>
