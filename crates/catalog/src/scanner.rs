@@ -122,33 +122,56 @@ pub async fn run_scan(
 
             // Reconcile runs only on the Completed outcome — Cancelled is
             // a partial pass and must never count as evidence of absence.
+            // The suggestion-staging hook rides the same gating for the
+            // same reason: a partial listing must not look like a mass
+            // disappearance of suggestion groups.
             let report = match &outcome {
                 ScanOutcome::Completed {
                     seen_video_keys,
                     seen_file_keys,
                     ..
-                } => reconcile_after_scan(
-                    &repo,
-                    &connection_id,
-                    seen_video_keys,
-                    seen_file_keys,
-                    prune_policy,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    // A reconcile failure degrades to no-prune — the scan
-                    // itself succeeded and the catalog stays intact.
-                    tracing::warn!(
-                        connection_id = %connection_id,
-                        error = %e,
-                        "reconcile skipped after error"
-                    );
-                    ReconcileReport {
-                        prune: PruneResult::default(),
-                        files_pruned: 0,
-                        warning: None,
+                } => {
+                    let report = reconcile_after_scan(
+                        &repo,
+                        &connection_id,
+                        seen_video_keys,
+                        seen_file_keys,
+                        prune_policy,
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        // A reconcile failure degrades to no-prune — the scan
+                        // itself succeeded and the catalog stays intact.
+                        tracing::warn!(
+                            connection_id = %connection_id,
+                            error = %e,
+                            "reconcile skipped after error"
+                        );
+                        ReconcileReport {
+                            prune: PruneResult::default(),
+                            files_pruned: 0,
+                            warning: None,
+                        }
+                    });
+
+                    // Library-collections (spec F1/F2): regenerate the
+                    // suggestion staging from this scan's upserts. A
+                    // failure degrades to a logged noop — staging is
+                    // derived data and the scan itself succeeded (same
+                    // posture as the reconcile degrade above).
+                    if let Err(e) =
+                        stage_collection_suggestions(&repo, &connection_id, seen_video_keys)
+                            .await
+                    {
+                        tracing::warn!(
+                            connection_id = %connection_id,
+                            error = %e,
+                            "collection suggestion staging skipped after error"
+                        );
                     }
-                }),
+
+                    report
+                }
                 ScanOutcome::Cancelled { .. } => ReconcileReport {
                     prune: PruneResult::default(),
                     files_pruned: 0,
@@ -193,6 +216,31 @@ pub async fn run_scan(
             PruneResult::default()
         }
     }
+}
+
+/// Library-collections (spec F1/F2): regenerate the connection's
+/// suggestion staging from the rows this scan upserted. Classification
+/// is deterministic and staging is derived data, so a full rewrite
+/// (minus dismissed signatures, filtered by the repository) is both
+/// cheap and self-healing. Runs beside — and after —
+/// [`reconcile_after_scan`], off the listing path.
+///
+/// Gating note: only ever called for the `ScanOutcome::Completed`
+/// branch of `run_scan`. A Cancelled scan is a partial listing; letting
+/// it rewrite staging would erase groups the disconnect made invisible.
+async fn stage_collection_suggestions(
+    repo: &CatalogRepository,
+    connection_id: &str,
+    seen_video_keys: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let scanned = repo
+        .fetch_scanned_videos(connection_id, seen_video_keys)
+        .await
+        .map_err(|e| format!("fetch scanned videos failed: {e}"))?;
+    let suggestions = crate::classify::build_suggestions(&scanned);
+    repo.replace_collection_suggestions(connection_id, &suggestions)
+        .await
+        .map_err(|e| format!("replace collection suggestions failed: {e}"))
 }
 
 /// Reconcile the catalog with a completed listing: tombstone rows the
@@ -660,6 +708,7 @@ mod tests {
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
             include_str!("../../storage/migrations/0011_files.sql"),
             include_str!("../../storage/migrations/0014_catalog_prune.sql"),
+            include_str!("../../storage/migrations/0015_collections.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -1506,6 +1555,273 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    // ── Library collections: post-scan suggestion staging ────────────
+
+    fn classify_page_factory() -> MockFactory {
+        MockFactory {
+            pages: vec![ListPage {
+                videos: vec![
+                    discovered("bb-2", "Breaking.Bad.S01E02.mkv", 5000),
+                    discovered("bb-1", "breaking.bad.s01e01.720p.x264-GROUP.mkv", 5000),
+                    discovered("mx-1", "The.Matrix.(1999).mkv", 7000),
+                    discovered("noise", "random clip.mp4", 900),
+                ],
+                subtitles: vec![],
+                files: vec![],
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            prefix_hashes: HashMap::new(),
+            fail_prefix: true,
+            fail_first_list_unauthorized: false,
+            refresh_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    async fn video_id_for(repo: &CatalogRepository, provider_file_id: &str) -> String {
+        let (id,): (String,) =
+            sqlx::query_as("SELECT id FROM videos WHERE provider_file_id = ?")
+                .bind(provider_file_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn completed_scan_stages_collection_suggestions() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(classify_page_factory()),
+            PrunePolicy::OFF,
+        )
+        .await;
+
+        let staged = repo.fetch_collection_suggestions(&conn_id).await.unwrap();
+        assert_eq!(staged.len(), 2, "noise video matches no tier");
+        assert_eq!(staged[0].kind, crate::model::CollectionKind::Show);
+        assert_eq!(staged[0].title, "Breaking Bad");
+        assert_eq!(staged[0].member_count, 2);
+        assert_eq!(staged[1].kind, crate::model::CollectionKind::Movie);
+        assert_eq!(staged[1].title, "The Matrix (1999)");
+
+        // Members arrive in episode order regardless of listing order.
+        let members = repo
+            .fetch_collection_suggestion_video_ids(&staged[0].id)
+            .await
+            .unwrap();
+        assert_eq!(
+            members,
+            vec![
+                video_id_for(&repo, "bb-1").await,
+                video_id_for(&repo, "bb-2").await
+            ]
+        );
+
+        // Second scan over the same listing is idempotent.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(classify_page_factory()),
+            PrunePolicy::OFF,
+        )
+        .await;
+        let staged_again = repo.fetch_collection_suggestions(&conn_id).await.unwrap();
+        assert_eq!(staged_again.len(), 2);
+        assert_eq!(staged_again[0].member_count, 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_scan_leaves_suggestion_staging_untouched() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Pre-seed staging as the "previous good scan" state. Membership
+        // needs a real videos row (FK-enforced), so plant one first.
+        repo.upsert_video(
+            &conn_id,
+            Provider::GoogleDrive,
+            &NewVideo {
+                provider_file_id: "bb-pre".into(),
+                name: "Some.Show.S01E01.mkv".into(),
+                path: None,
+                size_bytes: 5000,
+                mime_type: None,
+                duration_ms: None,
+                width: None,
+                height: None,
+                native_hash: None,
+                native_hash_algo: None,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        let pre_video = video_id_for(&repo, "bb-pre").await;
+        repo.replace_collection_suggestions(
+            &conn_id,
+            &[crate::model::NewCollectionSuggestion {
+                kind: crate::model::CollectionKind::Show,
+                title: "Preexisting".into(),
+                signature: "show:preexisting".into(),
+                video_ids: vec![pre_video],
+            }],
+        )
+        .await
+        .unwrap();
+
+        // Mid-scan disconnect (FR-1.5 pattern): page 1 lists, then the
+        // connection dies before page 2 → Cancelled outcome.
+        struct DisconnectingProvider {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for DisconnectingProvider {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+                if !self.page_sent.swap(true, Ordering::SeqCst) {
+                    let _ = self.repo.disconnect(&self.conn_id).await;
+                    Ok(ListPage {
+                        videos: vec![discovered("bb-9", "Some.Show.S01E01.mkv", 5000)],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: Some("page2".into()),
+                    })
+                } else {
+                    Ok(ListPage {
+                        videos: vec![],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: None,
+                    })
+                }
+            }
+
+            async fn fetch_prefix_hash(
+                &self,
+                _file_id: &str,
+                _size: i64,
+            ) -> ProviderResult<Option<String>> {
+                Ok(None)
+            }
+
+            async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn open_stream(
+                &self,
+                _file_id: &str,
+                _range: Option<&str>,
+            ) -> ProviderResult<StreamResponse> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+        }
+
+        struct DisconnectingFactory {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for DisconnectingFactory {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
+            }
+
+            async fn create(
+                &self,
+                _: &Credential,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Ok(Box::new(DisconnectingProvider {
+                    repo: self.repo.clone(),
+                    conn_id: self.conn_id.clone(),
+                    page_sent: self.page_sent.clone(),
+                }))
+            }
+        }
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(DisconnectingFactory {
+                repo: repo.clone(),
+                conn_id: conn_id.clone(),
+                page_sent: Arc::new(AtomicBool::new(false)),
+            }),
+            PrunePolicy::OFF,
+        )
+        .await;
+
+        // The partial pass must not have rewritten staging.
+        let staged = repo.fetch_collection_suggestions(&conn_id).await.unwrap();
+        assert_eq!(staged.len(), 1, "staging must survive a cancelled scan");
+        assert_eq!(staged[0].signature, "show:preexisting");
+    }
+
+    #[tokio::test]
+    async fn suggestion_staging_failure_degrades_to_noop() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Break the staging write path underneath the hook — the scan
+        // itself must still succeed and record Idle.
+        sqlx::query("DROP TABLE collection_suggestion_items")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE collection_suggestions")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(classify_page_factory()),
+            PrunePolicy::OFF,
+        )
+        .await;
+
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.status, ScanStatus::Idle, "scan must survive hook failure");
+        assert!(
+            scan.error_message.is_none(),
+            "hook failure is a warning, not a scan error"
+        );
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            4,
+            "scan upserts are unaffected by the staging failure"
+        );
     }
 
     #[tokio::test]

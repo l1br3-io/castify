@@ -812,14 +812,28 @@ pub struct CollectionSuggestion {
     pub created_at: String,
 }
 
+/// One catalog row shaped as classification input for the post-scan
+/// hook (library-collections, spec F1). `video_id` is the `videos` row
+/// id — the suggestion staging joins members by it.
+#[derive(Debug, Clone)]
+pub struct ScannedVideo {
+    pub video_id: String,
+    pub name: String,
+    pub path: Option<String>,
+    /// RFC 3339 provider timestamp; temporal clustering falls back to a
+    /// date-shaped path folder when this is missing.
+    pub provider_modified_at: Option<String>,
+}
+
 /// Write-shape for staging one suggestion group (scan hook). Member
 /// ids are ordered (episode/chronological) so accept can copy them
-/// straight into `collection_items` positions.
+/// straight into `collection_items` positions. Connection scoping is
+/// applied by the repository write, not carried per group.
 #[derive(Debug, Clone)]
 pub struct NewCollectionSuggestion {
-    pub connection_id: String,
     pub kind: CollectionKind,
     pub title: String,
+    /// Canonical suppression key — normalized title or `time:YYYY-MM`.
     pub signature: String,
     pub video_ids: Vec<String>,
 }

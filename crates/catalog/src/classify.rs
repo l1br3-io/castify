@@ -23,6 +23,8 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 
+use crate::model::{NewCollectionSuggestion, ScannedVideo};
+
 // The kind enum lives with the other catalog models (migration 0015's
 // CHECK covers four persistence kinds; the cascade only ever proposes
 // these three).
@@ -194,6 +196,111 @@ pub fn parse_timestamp(raw: &str) -> Option<DateTime<Utc>> {
 /// deepest segment up; returns the first valid date.
 pub fn date_from_path(path: &str) -> Option<NaiveDate> {
     path.rsplit('/').find_map(parse_date_segment)
+}
+
+/// Orchestration glue for the post-scan hook (spec F1): run the full
+/// cascade over one scan's upserted videos and emit staged suggestion
+/// groups ready for persistence.
+///
+/// * Tiers 1–2: [`classify_name`] per video, grouped by canonical
+///   signature. Show members sort by (season, episode, name); movies
+///   by name.
+/// * Tier 3: unmatched videos cluster on `provider_modified_at`
+///   (gap-based, [`cluster_by_time`]); a date-shaped path folder
+///   anchors videos whose provider timestamp is missing. Videos with
+///   no temporal evidence at all stay unmatched.
+///
+/// Output order is deterministic: member count descending, then
+/// signature ascending — the API's top-K cap can truncate safely.
+pub fn build_suggestions(videos: &[ScannedVideo]) -> Vec<NewCollectionSuggestion> {
+    use std::collections::HashMap;
+
+    // signature -> (candidate's own parse, candidate index) pairs.
+    let mut named: HashMap<String, Vec<(ParsedName, usize)>> = HashMap::new();
+    let mut temporal: Vec<(usize, DateTime<Utc>)> = Vec::new();
+
+    for (i, video) in videos.iter().enumerate() {
+        match classify_name(&video.name, video.path.as_deref()) {
+            Some(parsed) => named
+                .entry(parsed.signature())
+                .or_default()
+                .push((parsed, i)),
+            None => {
+                if let Some(t) = temporal_timestamp(video) {
+                    temporal.push((i, t));
+                }
+            }
+        }
+    }
+
+    let mut suggestions: Vec<NewCollectionSuggestion> = named
+        .into_values()
+        .map(|mut members| {
+            // Shows order by (season, episode, name); everything else
+            // by name. Same-signature parses agree on the normalized
+            // key, so ordering only has to be deterministic.
+            members.sort_by(|(a, ai), (b, bi)| {
+                let key_of = |p: &ParsedName, i: usize| match p {
+                    ParsedName::Show {
+                        season, episode, ..
+                    } => (season.unwrap_or(0), *episode, videos[i].name.as_str()),
+                    ParsedName::Movie { .. } => (u32::MAX, u32::MAX, videos[i].name.as_str()),
+                };
+                key_of(a, *ai).cmp(&key_of(b, *bi))
+            });
+            let (prototype, _) = &members[0];
+            NewCollectionSuggestion {
+                kind: prototype.kind(),
+                title: prototype.collection_title(),
+                signature: prototype.signature(),
+                video_ids: members
+                    .iter()
+                    .map(|(_, i)| videos[*i].video_id.clone())
+                    .collect(),
+            }
+        })
+        .collect();
+
+    if !temporal.is_empty() {
+        let times: Vec<DateTime<Utc>> = temporal.iter().map(|(_, t)| *t).collect();
+        for cluster in cluster_by_time(&times) {
+            suggestions.push(NewCollectionSuggestion {
+                kind: CollectionKind::Time,
+                title: cluster.label,
+                signature: cluster.signature,
+                video_ids: cluster
+                    .indices
+                    .iter()
+                    .map(|&ti| videos[temporal[ti].0].video_id.clone())
+                    .collect(),
+            });
+        }
+    }
+
+    suggestions.sort_by(|a, b| {
+        b.video_ids
+            .len()
+            .cmp(&a.video_ids.len())
+            .then_with(|| a.signature.cmp(&b.signature))
+    });
+    suggestions
+}
+
+/// Timestamp evidence for the temporal tier: the provider's RFC 3339
+/// modified time, else midnight UTC of a date-shaped folder anchor.
+fn temporal_timestamp(video: &ScannedVideo) -> Option<DateTime<Utc>> {
+    if let Some(t) = video
+        .provider_modified_at
+        .as_deref()
+        .and_then(parse_timestamp)
+    {
+        return Some(t);
+    }
+    let path = video.path.as_deref()?;
+    let date = date_from_path(path)?;
+    use chrono::TimeZone as _;
+    Utc.from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .single()
 }
 
 fn parse_date_segment(segment: &str) -> Option<NaiveDate> {
@@ -1107,5 +1214,129 @@ mod tests {
             serde_json::to_string(&CollectionKind::Time).unwrap(),
             "\"time\""
         );
+    }
+
+    // ----- Suggestion orchestration (build_suggestions) -----
+
+    fn scanned(id: &str, name: &str, path: Option<&str>, modified: Option<&str>) -> ScannedVideo {
+        ScannedVideo {
+            video_id: id.into(),
+            name: name.into(),
+            path: path.map(str::to_string),
+            provider_modified_at: modified.map(str::to_string),
+        }
+    }
+
+    fn one_suggestion(videos: &[ScannedVideo]) -> NewCollectionSuggestion {
+        let all = build_suggestions(videos);
+        assert_eq!(all.len(), 1, "expected exactly one group: {all:?}");
+        all.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn build_suggestions_groups_show_episodes_in_order() {
+        let group = one_suggestion(&[
+            scanned("v2", "Breaking.Bad.S01E02.mkv", None, None),
+            scanned("v1", "Breaking.Bad.S01E01.mkv", None, None),
+            scanned("v3", "breaking.bad.s01e03.1080p.x264-GROUP.mkv", None, None),
+            scanned("x", "random clip.mp4", None, Some("2026-06-01T10:00:00Z")),
+        ]);
+        assert_eq!(group.kind, CollectionKind::Show);
+        assert_eq!(group.title, "Breaking Bad");
+        assert_eq!(group.signature, "show:breakingbad");
+        assert_eq!(group.video_ids, vec!["v1", "v2", "v3"]);
+    }
+
+    #[test]
+    fn build_suggestions_movie_single_file_is_suggestion() {
+        let videos = [scanned("v1", "The Matrix (1999).mkv", None, None)];
+        let group = one_suggestion(&videos);
+        assert_eq!(group.kind, CollectionKind::Movie);
+        assert_eq!(group.title, "The Matrix (1999)");
+        assert_eq!(group.signature, "movie:thematrix1999");
+        assert_eq!(group.video_ids, vec!["v1".to_string()]);
+    }
+
+    #[test]
+    fn build_suggestions_time_clusters_remaining_videos() {
+        let videos = [
+            scanned("clip1", "VID_001.mp4", None, Some("2026-06-01T10:00:00Z")),
+            scanned("clip2", "VID_002.mp4", None, Some("2026-06-02T10:00:00Z")),
+            scanned("clip3", "VID_003.mp4", None, Some("2026-06-03T10:00:00Z")),
+            scanned("far", "VID_004.mp4", None, Some("2026-06-20T10:00:00Z")),
+        ];
+        let all = build_suggestions(&videos);
+        assert_eq!(all.len(), 1, "the lone far video must not cluster");
+        let group = &all[0];
+        assert_eq!(group.kind, CollectionKind::Time);
+        assert_eq!(group.title, "June 2026");
+        assert_eq!(group.signature, "time:2026-06");
+        assert_eq!(group.video_ids, vec!["clip1", "clip2", "clip3"]);
+    }
+
+    #[test]
+    fn build_suggestions_uses_date_folder_anchor_when_timestamp_missing() {
+        let videos = [
+            scanned(
+                "a",
+                "IMG_0001.mp4",
+                Some("/Camera/2026-06-01/IMG_0001.mp4"),
+                None,
+            ),
+            scanned(
+                "b",
+                "IMG_0002.mp4",
+                Some("/Camera/2026-06-01/IMG_0002.mp4"),
+                None,
+            ),
+            scanned(
+                "c",
+                "IMG_0003.mp4",
+                Some("/Camera/2026-06-02/IMG_0003.mp4"),
+                None,
+            ),
+        ];
+        let group = one_suggestion(&videos);
+        assert_eq!(group.kind, CollectionKind::Time);
+        assert_eq!(group.title, "June 2026");
+        assert_eq!(group.video_ids.len(), 3);
+    }
+
+    #[test]
+    fn build_suggestions_skips_videos_without_temporal_evidence() {
+        let videos = [scanned(
+            "a",
+            "VID_001.mp4",
+            Some("/Media/clips/VID_001.mp4"),
+            None,
+        )];
+        assert!(build_suggestions(&videos).is_empty());
+    }
+
+    #[test]
+    fn build_suggestions_named_videos_never_join_time_clusters() {
+        let videos = [
+            scanned("e1", "Buffy.S01E01.mkv", None, Some("2026-06-01T10:00:00Z")),
+            scanned("e2", "Buffy.S01E02.mkv", None, Some("2026-06-02T10:00:00Z")),
+        ];
+        // Only two episodes — no time cluster is possible (min 3), and
+        // the shows group exists instead.
+        let all = build_suggestions(&videos);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, CollectionKind::Show);
+        assert_eq!(all[0].video_ids, vec!["e1", "e2"]);
+    }
+
+    #[test]
+    fn build_suggestions_orders_output_by_member_count_desc() {
+        let videos = [
+            scanned("m1", "Movie A (2020).mkv", None, None),
+            scanned("e1", "Show X.S01E01.mkv", None, None),
+            scanned("e2", "Show X.S01E02.mkv", None, None),
+        ];
+        let all = build_suggestions(&videos);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].title, "Show X");
+        assert_eq!(all[1].title, "Movie A (2020)");
     }
 }

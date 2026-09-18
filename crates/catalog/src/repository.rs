@@ -2264,6 +2264,190 @@ impl CatalogRepository {
             title: r.get("title"),
         }))
     }
+
+    // ── Library collections: suggestion staging (library-collections) ──
+
+    /// Rows from one scan's upserts, shaped as classification input.
+    /// Only `provider_file_id`s in `seen_keys` return — the hook
+    /// classifies what this scan touched, never the full table.
+    /// Key lists are chunked to stay under SQLite's bind-parameter cap
+    /// on large catalogs.
+    pub async fn fetch_scanned_videos(
+        &self,
+        connection_id: &str,
+        seen_keys: &std::collections::HashSet<String>,
+    ) -> CatalogResult<Vec<crate::model::ScannedVideo>> {
+        let mut keys: Vec<&String> = seen_keys.iter().collect();
+        keys.sort_unstable(); // deterministic pagination across chunks
+        let mut out = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT id, name, path, provider_modified_at FROM videos \
+                 WHERE connection_id = ? AND provider_file_id IN ({placeholders})"
+            );
+            let mut query = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
+                &sql,
+            )
+            .bind(connection_id);
+            for key in chunk {
+                query = query.bind(key);
+            }
+            for (video_id, name, path, provider_modified_at) in
+                query.fetch_all(&self.pool).await?
+            {
+                out.push(crate::model::ScannedVideo {
+                    video_id,
+                    name,
+                    path,
+                    provider_modified_at,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Signatures the user dismissed for a connection — the staging
+    /// rewrite filters against this set so dismissed groups never
+    /// resurrect across rescans (spec F2).
+    pub async fn fetch_dismissed_signatures(
+        &self,
+        connection_id: &str,
+    ) -> CatalogResult<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT signature FROM collection_suggestion_dismissals \
+                 WHERE connection_id = ?")
+                .bind(connection_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(s,)| s).collect())
+    }
+
+    /// Persist a dismissal by canonical signature (idempotent upsert).
+    pub async fn dismiss_collection_suggestion(
+        &self,
+        connection_id: &str,
+        signature: &str,
+    ) -> CatalogResult<()> {
+        sqlx::query(
+            "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
+             VALUES (?, ?, ?) \
+             ON CONFLICT(connection_id, signature) DO UPDATE SET \
+             dismissed_at = excluded.dismissed_at",
+        )
+        .bind(connection_id)
+        .bind(signature)
+        .bind(iso_now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Regenerate the connection's suggestion staging in one
+    /// transaction: wipe prior groups (items cascade), then insert the
+    /// new groups minus dismissed signatures. Staging is derived data —
+    /// safe to rebuild wholesale on every completed scan (plan,
+    /// architecture decision #1).
+    pub async fn replace_collection_suggestions(
+        &self,
+        connection_id: &str,
+        suggestions: &[crate::model::NewCollectionSuggestion],
+    ) -> CatalogResult<()> {
+        let dismissed = self.fetch_dismissed_signatures(connection_id).await?;
+        let now = iso_now();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("DELETE FROM collection_suggestions WHERE connection_id = ?")
+            .bind(connection_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for suggestion in suggestions
+            .iter()
+            .filter(|s| !s.video_ids.is_empty() && !dismissed.contains(&s.signature))
+        {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO collection_suggestions \
+                 (id, connection_id, kind, title, signature, member_count, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
+            .bind(connection_id)
+            .bind(suggestion.kind.as_str())
+            .bind(&suggestion.title)
+            .bind(&suggestion.signature)
+            .bind(suggestion.video_ids.len() as i64)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+
+            for (position, video_id) in suggestion.video_ids.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO collection_suggestion_items \
+                     (suggestion_id, video_id, position) VALUES (?, ?, ?)",
+                )
+                .bind(&id)
+                .bind(video_id)
+                .bind(position as i64)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Staged suggestion groups for a connection, newest-scan set,
+    /// ordered by member count descending (the review UI's top-K cap
+    /// truncates this safely).
+    pub async fn fetch_collection_suggestions(
+        &self,
+        connection_id: &str,
+    ) -> CatalogResult<Vec<crate::model::CollectionSuggestion>> {
+        let rows = sqlx::query(
+            "SELECT id, connection_id, kind, title, signature, member_count, created_at \
+             FROM collection_suggestions WHERE connection_id = ? \
+             ORDER BY member_count DESC, signature ASC",
+        )
+        .bind(connection_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| {
+                let kind_str: String = row.get("kind");
+                Ok(crate::model::CollectionSuggestion {
+                    id: row.get("id"),
+                    connection_id: row.get("connection_id"),
+                    kind: crate::model::CollectionKind::parse(&kind_str)
+                        .map_err(CatalogError::Other)?,
+                    title: row.get("title"),
+                    signature: row.get("signature"),
+                    member_count: row.get("member_count"),
+                    created_at: row.get("created_at"),
+                })
+            })
+            .collect()
+    }
+
+    /// Member video ids of one staged suggestion, in curation order
+    /// (episode/chronological) — the accept path copies them straight
+    /// into `collection_items` positions.
+    pub async fn fetch_collection_suggestion_video_ids(
+        &self,
+        suggestion_id: &str,
+    ) -> CatalogResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT video_id FROM collection_suggestion_items \
+             WHERE suggestion_id = ? ORDER BY position ASC",
+        )
+        .bind(suggestion_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(v,)| v).collect())
+    }
 }
 
 /// Probe statistics returned by `probe_stats()`.
@@ -2436,6 +2620,7 @@ mod tests {
             include_str!("../../storage/migrations/0011_files.sql"),
             include_str!("../../storage/migrations/0012_sharing.sql"),
             include_str!("../../storage/migrations/0014_catalog_prune.sql"),
+            include_str!("../../storage/migrations/0015_collections.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -4361,5 +4546,111 @@ mod tests {
             .await
             .unwrap();
         row.0
+    }
+
+    // ── Library collections: suggestion staging (library-collections) ──
+
+    #[tokio::test]
+    async fn fetch_scanned_videos_returns_only_seen_rows() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid1) = seed_owner_conn_video(&repo).await;
+        let vid2 = seed_extra_video(&repo, &conn, "extra").await;
+
+        let seen: std::collections::HashSet<String> =
+            ["file-1".to_string()].into_iter().collect();
+        let rows = repo.fetch_scanned_videos(&conn, &seen).await.unwrap();
+
+        assert_eq!(rows.len(), 1, "only the seen provider key returns");
+        assert_eq!(rows[0].video_id, vid1);
+        assert_eq!(rows[0].name, "v1.mp4");
+        assert_eq!(rows[0].path.as_deref(), Some("/Videos"));
+        assert_ne!(rows[0].video_id, vid2);
+    }
+
+    #[tokio::test]
+    async fn replace_collection_suggestions_rewrites_and_filters_dismissals() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid1) = seed_owner_conn_video(&repo).await;
+        let vid2 = seed_extra_video(&repo, &conn, "extra").await;
+
+        // Pre-existing dismissal for one signature.
+        repo.dismiss_collection_suggestion(&conn, "show:rejected")
+            .await
+            .unwrap();
+
+        repo.replace_collection_suggestions(
+            &conn,
+            &[
+                crate::model::NewCollectionSuggestion {
+                    kind: crate::model::CollectionKind::Show,
+                    title: "Rejected Show".into(),
+                    signature: "show:rejected".into(),
+                    video_ids: vec![vid1.clone()],
+                },
+                crate::model::NewCollectionSuggestion {
+                    kind: crate::model::CollectionKind::Time,
+                    title: "June 2026".into(),
+                    signature: "time:2026-06".into(),
+                    video_ids: vec![vid1.clone(), vid2.clone()],
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let staged = repo.fetch_collection_suggestions(&conn).await.unwrap();
+        assert_eq!(staged.len(), 1, "dismissed signature must not reappear");
+        assert_eq!(staged[0].signature, "time:2026-06");
+        assert_eq!(staged[0].kind, crate::model::CollectionKind::Time);
+        assert_eq!(staged[0].member_count, 2);
+        assert_eq!(staged[0].title, "June 2026");
+        assert_eq!(staged[0].connection_id, conn);
+
+        let members = repo
+            .fetch_collection_suggestion_video_ids(&staged[0].id)
+            .await
+            .unwrap();
+        assert_eq!(members, vec![vid1.clone(), vid2.clone()]);
+
+        // Regeneration is idempotent: same input → same single group,
+        // no duplicate rows anywhere.
+        repo.replace_collection_suggestions(
+            &conn,
+            &[crate::model::NewCollectionSuggestion {
+                kind: crate::model::CollectionKind::Time,
+                title: "June 2026".into(),
+                signature: "time:2026-06".into(),
+                video_ids: vec![vid1.clone(), vid2.clone()],
+            }],
+        )
+        .await
+        .unwrap();
+        let staged_again = repo.fetch_collection_suggestions(&conn).await.unwrap();
+        assert_eq!(staged_again.len(), 1);
+        assert_eq!(staged_again[0].signature, "time:2026-06");
+
+        // A full rewrite replaces prior groups wholesale (old items
+        // cascade away with their group).
+        repo.replace_collection_suggestions(
+            &conn,
+            &[crate::model::NewCollectionSuggestion {
+                kind: crate::model::CollectionKind::Show,
+                title: "New Show".into(),
+                signature: "show:newshow".into(),
+                video_ids: vec![vid2],
+            }],
+        )
+        .await
+        .unwrap();
+        let final_staged = repo.fetch_collection_suggestions(&conn).await.unwrap();
+        assert_eq!(final_staged.len(), 1);
+        assert_eq!(final_staged[0].signature, "show:newshow");
+        let stale_members = repo
+            .fetch_collection_suggestion_video_ids(&staged[0].id)
+            .await
+            .unwrap();
+        assert!(stale_members.is_empty(), "old group's items must be gone");
     }
 }
