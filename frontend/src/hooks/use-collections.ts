@@ -17,7 +17,7 @@ import {
 export function useCollections() {
   return useQuery({
     queryKey: collectionsQueryKeys.all,
-    queryFn: fetchCollections,
+    queryFn: () => fetchCollections(),
   });
 }
 

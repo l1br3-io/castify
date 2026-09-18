@@ -34,6 +34,8 @@ pub struct FolderCount {
 
 /// A collection with its member count, returned by
 /// `list_collections_with_counts` (library-collections, spec F3).
+/// `contains_video` is only meaningful when the caller scopes the list
+/// to a video (the add-to-collection picker's checkmark state).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CollectionWithCount {
     pub id: String,
@@ -41,6 +43,8 @@ pub struct CollectionWithCount {
     pub kind: crate::model::CollectionKind,
     pub created_at: String,
     pub member_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_video: Option<bool>,
 }
 
 /// Minimal video fields needed by the thumbnail proxy endpoint. Avoids the
@@ -2643,16 +2647,29 @@ impl CatalogRepository {
     }
 
     /// Every collection with its member count, newest first (rail
-    /// ordering: the just-accepted collection leads).
-    pub async fn list_collections_with_counts(&self) -> CatalogResult<Vec<CollectionWithCount>> {
-        let rows = sqlx::query(
-            "SELECT c.id, c.name, c.kind, c.created_at, COUNT(ci.video_id) AS member_count \
+    /// ordering: the just-accepted collection leads). When `video_id`
+    /// is given, each row also carries `contains_video` — the
+    /// add-to-collection picker's checkmark — computed via EXISTS so no
+    /// extra membership fetch is needed per collection.
+    pub async fn list_collections_with_counts(
+        &self,
+        video_id: Option<&str>,
+    ) -> CatalogResult<Vec<CollectionWithCount>> {
+        let scoped = video_id.is_some();
+        let sql = format!(
+            "SELECT c.id, c.name, c.kind, c.created_at, COUNT(ci.video_id) AS member_count, \
+                EXISTS(SELECT 1 FROM collection_items ci2 \
+                       WHERE ci2.collection_id = c.id AND ci2.video_id = ?{}) AS contains_video \
              FROM collections c \
              LEFT JOIN collection_items ci ON ci.collection_id = c.id \
              GROUP BY c.id ORDER BY c.created_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+            if scoped { "" } else { " AND 0" }
+        );
+        let mut query = sqlx::query(&sql);
+        if scoped {
+            query = query.bind(video_id.expect("scoped implies video id"));
+        }
+        let rows = query.fetch_all(&self.pool).await?;
 
         Ok(rows
             .iter()
@@ -2665,6 +2682,7 @@ impl CatalogRepository {
                         .unwrap_or(crate::model::CollectionKind::Manual),
                     created_at: row.get("created_at"),
                     member_count: row.get("member_count"),
+                    contains_video: scoped.then(|| row.get::<i64, _>("contains_video") != 0),
                 }
             })
             .collect())

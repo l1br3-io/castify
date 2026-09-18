@@ -367,11 +367,13 @@ export interface CollectionMetaDto {
   created_at: string;
 }
 
-// `GET /api/collections` row: meta + rail-card fields.
+// `GET /api/collections` row: meta + rail-card fields. `contains_video`
+// appears only when the list was scoped with `?video_id=` (picker state).
 export interface CollectionDto extends CollectionMetaDto {
   member_count: number;
   // First few members for thumbnails (bounded by the backend).
   preview: VideoSummaryDto[];
+  contains_video?: boolean;
 }
 
 // `GET /api/collections/{id}`: the full ordered member list.

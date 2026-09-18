@@ -58,6 +58,13 @@ type PosterCardProps = {
    *  line. Always visible (the slot itself controls its own styling). */
   ratingSlot?: ReactNode;
   /**
+   * Compact action menu anchored to the card body's meta row (e.g. the
+   * library-collections add-to-collection kebab). Stays above the
+   * stretched link so its controls remain clickable. Owner contexts
+   * only — share pages never pass one.
+   */
+  menuSlot?: ReactNode;
+  /**
    * Access scope for media URLs. Defaults to owner routes; share pages pass
    * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
    * share mirror instead of the session-gated owner route.
@@ -83,6 +90,7 @@ export function PosterCard({
   queue,
   topRightSlot,
   ratingSlot,
+  menuSlot,
   scope,
   selection,
 }: PosterCardProps) {
@@ -143,6 +151,11 @@ export function PosterCard({
           {year && <span>{year}</span>}
           <ProviderBadge provider={video.provider} />
           {others.length > 0 && <DedupBadge providers={others} />}
+          {menuSlot && (
+            <span className="relative z-10 ml-auto">
+              {menuSlot}
+            </span>
+          )}
         </div>
         {ratingSlot && <div className="relative z-10 w-fit">{ratingSlot}</div>}
       </div>

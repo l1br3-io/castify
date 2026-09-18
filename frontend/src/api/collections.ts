@@ -18,17 +18,29 @@ import type {
  * TanStack Query key factory. Mutations invalidate `all` (list shape
  * changes) or `detail(id)` (membership/rename), plus `suggestions`
  * after accept/dismiss — the review panel's queue shrinks as the user
- * works through it.
+ * works through it. `byVideo(id)` scopes the picker's checkmark state.
  */
 export const collectionsQueryKeys = {
   all: ["collections"] as const,
   detail: (id: string) => ["collections", id] as const,
   suggestions: ["collections", "suggestions"] as const,
+  byVideo: (videoId: string) => ["collections", "video", videoId] as const,
 };
 
-/** `GET /api/collections` — collections for the browse rail (spec F5). */
-export function fetchCollections(): Promise<CollectionDto[]> {
-  return apiFetch<CollectionDto[]>("/api/collections");
+/**
+ * `GET /api/collections` — collections for the browse rail (spec F5).
+ * `videoId` scopes a `contains_video` flag onto each row (the picker's
+ * checkmark).
+ */
+export function fetchCollections(
+  params: { videoId?: string } = {},
+): Promise<CollectionDto[]> {
+  const search = new URLSearchParams();
+  if (params.videoId !== undefined && params.videoId !== "") {
+    search.set("video_id", params.videoId);
+  }
+  const query = search.toString();
+  return apiFetch<CollectionDto[]>(`/api/collections${query ? `?${query}` : ""}`);
 }
 
 /** `GET /api/collections/{id}` — collection with ordered members. */

@@ -30,6 +30,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { FavoriteToggle } from "../components/favorite-toggle";
+import { AddToCollectionMenu } from "../components/collections/add-to-collection";
 import { RatingStars } from "../components/rating-stars";
 import { DedupBadge, ProviderBadge } from "../components/badges";
 import { PlayerControls } from "../components/player-controls";
@@ -823,6 +824,9 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
       <div className="flex flex-wrap items-center gap-4 pt-1">
         <FavoriteToggle video={video} variant="hero" />
         <RatingStars video={video} variant="hero" />
+        {/* Library-collections: same picker as the browse cards, hero
+            form — adds/removes this video from any collection. */}
+        <AddToCollectionMenu video={video} variant="hero" />
         <Button
           variant="secondary"
           size="sm"

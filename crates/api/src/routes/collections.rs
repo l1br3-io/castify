@@ -212,6 +212,10 @@ pub struct CollectionListDto {
     pub member_count: i64,
     /// First few members as video summaries (rail cards).
     pub preview: Vec<VideoSummary>,
+    /// Only present when the list was scoped with `?video_id=` — the
+    /// picker's checkmark state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_video: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,18 +228,30 @@ pub struct CollectionDetailDto {
     pub members: Vec<VideoSummary>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListCollectionsParams {
+    /// When set, each row carries `contains_video` — the picker's
+    /// checkmark for this video (spec F5, task 010).
+    pub video_id: Option<String>,
+}
+
 /// `GET /api/collections` — the user's collections for the browse rail
 /// (spec F5), newest first, each with a member-count and a small
-/// preview for thumbnails.
+/// preview for thumbnails. `?video_id=` scopes membership flags for the
+/// add-to-collection picker.
 pub async fn list_collections(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(params): Query<ListCollectionsParams>,
 ) -> ApiResult<Json<Vec<CollectionListDto>>> {
     let _owner = resolve_owner(&state, &jar).await?;
     let repo = state.catalog_repository();
 
     let mut out = Vec::new();
-    for row in repo.list_collections_with_counts().await? {
+    for row in repo
+        .list_collections_with_counts(params.video_id.as_deref())
+        .await?
+    {
         let preview_ids: Vec<String> = repo
             .fetch_collection_member_ids(&row.id)
             .await?
@@ -249,6 +265,7 @@ pub async fn list_collections(
             kind: row.kind,
             created_at: row.created_at,
             member_count: row.member_count,
+            contains_video: row.contains_video,
             preview,
         });
     }
@@ -290,6 +307,7 @@ pub async fn create_collection(
         created_at: collection.created_at,
         member_count: 0,
         preview: Vec::new(),
+        contains_video: None,
     }))
 }
 

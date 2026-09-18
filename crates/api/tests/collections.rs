@@ -495,6 +495,70 @@ async fn collections_requires_auth() {
 }
 
 #[tokio::test]
+async fn collections_list_scopes_membership_flags_for_a_video() {
+    let (app, cookie, _repo, _guard, v1, _v2, _v3) = boot_with_videos().await;
+    let csrf = fetch_csrf(&app, &cookie).await;
+
+    let (_, body) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "Has V1"}),
+    )
+    .await;
+    let col_with = body["id"].as_str().unwrap().to_string();
+    let (_, body) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "Empty"}),
+    )
+    .await;
+    let _col_empty = body["id"].as_str().unwrap().to_string();
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/{col_with}/items/{v1}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Unscoped list: no membership flag carried.
+    let (_, plain) = request(app.clone(), "GET", "/api/collections", Some(&cookie), None).await;
+    let plain_rows = plain.as_array().unwrap();
+    assert_eq!(plain_rows.len(), 2);
+    assert!(plain_rows.iter().all(|r| r.get("contains_video").is_none()));
+
+    // Scoped: the member collection flags true, the other false.
+    let (_, scoped) = request(
+        app,
+        "GET",
+        &format!("/api/collections?video_id={v1}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let scoped_rows = scoped.as_array().unwrap();
+    assert_eq!(scoped_rows.len(), 2);
+    let has_v1 = scoped_rows
+        .iter()
+        .find(|r| r["name"] == "Has V1")
+        .expect("Has V1 row");
+    assert_eq!(has_v1["contains_video"], true);
+    let empty = scoped_rows
+        .iter()
+        .find(|r| r["name"] == "Empty")
+        .expect("Empty row");
+    assert_eq!(empty["contains_video"], false);
+}
+
+#[tokio::test]
 async fn manual_collection_crud_and_membership_roundtrip() {
     let (app, cookie, repo, _guard, v1, v2, v3) = boot_with_videos().await;
     let csrf = fetch_csrf(&app, &cookie).await;
