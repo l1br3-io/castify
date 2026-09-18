@@ -131,6 +131,23 @@ pub async fn run_scan(
                     seen_file_keys,
                     ..
                 } => {
+                    // Library-collections durability (spec F4): redirect
+                    // membership from identity-churned rows to their
+                    // fresh replacements BEFORE reconcile could prune
+                    // the old rows. A failure degrades to a logged
+                    // noop — membership loss per item at worst, never
+                    // a scan failure.
+                    if let Err(e) = repo
+                        .relink_collection_items(&connection_id, provider_type, seen_video_keys)
+                        .await
+                    {
+                        tracing::warn!(
+                            connection_id = %connection_id,
+                            error = %e,
+                            "collection membership re-link skipped after error"
+                        );
+                    }
+
                     let report = reconcile_after_scan(
                         &repo,
                         &connection_id,
@@ -1821,6 +1838,94 @@ mod tests {
             repo.video_count_by_connection(&conn_id).await.unwrap(),
             4,
             "scan upserts are unaffected by the staging failure"
+        );
+    }
+
+    // ── Library collections: durability re-link in the scan lifecycle ──
+
+    /// Factory whose listing is one large video with stable content
+    /// identity — the second scan "moves" it (new provider key, same
+    /// native hash, so tier-1 dedup assigns both rows the same
+    /// `castify_hash`) while prune grace 1 hard-deletes the old row the
+    /// same tick.
+    fn movable_video_factory(key: &str) -> MockFactory {
+        MockFactory {
+            pages: vec![ListPage {
+                videos: vec![DiscoveredVideo {
+                    provider_file_id: key.into(),
+                    name: format!("{key}.mkv"),
+                    path: None,
+                    size_bytes: 5_000_000,
+                    mime_type: Some("video/mp4".into()),
+                    duration_ms: None,
+                    width: None,
+                    height: None,
+                    native_hash: Some("native-same-content".into()),
+                    native_hash_algo: Some("md5".into()),
+                    provider_modified_at: None,
+                }],
+                subtitles: vec![],
+                files: vec![],
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            prefix_hashes: HashMap::new(),
+            fail_prefix: true,
+            fail_first_list_unauthorized: false,
+            refresh_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_relinks_membership_across_move_and_prune() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+        let prune_one = PrunePolicy {
+            effective_grace_scans: Some(1),
+        };
+
+        // Scan 1: key-1 exists, gets its prefix hash, joins a collection.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(movable_video_factory("key-1")),
+            prune_one,
+        )
+        .await;
+        let vid1 = video_id_for(&repo, "key-1").await;
+        let collection = repo
+            .create_collection("Durable", crate::model::CollectionKind::Manual)
+            .await
+            .unwrap();
+        repo.add_collection_item(&collection.id, &vid1)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Scan 2: the provider "moved" the file — new key, same content.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(movable_video_factory("key-2")),
+            prune_one,
+        )
+        .await;
+
+        // Old row pruned (grace 1), membership redirected, no dupes.
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            1,
+            "old identity pruned after grace"
+        );
+        let vid2 = video_id_for(&repo, "key-2").await;
+        assert_ne!(vid1, vid2);
+        assert_eq!(
+            repo.fetch_collection_member_ids(&collection.id).await.unwrap(),
+            vec![vid2],
+            "membership must follow the new identity"
         );
     }
 

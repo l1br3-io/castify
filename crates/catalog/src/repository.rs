@@ -2766,6 +2766,154 @@ impl CatalogRepository {
         Ok(rows.into_iter().map(|(v,)| v).collect())
     }
 
+    /// Library-collections durability (spec F4): redirect collection
+    /// membership away from identity-churned video rows onto their
+    /// fresh replacements, so provider moves and reconnects never
+    /// strand a collection. Runs once per completed scan —
+    /// **before** reconcile could prune the old rows.
+    ///
+    /// Two match paths, newest row wins on multiples:
+    /// 1. *Same connection, file no longer listed* (move / S3 key
+    ///    change): match by `castify_hash`.
+    /// 2. *Row stranded on a disconnected connection of the same
+    ///    provider* (S3-style reconnect under a new connection row):
+    ///    match by `provider_file_id`, falling back to `castify_hash`.
+    ///
+    /// Re-link only redirects edges — it never deletes collections or
+    /// renames user data. A redirect onto an already-member row drops
+    /// the stale edge (membership is a set). Unmatched rows keep their
+    /// edges; the eventual prune cascade degrades to membership loss
+    /// for that item alone, never a scan failure.
+    pub async fn relink_collection_items(
+        &self,
+        connection_id: &str,
+        provider: Provider,
+        seen_video_keys: &std::collections::HashSet<String>,
+    ) -> CatalogResult<u64> {
+        let rows = sqlx::query(
+            "SELECT ci.collection_id, ci.video_id, v.connection_id AS video_connection_id, \
+                    v.provider_file_id, v.castify_hash \
+             FROM collection_items ci \
+             JOIN videos v ON v.id = ci.video_id \
+             LEFT JOIN provider_connections pc ON pc.id = v.connection_id \
+             WHERE v.connection_id = ? \
+                OR (pc.disconnected_at IS NOT NULL AND v.provider = ?)",
+        )
+        .bind(connection_id)
+        .bind(provider.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut redirected: u64 = 0;
+        for row in &rows {
+            let collection_id: String = row.get("collection_id");
+            let old_video_id: String = row.get("video_id");
+            let video_connection_id: String = row.get("video_connection_id");
+            let provider_file_id: String = row.get("provider_file_id");
+            let castify_hash: Option<String> = row.get("castify_hash");
+
+            // Lookup failures degrade per item (keep the stale edge)
+            // — a re-link problem must never fail the scan.
+            let target: Option<String> = if video_connection_id == connection_id {
+                // Same connection: only churned identities (not listed
+                // this scan) are candidates for a hash-based redirect.
+                if seen_video_keys.contains(&provider_file_id) {
+                    continue;
+                }
+                // GOTCHA: files below the prefix-hash size threshold
+                // have NULL `castify_hash` — no content evidence, so a
+                // same-connection move is unprovable and skipped.
+                match castify_hash.as_deref() {
+                    Some(hash) => {
+                        sqlx::query_scalar::<_, String>(
+                            "SELECT id FROM videos \
+                             WHERE connection_id = ? AND castify_hash = ? AND id != ? \
+                             ORDER BY created_at DESC, id LIMIT 1",
+                        )
+                        .bind(connection_id)
+                        .bind(hash)
+                        .bind(&old_video_id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    None => None,
+                }
+            } else {
+                // Stranded on a dead connection: reconnect recovery —
+                // provider_file_id first, hash fallback.
+                let by_file_id = sqlx::query_scalar::<_, String>(
+                    "SELECT id FROM videos \
+                     WHERE connection_id = ? AND provider_file_id = ? AND id != ? \
+                     ORDER BY created_at DESC, id LIMIT 1",
+                )
+                .bind(connection_id)
+                .bind(&provider_file_id)
+                .bind(&old_video_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+
+                match by_file_id {
+                    Some(id) => Some(id),
+                    // GOTCHA: NULL-hash rows have no content evidence;
+                    // only the provider_file_id path above can save them.
+                    None => match castify_hash.as_deref() {
+                        Some(hash) => {
+                            sqlx::query_scalar::<_, String>(
+                                "SELECT id FROM videos \
+                                 WHERE connection_id = ? AND castify_hash = ? AND id != ? \
+                                 ORDER BY created_at DESC, id LIMIT 1",
+                            )
+                            .bind(connection_id)
+                            .bind(hash)
+                            .bind(&old_video_id)
+                            .fetch_optional(&self.pool)
+                            .await
+                            .ok()
+                            .flatten()
+                        }
+                        None => None,
+                    },
+                }
+            };
+
+            let Some(new_video_id) = target else {
+                continue;
+            };
+
+            let result = sqlx::query(
+                "UPDATE collection_items SET video_id = ? \
+                 WHERE collection_id = ? AND video_id = ?",
+            )
+            .bind(&new_video_id)
+            .bind(&collection_id)
+            .bind(&old_video_id)
+            .execute(&self.pool)
+            .await;
+            match result {
+                Ok(_) => redirected += 1,
+                Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                    // Target already a member — drop the stale edge
+                    // (set semantics) instead of corrupting the PK.
+                    sqlx::query(
+                        "DELETE FROM collection_items \
+                         WHERE collection_id = ? AND video_id = ?",
+                    )
+                    .bind(&collection_id)
+                    .bind(&old_video_id)
+                    .execute(&self.pool)
+                    .await?;
+                    redirected += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(redirected)
+    }
+
     /// Member video ids of one staged suggestion, in curation order
     /// (episode/chronological) — the accept path copies them straight
     /// into `collection_items` positions.
@@ -4986,5 +5134,241 @@ mod tests {
             .await
             .unwrap();
         assert!(stale_members.is_empty(), "old group's items must be gone");
+    }
+
+    // ── Library collections: durability re-link (spec F4) ────────────
+
+    async fn upsert_plain_video(
+        repo: &CatalogRepository,
+        conn: &str,
+        provider: Provider,
+        key: &str,
+    ) -> String {
+        repo.upsert_video(
+            conn,
+            provider,
+            &NewVideo {
+                provider_file_id: key.into(),
+                name: format!("{key}.mp4"),
+                path: None,
+                size_bytes: 1000,
+                mime_type: None,
+                duration_ms: None,
+                width: None,
+                height: None,
+                native_hash: None,
+                native_hash_algo: None,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        video_row_id(repo, conn, key).await
+    }
+
+    async fn video_row_id(repo: &CatalogRepository, conn: &str, key: &str) -> String {
+        sqlx::query_scalar("SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = ?")
+            .bind(conn)
+            .bind(key)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn collection_with_member(repo: &CatalogRepository, video_id: &str) -> String {
+        let collection = repo
+            .create_collection("Durable", crate::model::CollectionKind::Manual)
+            .await
+            .unwrap();
+        repo.add_collection_item(&collection.id, video_id)
+            .await
+            .unwrap()
+            .expect("fresh member add");
+        collection.id
+    }
+
+    fn seen(keys: &[&str]) -> std::collections::HashSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    /// Spec success criterion 4a: provider move — same provider, new
+    /// `provider_file_id` (or S3 key), same `castify_hash` → membership
+    /// follows to the new row.
+    #[tokio::test]
+    async fn relink_follows_hash_on_provider_file_id_change() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid1) = seed_owner_conn_video(&repo).await;
+        let vid2 = upsert_plain_video(&repo, &conn, Provider::GoogleDrive, "file-2").await;
+
+        repo.update_video_dedup(&vid1, "hash-9", "hash-9:1000")
+            .await
+            .unwrap();
+        repo.update_video_dedup(&vid2, "hash-9", "hash-9:1000")
+            .await
+            .unwrap();
+
+        let collection_id = collection_with_member(&repo, &vid1).await;
+
+        // Healthy row: listing still sees file-1 → no redirect.
+        assert_eq!(
+            repo.relink_collection_items(&conn, Provider::GoogleDrive, &seen(&["file-1"]))
+                .await
+                .unwrap(),
+            0
+        );
+
+        // Identity churn: listing now sees only file-2 (same hash).
+        assert_eq!(
+            repo.relink_collection_items(&conn, Provider::GoogleDrive, &seen(&["file-2"]))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            vec![vid2.clone()]
+        );
+
+        // Idempotent.
+        assert_eq!(
+            repo.relink_collection_items(&conn, Provider::GoogleDrive, &seen(&["file-2"]))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            vec![vid2]
+        );
+    }
+
+    /// Spec success criterion 5: S3 disconnect + reconnect creates a
+    /// NEW connection row; membership re-attaches via
+    /// `provider` + `provider_file_id`.
+    #[tokio::test]
+    async fn relink_restores_membership_after_s3_reconnect() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+
+        let conn1 = repo
+            .create_connection(&NewConnection {
+                provider: Provider::S3Compatible,
+                credential: sample_credential(),
+                provider_account_id: None,
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+        let vid1 = upsert_plain_video(&repo, &conn1.id, Provider::S3Compatible, "media/clip.mp4").await;
+        let collection_id = collection_with_member(&repo, &vid1).await;
+
+        repo.disconnect(&conn1.id).await.unwrap();
+
+        let conn2 = repo
+            .create_connection(&NewConnection {
+                provider: Provider::S3Compatible,
+                credential: sample_credential(),
+                provider_account_id: None,
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+        let vid2 = upsert_plain_video(&repo, &conn2.id, Provider::S3Compatible, "media/clip.mp4").await;
+
+        assert_eq!(
+            repo.relink_collection_items(
+                &conn2.id,
+                Provider::S3Compatible,
+                &seen(&["media/clip.mp4"])
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            vec![vid2]
+        );
+    }
+
+    /// GOTCHA: files below the prefix-hash size threshold keep
+    /// `castify_hash = NULL` — same-connection moves can never match
+    /// (no content evidence), and only the reconnect file-id path
+    /// applies.
+    #[tokio::test]
+    async fn relink_null_hash_uses_file_id_reconnect_only() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn1, vid1) = seed_owner_conn_video(&repo).await;
+
+        // Same-connection "move" without hash evidence: no redirect.
+        let _vid2 = upsert_plain_video(&repo, &conn1, Provider::GoogleDrive, "file-2").await;
+        assert_eq!(
+            repo.relink_collection_items(&conn1, Provider::GoogleDrive, &seen(&["file-2"]))
+                .await
+                .unwrap(),
+            0,
+            "NULL hash cannot corroborate a same-connection move"
+        );
+
+        // Reconnect under a new account: provider + provider_file_id
+        // still redirects with NULL hashes.
+        let collection_id = collection_with_member(&repo, &vid1).await;
+        repo.disconnect(&conn1).await.unwrap();
+        let conn2 = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                credential: sample_credential(),
+                provider_account_id: Some("a2".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+        let vid3 = upsert_plain_video(&repo, &conn2.id, Provider::GoogleDrive, "file-1").await;
+
+        assert_eq!(
+            repo.relink_collection_items(&conn2.id, Provider::GoogleDrive, &seen(&["file-1"]))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            vec![vid3]
+        );
+    }
+
+    /// Redirecting onto a row that is already a member must not
+    /// violate the membership PK — the stale edge drops instead.
+    #[tokio::test]
+    async fn relink_dedupes_conflicting_edge() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid1) = seed_owner_conn_video(&repo).await;
+        let vid2 = upsert_plain_video(&repo, &conn, Provider::GoogleDrive, "file-2").await;
+
+        repo.update_video_dedup(&vid1, "hash-7", "hash-7:1000")
+            .await
+            .unwrap();
+        repo.update_video_dedup(&vid2, "hash-7", "hash-7:1000")
+            .await
+            .unwrap();
+
+        let collection = repo
+            .create_collection("Both", crate::model::CollectionKind::Manual)
+            .await
+            .unwrap();
+        repo.add_collection_item(&collection.id, &vid1).await.unwrap().unwrap();
+        repo.add_collection_item(&collection.id, &vid2).await.unwrap().unwrap();
+
+        assert_eq!(
+            repo.relink_collection_items(&conn, Provider::GoogleDrive, &seen(&["file-2"]))
+                .await
+                .unwrap(),
+            1
+        );
+        let members = repo.fetch_collection_member_ids(&collection.id).await.unwrap();
+        assert_eq!(members, vec![vid2.clone()], "no duplicate edge, new row kept");
     }
 }
