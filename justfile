@@ -240,6 +240,19 @@ deploy host="" domain="":
         echo "       or set CASTIFY_DEPLOY_HOST (and CASTIFY_DEPLOY_DOMAIN) in .env" >&2
         exit 1
     fi
+    # Bare IP/hostname → assume root@. Plain ssh would fall back to the local
+    # username ($USER) and fail with "Permission denied (publickey)" — DO
+    # droplets ship with only the root user (docs/deploy-do-r2.md § 3).
+    case "$HOST" in
+        *@*) ;;
+        *) HOST="root@$HOST" ;;
+    esac
+    echo "== deploy: ssh preflight =="
+    if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" true 2>/dev/null; then
+        echo "error: cannot ssh to $HOST (publickey)" >&2
+        echo "       check the user part — droplets usually only have 'root'." >&2
+        exit 1
+    fi
     echo "== deploy: build image (ffmpeg variant) =="
     docker build --target e2e-runtime -t castify:ffmpeg .
     echo "== deploy: ship image to $HOST =="
