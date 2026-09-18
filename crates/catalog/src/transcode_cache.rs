@@ -498,6 +498,8 @@ mod tests {
             include_str!("../../storage/migrations/0007_video_cache.sql"),
             include_str!("../../storage/migrations/0008_video_codec.sql"),
             include_str!("../../storage/migrations/0009_transcode_cache.sql"),
+            include_str!("../../storage/migrations/0011_files.sql"),
+            include_str!("../../storage/migrations/0014_catalog_prune.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }

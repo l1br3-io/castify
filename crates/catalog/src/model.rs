@@ -167,6 +167,9 @@ pub struct ScanState {
     pub completed_at: Option<String>,
     pub error_message: Option<String>,
     pub videos_found: i64,
+    /// Rows pruned by the last completed scan (catalog-prune reconcile).
+    pub videos_pruned: i64,
+    pub files_pruned: i64,
 }
 
 impl ScanState {
@@ -179,6 +182,8 @@ impl ScanState {
             completed_at: row.get("completed_at"),
             error_message: row.get("error_message"),
             videos_found: row.get("videos_found"),
+            videos_pruned: row.get("videos_pruned"),
+            files_pruned: row.get("files_pruned"),
         }
     }
 }

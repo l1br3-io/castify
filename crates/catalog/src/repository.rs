@@ -202,6 +202,8 @@ impl CatalogRepository {
             completed_at: None,
             error_message: None,
             videos_found: 0,
+            videos_pruned: 0,
+            files_pruned: 0,
         };
         self.upsert_scan_state(&scan_state).await?;
 
@@ -1723,12 +1725,13 @@ impl CatalogRepository {
     pub async fn upsert_scan_state(&self, state: &ScanState) -> CatalogResult<()> {
         sqlx::query(
             "INSERT INTO scan_state \
-             (connection_id, status, cursor, started_at, completed_at, error_message, videos_found) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             (connection_id, status, cursor, started_at, completed_at, error_message, videos_found, videos_pruned, files_pruned) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(connection_id) DO UPDATE SET \
               status = excluded.status, cursor = excluded.cursor, \
               started_at = excluded.started_at, completed_at = excluded.completed_at, \
-              error_message = excluded.error_message, videos_found = excluded.videos_found",
+              error_message = excluded.error_message, videos_found = excluded.videos_found, \
+              videos_pruned = excluded.videos_pruned, files_pruned = excluded.files_pruned",
         )
         .bind(&state.connection_id)
         .bind(state.status.as_str())
@@ -1737,6 +1740,8 @@ impl CatalogRepository {
         .bind(&state.completed_at)
         .bind(&state.error_message)
         .bind(state.videos_found)
+        .bind(state.videos_pruned)
+        .bind(state.files_pruned)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1745,7 +1750,8 @@ impl CatalogRepository {
     pub async fn fetch_scan_state(&self, connection_id: &str) -> CatalogResult<Option<ScanState>> {
         let row = sqlx::query(
             "SELECT connection_id, status, cursor, started_at, completed_at, \
-             error_message, videos_found FROM scan_state WHERE connection_id = ?",
+             error_message, videos_found, videos_pruned, files_pruned \
+             FROM scan_state WHERE connection_id = ?",
         )
         .bind(connection_id)
         .fetch_optional(&self.pool)
@@ -2308,6 +2314,7 @@ mod tests {
             include_str!("../../storage/migrations/0009_transcode_cache.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
             include_str!("../../storage/migrations/0011_files.sql"),
+            include_str!("../../storage/migrations/0014_catalog_prune.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }
@@ -2975,6 +2982,8 @@ mod tests {
             completed_at: None,
             error_message: None,
             videos_found: 42,
+            videos_pruned: 0,
+            files_pruned: 0,
         })
         .await
         .unwrap();
@@ -2983,6 +2992,27 @@ mod tests {
         assert_eq!(state.status, ScanStatus::Scanning);
         assert_eq!(state.cursor.as_deref(), Some("page3"));
         assert_eq!(state.videos_found, 42);
+        assert_eq!(state.videos_pruned, 0);
+        assert_eq!(state.files_pruned, 0);
+
+        // Prune counters survive a completed-scan upsert (migration 0014).
+        repo.upsert_scan_state(&ScanState {
+            connection_id: conn.id.clone(),
+            status: ScanStatus::Idle,
+            cursor: None,
+            started_at: Some("2026-01-01T00:00:00Z".into()),
+            completed_at: Some("2026-01-01T00:01:00Z".into()),
+            error_message: None,
+            videos_found: 40,
+            videos_pruned: 2,
+            files_pruned: 1,
+        })
+        .await
+        .unwrap();
+
+        let state = repo.fetch_scan_state(&conn.id).await.unwrap().unwrap();
+        assert_eq!(state.videos_pruned, 2);
+        assert_eq!(state.files_pruned, 1);
     }
 
     /// Seed an owner, a connection, and a single video. Returns the

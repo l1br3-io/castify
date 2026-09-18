@@ -596,6 +596,8 @@ async fn rescan_returns_409_when_already_scanning() {
         completed_at: None,
         error_message: None,
         videos_found: 5,
+        videos_pruned: 0,
+        files_pruned: 0,
     })
     .await
     .unwrap();

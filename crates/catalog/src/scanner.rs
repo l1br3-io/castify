@@ -40,6 +40,8 @@ pub async fn run_scan(
             completed_at: None,
             error_message: None,
             videos_found: 0,
+            videos_pruned: 0,
+            files_pruned: 0,
         })
         .await;
 
@@ -61,6 +63,8 @@ pub async fn run_scan(
                     completed_at: Some(iso_now()),
                     error_message: None,
                     videos_found: *videos_found,
+                    videos_pruned: 0,
+                    files_pruned: 0,
                 })
                 .await;
         }
@@ -79,6 +83,8 @@ pub async fn run_scan(
                     completed_at: Some(iso_now()),
                     error_message: Some(e.to_string()),
                     videos_found: 0,
+                    videos_pruned: 0,
+                    files_pruned: 0,
                 })
                 .await;
         }
@@ -436,6 +442,7 @@ mod tests {
             include_str!("../../storage/migrations/0006_play.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
             include_str!("../../storage/migrations/0011_files.sql"),
+            include_str!("../../storage/migrations/0014_catalog_prune.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
         }

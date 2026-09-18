@@ -1130,3 +1130,83 @@ async fn migration_0011_files_cascade_on_connection_hard_delete() {
             .unwrap();
     assert_eq!(remaining, 0, "files rows cascade away with the connection");
 }
+
+// ---- Migration 0014: Catalog prune (tombstone + grace counter) ----
+
+/// 0014 adds tombstone columns to `videos`/`files` and pruned counters to
+/// `scan_state`. Rows written without the new columns land on the defaults:
+/// present (`missing_since IS NULL`, `missing_scan_count = 0`) and zero
+/// prunes — a catalog upgraded in place must not look half-deleted.
+#[tokio::test]
+async fn migration_0014_prune_columns_default_on_existing_rows() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+         VALUES ('f-1', 'conn-x', 'pid-f1', 'doc.pdf', 'document')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO scan_state (connection_id, status, videos_found) \
+         VALUES ('conn-x', 'idle', 3)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let video =
+        sqlx::query("SELECT missing_since, missing_scan_count FROM videos WHERE id = 'vid-x'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(video.get::<Option<String>, _>("missing_since").is_none());
+    assert_eq!(video.get::<i64, _>("missing_scan_count"), 0);
+
+    let file = sqlx::query("SELECT missing_since, missing_scan_count FROM files WHERE id = 'f-1'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(file.get::<Option<String>, _>("missing_since").is_none());
+    assert_eq!(file.get::<i64, _>("missing_scan_count"), 0);
+
+    let scan = sqlx::query(
+        "SELECT videos_pruned, files_pruned FROM scan_state WHERE connection_id = 'conn-x'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(scan.get::<i64, _>("videos_pruned"), 0);
+    assert_eq!(scan.get::<i64, _>("files_pruned"), 0);
+}
+
+/// The scan_state prune counters persist non-zero values — the API surface
+/// reads them after every completed scan.
+#[tokio::test]
+async fn migration_0014_scan_state_pruned_counts_round_trip() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO scan_state (connection_id, status, videos_found, videos_pruned, files_pruned) \
+         VALUES ('conn-x', 'idle', 5, 2, 1)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let (videos_pruned, files_pruned): (i64, i64) = sqlx::query_as(
+        "SELECT videos_pruned, files_pruned FROM scan_state WHERE connection_id = 'conn-x'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(videos_pruned, 2);
+    assert_eq!(files_pruned, 1);
+}
