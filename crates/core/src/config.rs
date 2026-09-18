@@ -207,6 +207,90 @@ impl Default for AbrConfig {
     }
 }
 
+/// Catalog-prune reconcile mode (docs/specs/catalog-prune/spec.md). Controls
+/// when a catalog row the provider no longer lists gets deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PruneMode {
+    /// Never prune — exact pre-effort upsert-only behavior.
+    Off,
+    /// Prune on the first completed scan that omits the row.
+    Immediate,
+    /// Prune after `grace_scans` consecutive completed scans omitted it
+    /// (the default: one flaky listing marks, the next confirms).
+    Grace,
+}
+
+impl PruneMode {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "off" => Ok(PruneMode::Off),
+            "immediate" => Ok(PruneMode::Immediate),
+            "grace" => Ok(PruneMode::Grace),
+            _ => bail!(
+                "CASTIFY_PRUNE_MODE must be one of off | immediate | grace; got {raw:?}. \
+                 {CONFIG_DOCS_HINT}"
+            ),
+        }
+    }
+}
+
+/// Catalog-prune configuration, parsed from `CASTIFY_PRUNE_MODE` and
+/// `CASTIFY_PRUNE_GRACE_SCANS`.
+#[derive(Debug, Clone)]
+pub struct PruneConfig {
+    pub mode: PruneMode,
+    /// Raw `CASTIFY_PRUNE_GRACE_SCANS` value, floored at 1. Only meaningful
+    /// in [`PruneMode::Grace`] — `immediate ≡ grace 1` by construction.
+    pub grace_scans: u32,
+}
+
+impl Default for PruneConfig {
+    fn default() -> Self {
+        Self {
+            mode: PruneMode::Grace,
+            grace_scans: 2,
+        }
+    }
+}
+
+impl PruneConfig {
+    /// The grace the scanner actually enforces: `None` = never delete,
+    /// `Some(n)` = delete after n consecutive completed scans omitted the
+    /// row. Centralizes the mode→grace normalization so call sites never
+    /// re-derive it.
+    pub fn effective_grace_scans(&self) -> Option<u32> {
+        match self.mode {
+            PruneMode::Off => None,
+            PruneMode::Immediate => Some(1),
+            PruneMode::Grace => Some(self.grace_scans.max(1)),
+        }
+    }
+}
+
+/// Load catalog-prune config. Grace is parsed as i64 then floored at 1 —
+/// a zero/negative grace would otherwise mean "prune rows the listing just
+/// confirmed present", which is never intended.
+fn load_prune_config() -> Result<PruneConfig> {
+    let mode = match std::env::var("CASTIFY_PRUNE_MODE") {
+        Ok(raw) if !raw.is_empty() => PruneMode::parse(&raw)?,
+        _ => PruneConfig::default().mode,
+    };
+    let grace_scans = std::env::var("CASTIFY_PRUNE_GRACE_SCANS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|raw| {
+            raw.parse::<i64>().with_context(|| {
+                format!(
+                    "CASTIFY_PRUNE_GRACE_SCANS must be an integer; got {raw:?}. {CONFIG_DOCS_HINT}"
+                )
+            })
+        })
+        .transpose()?
+        .map(|n| n.clamp(1, i64::from(u32::MAX)) as u32)
+        .unwrap_or(2);
+    Ok(PruneConfig { mode, grace_scans })
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -222,6 +306,7 @@ pub struct Config {
     pub probe: ProbeConfig,
     pub transcode: TranscodeConfig,
     pub abr: AbrConfig,
+    pub prune: PruneConfig,
 }
 
 impl Config {
@@ -261,6 +346,7 @@ impl Config {
         let probe = load_probe_config()?;
         let transcode = load_transcode_config(&data_dir)?;
         let abr = load_abr_config()?;
+        let prune = load_prune_config()?;
 
         Ok(Self {
             bind_addr,
@@ -276,6 +362,7 @@ impl Config {
             probe,
             transcode,
             abr,
+            prune,
         })
     }
 }
@@ -597,6 +684,8 @@ mod tests {
             "CASTIFY_TRANSCODE_SWEEP_INTERVAL_SECS",
             "CASTIFY_ABR_LADDER",
             "CASTIFY_ABR_PRECOMPUTE_CAP",
+            "CASTIFY_PRUNE_MODE",
+            "CASTIFY_PRUNE_GRACE_SCANS",
             "RUST_LOG",
         ] {
             std::env::remove_var(key);
@@ -1072,5 +1161,113 @@ mod tests {
         };
         let picked = select_precompute_variant(Some(480), &cfg.ladder, &cfg.precompute_cap);
         assert_eq!(picked.name, "720p", "must pick from configured ladder only");
+    }
+
+    // ── Prune config (catalog-prune) ─────────────────────────────────
+
+    #[test]
+    fn prune_defaults_to_grace_two() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.prune.mode, PruneMode::Grace);
+        assert_eq!(cfg.prune.grace_scans, 2);
+        assert_eq!(cfg.prune.effective_grace_scans(), Some(2));
+    }
+
+    #[test]
+    fn prune_mode_off_disables_pruning() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_PRUNE_MODE", "off");
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.prune.mode, PruneMode::Off);
+        assert_eq!(
+            cfg.prune.effective_grace_scans(),
+            None,
+            "off must disable pruning entirely"
+        );
+    }
+
+    #[test]
+    fn prune_mode_immediate_is_grace_one_regardless_of_knob() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_PRUNE_MODE", "immediate");
+        std::env::set_var("CASTIFY_PRUNE_GRACE_SCANS", "5");
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.prune.mode, PruneMode::Immediate);
+        assert_eq!(
+            cfg.prune.effective_grace_scans(),
+            Some(1),
+            "immediate ≡ grace 1; the GRACE_SCANS knob is ignored"
+        );
+    }
+
+    #[test]
+    fn prune_grace_custom_value_parses() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_PRUNE_GRACE_SCANS", "3");
+
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.prune.grace_scans, 3);
+        assert_eq!(cfg.prune.effective_grace_scans(), Some(3));
+    }
+
+    #[test]
+    fn prune_grace_floors_at_one() {
+        for raw in ["0", "-4"] {
+            let _g = EnvGuard::lock();
+            clear_castify_env();
+            let tmp = tempfile::tempdir().unwrap();
+            std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+            std::env::set_var("CASTIFY_PRUNE_GRACE_SCANS", raw);
+
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(
+                cfg.prune.effective_grace_scans(),
+                Some(1),
+                "grace of {raw} must floor to 1 (one confirmation scan)"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_invalid_mode_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_PRUNE_MODE", "sometimes");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_PRUNE_MODE"), "msg = {msg}");
+        assert!(msg.contains("sometimes"), "msg = {msg}");
+    }
+
+    #[test]
+    fn prune_non_integer_grace_rejected() {
+        let _g = EnvGuard::lock();
+        clear_castify_env();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CASTIFY_DATA_DIR", tmp.path());
+        std::env::set_var("CASTIFY_PRUNE_GRACE_SCANS", "two");
+
+        let err = Config::from_env().expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("CASTIFY_PRUNE_GRACE_SCANS"), "msg = {msg}");
     }
 }

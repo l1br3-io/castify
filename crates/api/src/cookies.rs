@@ -190,6 +190,7 @@ mod tests {
             probe: castify_core::ProbeConfig::default(),
             transcode: castify_core::TranscodeConfig::default(),
             abr: castify_core::AbrConfig::default(),
+            prune: castify_core::PruneConfig::default(),
         }
     }
 

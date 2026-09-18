@@ -90,6 +90,18 @@ The following env vars arrive as the self-hosted media server milestones land. M
 
 No new env vars in M8. Behavior driven by detected subtitle format.
 
+### Catalog prune — reconcile deletions on rescan
+
+Controls how rescan reconciles the catalog with the provider: rows the provider
+deleted are tombstoned, then removed after a confirmation window of consecutive
+*completed* scans. Guards (full-pass only, empty-result abort) make transient
+provider failures non-destructive. See [`specs/catalog-prune/spec.md`](./specs/catalog-prune/spec.md).
+
+| Variable                      | Default | Description                                                                                     |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `CASTIFY_PRUNE_MODE`            | `grace` | `off` \| `immediate` \| `grace`. `off` restores exact pre-effort behavior (never delete).        |
+| `CASTIFY_PRUNE_GRACE_SCANS`     | `2`     | Consecutive completed scans a row must miss before deletion. Only meaningful in `grace` mode (`immediate` ≡ 1). Floored at 1. |
+
 ## Development with `npm run dev`
 
 When using Vite's dev server (`npm run dev`, port 5173) instead of the embedded production bundle, the API proxy runs from `:5173` to the Rust backend on `:8427`.

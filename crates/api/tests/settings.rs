@@ -367,6 +367,7 @@ async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
             ..Default::default()
         },
         abr: castify_core::AbrConfig::default(),
+        prune: castify_core::PruneConfig::default(),
     };
 
     // First boot: env default false. Owner flips the toggle to on.
@@ -439,6 +440,7 @@ async fn transcode_toggle_off_survives_restart_with_env_default_on() {
             ..Default::default()
         },
         abr: castify_core::AbrConfig::default(),
+        prune: castify_core::PruneConfig::default(),
     };
 
     // First boot: env default on. Owner flips the toggle to OFF.

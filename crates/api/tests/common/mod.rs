@@ -58,6 +58,7 @@ pub async fn fresh_state_with(
             ..Default::default()
         },
         abr: castify_core::AbrConfig::default(),
+        prune: castify_core::PruneConfig::default(),
     };
     configure(&mut config);
     let state = AppState::new(config, pool, secret, token_key).await;

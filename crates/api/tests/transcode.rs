@@ -81,6 +81,7 @@ async fn boot_with_transcode_enabled() -> (
             ..Default::default()
         },
         abr: castify_core::AbrConfig::default(),
+        prune: castify_core::PruneConfig::default(),
     };
     let state = AppState::new(config, pool, secret, token_key).await;
     let repo = state.catalog_repository().clone();
@@ -958,7 +959,9 @@ async fn failed_remux_row_falls_back_to_full_transcode_profile() {
             .await
             .unwrap();
     assert!(
-        profiles.iter().any(|(p, _)| p == castify_api::transcode::DEFAULT_PROFILE),
+        profiles
+            .iter()
+            .any(|(p, _)| p == castify_api::transcode::DEFAULT_PROFILE),
         "fallback must derive the full-transcode profile: {profiles:?}"
     );
     assert!(

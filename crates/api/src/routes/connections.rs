@@ -1220,6 +1220,7 @@ mod tests {
             probe: Default::default(),
             transcode: Default::default(),
             abr: Default::default(),
+            prune: Default::default(),
         };
         (AppState::new(config, pool, secret, token_key).await, named)
     }
