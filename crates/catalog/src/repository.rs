@@ -446,7 +446,8 @@ impl CatalogRepository {
               height = excluded.height, native_hash = excluded.native_hash, \
               native_hash_algo = excluded.native_hash_algo, \
               provider_modified_at = excluded.provider_modified_at, \
-              scanned_at = excluded.scanned_at",
+              scanned_at = excluded.scanned_at, \
+              missing_since = NULL, missing_scan_count = 0",
         )
         .bind(&id)
         .bind(connection_id)
@@ -534,7 +535,8 @@ impl CatalogRepository {
              ON CONFLICT(connection_id, provider_file_id) DO UPDATE SET \
               name = excluded.name, path = excluded.path, \
               size_bytes = excluded.size_bytes, mime_type = excluded.mime_type, \
-              kind = excluded.kind, provider_modified_at = excluded.provider_modified_at",
+              kind = excluded.kind, provider_modified_at = excluded.provider_modified_at, \
+              missing_since = NULL, missing_scan_count = 0",
         )
         .bind(&id)
         .bind(connection_id)
@@ -566,6 +568,111 @@ impl CatalogRepository {
                 .fetch_one(&self.pool)
                 .await?,
         )
+    }
+
+    // ── Catalog prune (reconcile-on-rescan) ───────────────────────────
+
+    /// Stamp video rows of `connection_id` the listing omitted: bump the
+    /// consecutive-miss counter and record the first omission time.
+    ///
+    /// GOTCHA: the seen set travels as ONE bound JSON-array parameter
+    /// expanded via `json_each`, not a temp table (sqlx pools connections —
+    /// a temp table created on one pooled connection may be gone by the
+    /// next query) and not chunked `NOT IN` binds (SQLite's 999 default
+    /// var limit would force chunking at 10K-key catalogs).
+    pub async fn stamp_missing_videos(
+        &self,
+        connection_id: &str,
+        seen: &[String],
+        now: &str,
+    ) -> CatalogResult<u64> {
+        let seen_json = serde_json::to_string(seen)
+            .map_err(|e| CatalogError::Other(format!("serialize seen keys: {e}")))?;
+        let result = sqlx::query(
+            "UPDATE videos SET \
+               missing_scan_count = missing_scan_count + 1, \
+               missing_since = COALESCE(missing_since, ?) \
+             WHERE connection_id = ? \
+               AND provider_file_id NOT IN (SELECT value FROM json_each(?))",
+        )
+        .bind(now)
+        .bind(connection_id)
+        .bind(&seen_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// File-table twin of [`Self::stamp_missing_videos`].
+    pub async fn stamp_missing_files(
+        &self,
+        connection_id: &str,
+        seen: &[String],
+        now: &str,
+    ) -> CatalogResult<u64> {
+        let seen_json = serde_json::to_string(seen)
+            .map_err(|e| CatalogError::Other(format!("serialize seen keys: {e}")))?;
+        let result = sqlx::query(
+            "UPDATE files SET \
+               missing_scan_count = missing_scan_count + 1, \
+               missing_since = COALESCE(missing_since, ?) \
+             WHERE connection_id = ? \
+               AND provider_file_id NOT IN (SELECT value FROM json_each(?))",
+        )
+        .bind(now)
+        .bind(connection_id)
+        .bind(&seen_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Delete video rows whose consecutive-miss counter reached `grace`.
+    /// Returns the pruned video ids so the caller can remove on-disk
+    /// artifacts (transcode segments, hot-cache files) — the catalog crate
+    /// never learns filesystem layout. Row deletion cascades to
+    /// progress/favorites/ratings/subtitles/shares/cache manifests.
+    pub async fn prune_missing_videos(
+        &self,
+        connection_id: &str,
+        grace: u32,
+    ) -> CatalogResult<Vec<String>> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM videos \
+             WHERE connection_id = ? AND missing_scan_count >= ? ORDER BY id",
+        )
+        .bind(connection_id)
+        .bind(grace)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if ids.is_empty() {
+            return Ok(ids);
+        }
+
+        let ids_json = serde_json::to_string(&ids)
+            .map_err(|e| CatalogError::Other(format!("serialize prune ids: {e}")))?;
+        sqlx::query(
+            "DELETE FROM videos \
+             WHERE connection_id = ? AND id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(connection_id)
+        .bind(&ids_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(ids)
+    }
+
+    /// File-table twin of [`Self::prune_missing_videos`]; returns the
+    /// pruned row count (files have no on-disk artifacts to clean).
+    pub async fn prune_missing_files(&self, connection_id: &str, grace: u32) -> CatalogResult<u64> {
+        let result =
+            sqlx::query("DELETE FROM files WHERE connection_id = ? AND missing_scan_count >= ?")
+                .bind(connection_id)
+                .bind(grace)
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 
     /// Fetch the minimal fields needed by the thumbnail proxy: connection_id
@@ -2314,6 +2421,7 @@ mod tests {
             include_str!("../../storage/migrations/0009_transcode_cache.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
             include_str!("../../storage/migrations/0011_files.sql"),
+            include_str!("../../storage/migrations/0012_sharing.sql"),
             include_str!("../../storage/migrations/0014_catalog_prune.sql"),
         ] {
             sqlx::query(sql).execute(&pool).await.unwrap();
@@ -3013,6 +3121,351 @@ mod tests {
         let state = repo.fetch_scan_state(&conn.id).await.unwrap().unwrap();
         assert_eq!(state.videos_pruned, 2);
         assert_eq!(state.files_pruned, 1);
+    }
+
+    // ── Catalog prune: stamp / prune (docs/specs/catalog-prune) ────────
+
+    async fn video_tombstone(
+        repo: &CatalogRepository,
+        conn: &str,
+        file_id: &str,
+    ) -> (Option<String>, i64) {
+        sqlx::query_as(
+            "SELECT missing_since, missing_scan_count FROM videos \
+             WHERE connection_id = ? AND provider_file_id = ?",
+        )
+        .bind(conn)
+        .bind(file_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn file_tombstone(
+        repo: &CatalogRepository,
+        conn: &str,
+        file_id: &str,
+    ) -> (Option<String>, i64) {
+        sqlx::query_as(
+            "SELECT missing_since, missing_scan_count FROM files \
+             WHERE connection_id = ? AND provider_file_id = ?",
+        )
+        .bind(conn)
+        .bind(file_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn seed_prune_video(repo: &CatalogRepository, conn: &str, file_id: &str) {
+        repo.upsert_video(
+            conn,
+            Provider::GoogleDrive,
+            &NewVideo {
+                provider_file_id: file_id.into(),
+                name: format!("{file_id}.mp4"),
+                path: Some("/Videos".into()),
+                size_bytes: 1000,
+                mime_type: Some("video/mp4".into()),
+                duration_ms: None,
+                width: None,
+                height: None,
+                native_hash: None,
+                native_hash_algo: None,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn seed_prune_file(repo: &CatalogRepository, conn: &str, file_id: &str) {
+        repo.upsert_file(
+            conn,
+            &DiscoveredFile {
+                provider_file_id: file_id.into(),
+                name: format!("{file_id}.pdf"),
+                path: Some("/Docs".into()),
+                size_bytes: 100,
+                mime_type: Some("application/pdf".into()),
+                kind: FileKind::Document,
+                provider_modified_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stamp_missing_videos_increments_per_call_and_skips_seen() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await; // file-1
+        seed_prune_video(&repo, &conn, "file-2").await;
+
+        // file-1 seen → only file-2 stamped, with first-omission timestamp.
+        let stamped = repo
+            .stamp_missing_videos(&conn, &["file-1".to_string()], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+        assert_eq!(video_tombstone(&repo, &conn, "file-1").await, (None, 0));
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-2").await,
+            (Some("2026-02-01T00:00:00Z".into()), 1)
+        );
+
+        // Next scan omits both: counter bumps, missing_since keeps the
+        // first omission (COALESCE).
+        let stamped = repo
+            .stamp_missing_videos(&conn, &[], "2026-03-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 2);
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-1").await,
+            (Some("2026-03-01T00:00:00Z".into()), 1)
+        );
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-2").await,
+            (Some("2026-02-01T00:00:00Z".into()), 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_seen_set_stamps_all_rows_of_the_connection() {
+        // The empty-result guard lives upstream in the scanner; the repo fn
+        // is honest about what an empty listing means.
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        let stamped = repo
+            .stamp_missing_videos(&conn, &[], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-1").await,
+            (Some("2026-02-01T00:00:00Z".into()), 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn stamp_and_prune_never_touch_other_connections() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn_a, _vid) = seed_owner_conn_video(&repo).await;
+
+        let conn_b = repo
+            .create_connection(&NewConnection {
+                provider: Provider::GoogleDrive,
+                credential: sample_credential(),
+                provider_account_id: Some("a2".into()),
+                provider_account_email: None,
+            })
+            .await
+            .unwrap();
+        seed_prune_video(&repo, &conn_b.id, "file-1").await;
+
+        // Empty seen set for A: B's same-named file must stay present.
+        let stamped = repo
+            .stamp_missing_videos(&conn_a, &[], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+        assert_eq!(
+            video_tombstone(&repo, &conn_b.id, "file-1").await,
+            (None, 0)
+        );
+
+        // And pruning A never deletes B's rows even past grace.
+        repo.stamp_missing_videos(&conn_a, &[], "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        let pruned = repo.prune_missing_videos(&conn_a, 2).await.unwrap();
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(repo.video_count_by_connection(&conn_b.id).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn upsert_seen_row_resets_tombstone() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        repo.stamp_missing_videos(&conn, &[], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        repo.stamp_missing_videos(&conn, &[], "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-1").await,
+            (Some("2026-02-01T00:00:00Z".into()), 2)
+        );
+
+        // The provider lists it again → upsert revives the row.
+        seed_prune_video(&repo, &conn, "file-1").await;
+        assert_eq!(video_tombstone(&repo, &conn, "file-1").await, (None, 0));
+    }
+
+    #[tokio::test]
+    async fn prune_missing_videos_fires_at_grace_not_below() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, vid) = seed_owner_conn_video(&repo).await;
+
+        // One missing scan (grace 2): tombstoned but alive.
+        repo.stamp_missing_videos(&conn, &[], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        let pruned = repo.prune_missing_videos(&conn, 2).await.unwrap();
+        assert!(pruned.is_empty(), "grace-1 of 2 must not prune yet");
+        assert_eq!(repo.video_count_by_connection(&conn).await.unwrap(), 1);
+
+        // Second consecutive miss: pruned, id returned for disk cleanup.
+        repo.stamp_missing_videos(&conn, &[], "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        let pruned = repo.prune_missing_videos(&conn, 2).await.unwrap();
+        assert_eq!(pruned, vec![vid.clone()]);
+        assert_eq!(repo.video_count_by_connection(&conn).await.unwrap(), 0);
+
+        // Idempotent: pruning again is a no-op.
+        let pruned = repo.prune_missing_videos(&conn, 2).await.unwrap();
+        assert!(pruned.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pruned_video_cascades_remove_dependents() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (owner, conn, vid) = seed_owner_conn_video(&repo).await;
+
+        sqlx::query("INSERT INTO video_favorites (owner_id, video_id, created_at) VALUES (?, ?, '2026-01-01T00:00:00Z')")
+            .bind(&owner).bind(&vid).execute(repo.pool()).await.unwrap();
+        sqlx::query("INSERT INTO video_ratings (owner_id, video_id, rating, updated_at) VALUES (?, ?, 5, '2026-01-01T00:00:00Z')")
+            .bind(&owner).bind(&vid).execute(repo.pool()).await.unwrap();
+        sqlx::query("INSERT INTO playback_progress (owner_id, video_id, position_seconds, updated_at) VALUES (?, ?, 60.0, '2026-01-01T00:00:00Z')")
+            .bind(&owner).bind(&vid).execute(repo.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO video_subtitles (id, video_id, connection_id, provider_file_id, filename, format, format_family) \
+             VALUES ('sub-1', ?, ?, 'file-sub', 'movie.srt', 'srt', 'text')",
+        )
+        .bind(&vid).bind(&conn).execute(repo.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO shares (id, owner_id, token_hash, title, created_at) \
+             VALUES ('share-1', ?, X'00', 'My share', '2026-01-01T00:00:00Z')",
+        )
+        .bind(&owner)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO share_items (share_id, video_id, position) VALUES ('share-1', ?, 0)",
+        )
+        .bind(&vid)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO transcode_cache_entries (video_id, variant, profile, output_dir, last_accessed_at) \
+             VALUES (?, '720p', 'h264', '/tmp/out', '2026-01-01T00:00:00Z')",
+        )
+        .bind(&vid).execute(repo.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO video_cache_entries (video_id, connection_id, provider_file_id, size_bytes, last_accessed_at, created_at) \
+             VALUES (?, ?, 'file-1', 1000, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(&vid).bind(&conn).execute(repo.pool()).await.unwrap();
+
+        repo.stamp_missing_videos(&conn, &[], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        repo.stamp_missing_videos(&conn, &[], "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        let pruned = repo.prune_missing_videos(&conn, 2).await.unwrap();
+        assert_eq!(pruned.len(), 1);
+
+        for (table, label) in [
+            ("video_favorites", "favorites"),
+            ("video_ratings", "ratings"),
+            ("playback_progress", "progress"),
+            ("video_subtitles", "subtitles"),
+            ("share_items", "share items"),
+            ("transcode_cache_entries", "transcode entries"),
+            ("video_cache_entries", "video cache entries"),
+        ] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+            assert_eq!(n, 0, "{label} should cascade away with the pruned video");
+        }
+    }
+
+    #[tokio::test]
+    async fn files_stamp_and_prune_parity() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+        seed_prune_file(&repo, &conn, "doc-1").await;
+        seed_prune_file(&repo, &conn, "doc-2").await;
+
+        // doc-1 seen; doc-2 missing. Upsert resets files tombstones too.
+        let stamped = repo
+            .stamp_missing_files(&conn, &["doc-1".to_string()], "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+        assert_eq!(file_tombstone(&repo, &conn, "doc-1").await, (None, 0));
+        assert_eq!(
+            file_tombstone(&repo, &conn, "doc-2").await,
+            (Some("2026-02-01T00:00:00Z".into()), 1)
+        );
+
+        // One miss is below grace.
+        let pruned = repo.prune_missing_files(&conn, 2).await.unwrap();
+        assert_eq!(pruned, 0);
+
+        // Second miss prunes; count returned.
+        repo.stamp_missing_files(&conn, &["doc-1".to_string()], "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        let pruned = repo.prune_missing_files(&conn, 2).await.unwrap();
+        assert_eq!(pruned, 1);
+        assert_eq!(repo.file_count_by_connection(&conn).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn stamp_handles_thousand_key_seen_array() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let (_owner, conn, _vid) = seed_owner_conn_video(&repo).await;
+
+        // 1K-key JSON array in a single bound parameter: no SQLite var
+        // limit is involved, and json_each handles the scale.
+        let seen: Vec<String> = (0..1000).map(|i| format!("other-{i}")).collect();
+        let stamped = repo
+            .stamp_missing_videos(&conn, &seen, "2026-02-01T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+
+        // The video's own key in a big array keeps it present.
+        let mut seen: Vec<String> = (0..999).map(|i| format!("other-{i}")).collect();
+        seen.push("file-1".to_string());
+        let stamped = repo
+            .stamp_missing_videos(&conn, &seen, "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 0);
+        assert_eq!(
+            video_tombstone(&repo, &conn, "file-1").await,
+            (Some("2026-02-01T00:00:00Z".into()), 1)
+        );
     }
 
     /// Seed an owner, a connection, and a single video. Returns the
