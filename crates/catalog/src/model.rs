@@ -172,6 +172,27 @@ pub struct ScanState {
     pub files_pruned: i64,
 }
 
+/// What a video prune removed. The transcode output dirs are captured
+/// *before* the row DELETE — the manifest rows cascade away with their
+/// video, so their `output_dir` strings would be unrecoverable after.
+/// Hot-cache bytes are derivable from the video id alone and need no
+/// pre-capture.
+#[derive(Debug, Clone, Default)]
+pub struct PruneResult {
+    pub video_ids: Vec<String>,
+    pub transcode_output_dirs: Vec<String>,
+}
+
+impl PruneResult {
+    pub fn is_empty(&self) -> bool {
+        self.video_ids.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.video_ids.len()
+    }
+}
+
 impl ScanState {
     pub fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
         Self {

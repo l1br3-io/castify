@@ -7,8 +7,8 @@ use crate::crypto::{Credential, TokenKey};
 use crate::model::{
     DiscoveredFile, FileEntry, FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry,
     FolderFileEntry, FolderNode, FolderVideoEntry, NewConnection, NewVideo, PlaybackProgress,
-    Provider, ProviderConnection, ScanState, ScanStatus, SubtitleTrack, VideoCacheEntry,
-    VideoDetail, VideoFilter, VideoPage, VideoSource, VideoSummary,
+    Provider, ProviderConnection, PruneResult, ScanState, ScanStatus, SubtitleTrack,
+    VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSource, VideoSummary,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -628,15 +628,17 @@ impl CatalogRepository {
     }
 
     /// Delete video rows whose consecutive-miss counter reached `grace`.
-    /// Returns the pruned video ids so the caller can remove on-disk
-    /// artifacts (transcode segments, hot-cache files) — the catalog crate
-    /// never learns filesystem layout. Row deletion cascades to
+    /// Returns the pruned video ids (for hot-cache byte removal — the
+    /// cache path is derived from the id) plus their transcode output
+    /// dirs, captured before the DELETE cascades the manifest rows away —
+    /// the catalog crate never touches the filesystem; the api layer owns
+    /// bytes. Row deletion cascades to
     /// progress/favorites/ratings/subtitles/shares/cache manifests.
     pub async fn prune_missing_videos(
         &self,
         connection_id: &str,
         grace: u32,
-    ) -> CatalogResult<Vec<String>> {
+    ) -> CatalogResult<PruneResult> {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT id FROM videos \
              WHERE connection_id = ? AND missing_scan_count >= ? ORDER BY id",
@@ -647,11 +649,19 @@ impl CatalogRepository {
         .await?;
 
         if ids.is_empty() {
-            return Ok(ids);
+            return Ok(PruneResult::default());
         }
 
         let ids_json = serde_json::to_string(&ids)
             .map_err(|e| CatalogError::Other(format!("serialize prune ids: {e}")))?;
+        let transcode_output_dirs: Vec<String> = sqlx::query_scalar(
+            "SELECT t.output_dir FROM transcode_cache_entries t \
+             WHERE t.video_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(&ids_json)
+        .fetch_all(&self.pool)
+        .await?;
+
         sqlx::query(
             "DELETE FROM videos \
              WHERE connection_id = ? AND id IN (SELECT value FROM json_each(?))",
@@ -660,7 +670,10 @@ impl CatalogRepository {
         .bind(&ids_json)
         .execute(&self.pool)
         .await?;
-        Ok(ids)
+        Ok(PruneResult {
+            video_ids: ids,
+            transcode_output_dirs,
+        })
     }
 
     /// File-table twin of [`Self::prune_missing_videos`]; returns the
@@ -3329,7 +3342,7 @@ mod tests {
             .await
             .unwrap();
         let pruned = repo.prune_missing_videos(&conn, 2).await.unwrap();
-        assert_eq!(pruned, vec![vid.clone()]);
+        assert_eq!(pruned.video_ids, vec![vid.clone()]);
         assert_eq!(repo.video_count_by_connection(&conn).await.unwrap(), 0);
 
         // Idempotent: pruning again is a no-op.

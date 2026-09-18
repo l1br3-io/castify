@@ -881,9 +881,10 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     };
 
     let prune_grace = state.config().prune.effective_grace_scans();
+    let state = state.clone();
 
     tokio::spawn(async move {
-        castify_catalog::scanner::run_scan(
+        let pruned = castify_catalog::scanner::run_scan(
             repo,
             conn_id,
             provider,
@@ -893,7 +894,59 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
             },
         )
         .await;
+        if !pruned.is_empty() {
+            cleanup_pruned_video_artifacts(&state, &pruned).await;
+        }
     });
+}
+
+/// Remove the on-disk artifacts of videos pruned by a completed scan.
+/// The catalog rows (and their cascade dependents) are already gone when
+/// this runs — this sweeps the bytes the database can't see: transcode
+/// output dirs (captured pre-cascade by the repo's prune, since the
+/// manifest rows that name them die with the video) and hot-cache files
+/// (path derived from the video id). Plan decision: repo owns rows, the
+/// api layer owns bytes.
+///
+/// Best-effort, matching upsert-failure tolerance: a failed removal
+/// warns and the scan is never failed by cleanup.
+pub async fn cleanup_pruned_video_artifacts(
+    state: &AppState,
+    pruned: &castify_catalog::PruneResult,
+) {
+    for dir in &pruned.transcode_output_dirs {
+        // GOTCHA: the manifest rows behind these dirs already cascaded
+        // away with the video — this is the only remaining record of the
+        // bytes. Mirrors evict_transcode_to_target's dir handling.
+        let dir = std::path::PathBuf::from(dir);
+        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+            tracing::debug!(
+                error = %e,
+                dir = %dir.display(),
+                "prune cleanup: output_dir removal failed (already gone?)"
+            );
+        }
+    }
+
+    let repo = state.catalog_repository();
+    if let Some(cache) = state.video_cache() {
+        for video_id in &pruned.video_ids {
+            if let Err(e) = repo.delete_video_cache_entry(video_id).await {
+                tracing::warn!(
+                    error = %e,
+                    video_id = video_id,
+                    "prune cleanup: cache manifest delete failed"
+                );
+            }
+            if let Err(e) = cache.delete(video_id).await {
+                tracing::debug!(
+                    error = %e,
+                    video_id = video_id,
+                    "prune cleanup: cached bytes delete failed (already gone?)"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::crypto::Credential;
-use crate::model::{DiscoveredSubtitle, NewVideo, Provider, ScanState, ScanStatus};
+use crate::model::{DiscoveredSubtitle, NewVideo, Provider, PruneResult, ScanState, ScanStatus};
 use crate::provider::{ProviderError, ProviderFactory};
 use crate::providers::common::{infer_subtitle_format, subtitle_base_name, video_base_name};
 use crate::repository::CatalogRepository;
@@ -65,10 +65,10 @@ impl PrunePolicy {
     };
 }
 
-/// What a post-scan reconcile pass did (all zero when policy is off, the
+/// What a post-scan reconcile pass did (all empty when policy is off, the
 /// listing was empty-guarded, or the scan did not complete).
 struct ReconcileReport {
-    pruned_video_ids: Vec<String>,
+    prune: PruneResult,
     files_pruned: u64,
     /// Non-empty when the empty-result guard fired; surfaced on
     /// `scan_state.error_message` without failing the scan.
@@ -87,7 +87,7 @@ pub async fn run_scan(
     provider_type: Provider,
     factory: Box<dyn ProviderFactory>,
     prune_policy: PrunePolicy,
-) -> Vec<String> {
+) -> PruneResult {
     tracing::info!(
         connection_id = %connection_id,
         provider = %provider_type,
@@ -144,13 +144,13 @@ pub async fn run_scan(
                         "reconcile skipped after error"
                     );
                     ReconcileReport {
-                        pruned_video_ids: Vec::new(),
+                        prune: PruneResult::default(),
                         files_pruned: 0,
                         warning: None,
                     }
                 }),
                 ScanOutcome::Cancelled { .. } => ReconcileReport {
-                    pruned_video_ids: Vec::new(),
+                    prune: PruneResult::default(),
                     files_pruned: 0,
                     warning: None,
                 },
@@ -165,11 +165,11 @@ pub async fn run_scan(
                     completed_at: Some(iso_now()),
                     error_message: report.warning.clone(),
                     videos_found: outcome.videos_found(),
-                    videos_pruned: report.pruned_video_ids.len() as i64,
+                    videos_pruned: report.prune.len() as i64,
                     files_pruned: report.files_pruned as i64,
                 })
                 .await;
-            report.pruned_video_ids
+            report.prune
         }
         Err(e) => {
             tracing::error!(
@@ -190,7 +190,7 @@ pub async fn run_scan(
                     files_pruned: 0,
                 })
                 .await;
-            Vec::new()
+            PruneResult::default()
         }
     }
 }
@@ -209,7 +209,7 @@ async fn reconcile_after_scan(
     policy: PrunePolicy,
 ) -> Result<ReconcileReport, String> {
     let no_op = || ReconcileReport {
-        pruned_video_ids: Vec::new(),
+        prune: PruneResult::default(),
         files_pruned: 0,
         warning: None,
     };
@@ -262,7 +262,7 @@ async fn reconcile_after_scan(
         .await
         .map_err(|e| format!("stamp missing files failed: {e}"))?;
 
-    let pruned_video_ids = repo
+    let prune = repo
         .prune_missing_videos(connection_id, grace)
         .await
         .map_err(|e| format!("prune missing videos failed: {e}"))?;
@@ -275,13 +275,13 @@ async fn reconcile_after_scan(
         connection_id = connection_id,
         stamped_videos,
         stamped_files,
-        videos_pruned = pruned_video_ids.len(),
+        videos_pruned = prune.len(),
         files_pruned,
         "catalog reconcile complete"
     );
 
     Ok(ReconcileReport {
-        pruned_video_ids,
+        prune,
         files_pruned,
         warning: None,
     })
@@ -656,6 +656,7 @@ mod tests {
             include_str!("../../storage/migrations/0004_browse.sql"),
             include_str!("../../storage/migrations/0005_browse_perf.sql"),
             include_str!("../../storage/migrations/0006_play.sql"),
+            include_str!("../../storage/migrations/0009_transcode_cache.sql"),
             include_str!("../../storage/migrations/0010_subtitle_formats.sql"),
             include_str!("../../storage/migrations/0011_files.sql"),
             include_str!("../../storage/migrations/0014_catalog_prune.sql"),

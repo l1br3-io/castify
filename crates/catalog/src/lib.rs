@@ -14,8 +14,8 @@ pub use model::{
     DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, EmbeddedSubtitleTrack, FileEntry,
     FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry, FolderFileEntry, FolderNode,
     FolderVideoEntry, ListPage, NewConnection, NewVideo, PlaybackProgress, Provider,
-    ProviderConnection, ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry, VideoCacheEntry,
-    VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
+    ProviderConnection, PruneResult, ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry,
+    VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
 };
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
 pub use provider::{
