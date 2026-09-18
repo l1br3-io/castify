@@ -12,6 +12,42 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 const PREFIX_HASH_MIN_SIZE: i64 = 4 * 1024 * 1024;
 
+/// How a scan's listing walk ended. Catalog-prune correctness (spec §2
+/// full-pass guard) hangs on telling these apart — previously a
+/// co-operative cancel, a natural exhaustion, and (via `Err`) a provider
+/// failure were indistinguishable at the "not an error" level, so any
+/// reconcile logic would have pruned on partial passes.
+#[derive(Debug)]
+pub enum ScanOutcome {
+    /// The listing ran to natural exhaustion (`next_cursor: None`) while
+    /// the connection stayed active — the only outcome safe to reconcile
+    /// against. `seen_*` carry every `provider_file_id` the listing
+    /// produced, collected independently of upsert success (a failed
+    /// upsert of a seen item must not count it as missing).
+    Completed {
+        videos_found: i64,
+        seen_video_keys: std::collections::HashSet<String>,
+        seen_file_keys: std::collections::HashSet<String>,
+    },
+    /// FR-1.5 co-operative cancel: the connection went inactive mid-scan
+    /// and the walk stopped at a page boundary. A partial pass must never
+    /// stamp or prune — `missing_scan_count` semantics assume a full
+    /// listing was the evidence of absence.
+    Cancelled {
+        /// Partial count, recorded for status display as before.
+        videos_found: i64,
+    },
+}
+
+impl ScanOutcome {
+    fn videos_found(&self) -> i64 {
+        match self {
+            ScanOutcome::Completed { videos_found, .. }
+            | ScanOutcome::Cancelled { videos_found } => *videos_found,
+        }
+    }
+}
+
 /// Run a full scan for a connection: list all video files, store them, then
 /// compute prefix hashes for cross-provider dedup.
 ///
@@ -48,11 +84,12 @@ pub async fn run_scan(
     let result = run_scan_inner(&repo, &connection_id, provider_type, factory.as_ref()).await;
 
     match &result {
-        Ok(videos_found) => {
+        Ok(outcome) => {
             tracing::info!(
                 connection_id = %connection_id,
-                videos_found = videos_found,
-                "scan completed"
+                videos_found = outcome.videos_found(),
+                outcome = ?outcome,
+                "scan finished"
             );
             let _ = repo
                 .upsert_scan_state(&ScanState {
@@ -62,7 +99,7 @@ pub async fn run_scan(
                     started_at: Some(now),
                     completed_at: Some(iso_now()),
                     error_message: None,
-                    videos_found: *videos_found,
+                    videos_found: outcome.videos_found(),
                     videos_pruned: 0,
                     files_pruned: 0,
                 })
@@ -96,7 +133,7 @@ async fn run_scan_inner(
     connection_id: &str,
     provider_type: Provider,
     factory: &dyn ProviderFactory,
-) -> Result<i64, String> {
+) -> Result<ScanOutcome, String> {
     let mut credential = repo
         .fetch_credential(connection_id)
         .await
@@ -108,6 +145,9 @@ async fn run_scan_inner(
     let mut rate_limit_retries: u32 = 0;
     let mut refreshed = false;
     let mut all_subtitles: Vec<DiscoveredSubtitle> = Vec::new();
+    let mut seen_video_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_file_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cancelled = false;
 
     loop {
         // FR-1.5: co-operative cancel — if the connection was soft-deleted
@@ -124,6 +164,7 @@ async fn run_scan_inner(
                 connection_id = connection_id,
                 "scan cancelled: connection disconnected mid-scan"
             );
+            cancelled = true;
             break;
         }
 
@@ -135,6 +176,15 @@ async fn run_scan_inner(
         match provider.list_videos(cursor.as_deref()).await {
             Ok(page) => {
                 let count = page.videos.len();
+                // Catalog prune: record the listing's evidence before any
+                // upsert runs — keys count as seen regardless of whether
+                // their row write later succeeds.
+                for dv in &page.videos {
+                    seen_video_keys.insert(dv.provider_file_id.clone());
+                }
+                for df in &page.files {
+                    seen_file_keys.insert(df.provider_file_id.clone());
+                }
                 for dv in &page.videos {
                     let nv = NewVideo::from_discovered(dv);
                     if let Err(e) = repo.upsert_video(connection_id, provider_type, &nv).await {
@@ -245,7 +295,14 @@ async fn run_scan_inner(
     // Subtitle pass: match sidecar subtitles to videos by base name.
     run_subtitle_pass(repo, connection_id, &all_subtitles).await;
 
-    Ok(videos_found)
+    if cancelled {
+        return Ok(ScanOutcome::Cancelled { videos_found });
+    }
+    Ok(ScanOutcome::Completed {
+        videos_found,
+        seen_video_keys,
+        seen_file_keys,
+    })
 }
 
 /// Match discovered sidecar subtitles to videos by base name within the same
@@ -1220,6 +1277,282 @@ mod tests {
             1,
             "only the first page's video was consumed before the cancel"
         );
+    }
+
+    // ── Catalog prune: ScanOutcome + seen sets (task 004) ─────────────
+
+    fn single_page_factory(video_keys: &[&str], file_keys: &[&str]) -> MockFactory {
+        MockFactory {
+            pages: vec![ListPage {
+                videos: video_keys
+                    .iter()
+                    .map(|k| discovered(k, &format!("{k}.mp4"), 5000))
+                    .collect(),
+                subtitles: vec![],
+                files: file_keys
+                    .iter()
+                    .map(|k| DiscoveredFile {
+                        provider_file_id: (*k).into(),
+                        name: format!("{k}.pdf"),
+                        path: Some("/Docs".into()),
+                        size_bytes: 10,
+                        mime_type: None,
+                        kind: FileKind::Document,
+                        provider_modified_at: None,
+                    })
+                    .collect(),
+                next_cursor: None,
+            }],
+            call_count: Arc::new(AtomicU32::new(0)),
+            prefix_hashes: HashMap::new(),
+            fail_prefix: true,
+            fail_first_list_unauthorized: false,
+            refresh_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_scan_inner_reports_completed_with_seen_keys_on_exhaustion() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        let factory = single_page_factory(&["v1", "v2"], &["doc-1"]);
+        let outcome = run_scan_inner(&repo, &conn_id, Provider::GoogleDrive, &factory)
+            .await
+            .unwrap();
+
+        match outcome {
+            ScanOutcome::Completed {
+                videos_found,
+                seen_video_keys,
+                seen_file_keys,
+            } => {
+                assert_eq!(videos_found, 2);
+                assert_eq!(seen_video_keys.len(), 2);
+                assert!(seen_video_keys.contains("v1") && seen_video_keys.contains("v2"));
+                assert_eq!(seen_file_keys.len(), 1);
+                assert!(seen_file_keys.contains("doc-1"));
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_scan_inner_reports_cancelled_on_mid_scan_disconnect() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Reuse the FR-1.5 shape: page 1 upserts f1, soft-deletes the
+        // connection, promises page 2; the next active-check breaks.
+        struct DisconnectingProvider {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for DisconnectingProvider {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+                if !self.page_sent.swap(true, Ordering::SeqCst) {
+                    let _ = self.repo.disconnect(&self.conn_id).await;
+                    Ok(ListPage {
+                        videos: vec![discovered("f1", "v1.mp4", 5000)],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: Some("page2".into()),
+                    })
+                } else {
+                    Ok(ListPage {
+                        videos: vec![discovered("f2", "v2.mp4", 6000)],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: None,
+                    })
+                }
+            }
+
+            async fn fetch_prefix_hash(
+                &self,
+                _file_id: &str,
+                _size: i64,
+            ) -> ProviderResult<Option<String>> {
+                Ok(None)
+            }
+
+            async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn open_stream(
+                &self,
+                _file_id: &str,
+                _range: Option<&str>,
+            ) -> ProviderResult<StreamResponse> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+        }
+
+        struct DisconnectingFactory {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for DisconnectingFactory {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
+            }
+
+            async fn create(
+                &self,
+                _: &Credential,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Ok(Box::new(DisconnectingProvider {
+                    repo: self.repo.clone(),
+                    conn_id: self.conn_id.clone(),
+                    page_sent: self.page_sent.clone(),
+                }))
+            }
+        }
+
+        let factory = DisconnectingFactory {
+            repo: repo.clone(),
+            conn_id: conn_id.clone(),
+            page_sent: Arc::new(AtomicBool::new(false)),
+        };
+        let outcome = run_scan_inner(&repo, &conn_id, Provider::GoogleDrive, &factory)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome, ScanOutcome::Cancelled { videos_found: 1 }),
+            "partial pass must report Cancelled, got {outcome:?}"
+        );
+    }
+
+    /// run() keeps treating Cancelled exactly like a finished scan for
+    /// status purposes (Idle + partial count) — zero observable change
+    /// while Task 5 gates prune on the outcome.
+    #[tokio::test]
+    async fn run_scan_records_partial_count_for_cancelled_scan() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        struct DisconnectingProvider {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for DisconnectingProvider {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+                if !self.page_sent.swap(true, Ordering::SeqCst) {
+                    let _ = self.repo.disconnect(&self.conn_id).await;
+                    Ok(ListPage {
+                        videos: vec![discovered("f1", "v1.mp4", 5000)],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: Some("page2".into()),
+                    })
+                } else {
+                    Ok(ListPage {
+                        videos: vec![],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: None,
+                    })
+                }
+            }
+
+            async fn fetch_prefix_hash(
+                &self,
+                _file_id: &str,
+                _size: i64,
+            ) -> ProviderResult<Option<String>> {
+                Ok(None)
+            }
+
+            async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn open_stream(
+                &self,
+                _file_id: &str,
+                _range: Option<&str>,
+            ) -> ProviderResult<StreamResponse> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+        }
+
+        struct DisconnectingFactory {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for DisconnectingFactory {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
+            }
+
+            async fn create(
+                &self,
+                _: &Credential,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Ok(Box::new(DisconnectingProvider {
+                    repo: self.repo.clone(),
+                    conn_id: self.conn_id.clone(),
+                    page_sent: self.page_sent.clone(),
+                }))
+            }
+        }
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(DisconnectingFactory {
+                repo: repo.clone(),
+                conn_id: conn_id.clone(),
+                page_sent: Arc::new(AtomicBool::new(false)),
+            }),
+        )
+        .await;
+
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.status, ScanStatus::Idle);
+        assert_eq!(scan.videos_found, 1, "partial count stays recorded");
     }
 
     #[tokio::test]
