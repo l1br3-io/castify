@@ -386,6 +386,8 @@ export interface AcceptedCollectionDto extends CollectionMetaDto {
 
 // `GET /api/collections/suggestions` row (spec F2). `members` is a bounded
 // preview in curation order; `member_count` is the full group size.
+// `created_at` is the staging regeneration time — the panel's snooze
+// compares against it ("reappears only after another scan").
 export interface CollectionSuggestionDto {
   id: string;
   kind: CollectionKind;
@@ -393,4 +395,5 @@ export interface CollectionSuggestionDto {
   signature: string;
   member_count: number;
   members: VideoSummaryDto[];
+  created_at: string;
 }
