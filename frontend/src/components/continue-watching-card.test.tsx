@@ -34,7 +34,9 @@ describe("ContinueWatchingCard", () => {
     );
 
     expect(screen.getByText("in-progress.mp4")).toBeInTheDocument();
-    expect(screen.getByText("Google Drive")).toBeInTheDocument();
+    // Provider identity is the official mark, named via title (visible
+    // text is gone — cards stay quiet).
+    expect(screen.getByTitle("Google Drive")).toBeInTheDocument();
     const img = container.querySelector('img[src="/api/videos/v1/thumbnail"]');
     expect(img).not.toBeNull();
   });

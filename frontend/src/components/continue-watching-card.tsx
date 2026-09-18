@@ -25,7 +25,7 @@ import { Link } from "react-router-dom";
 import type { ProgressEntry } from "../lib/player-db";
 import { formatDuration } from "../lib/format";
 import type { ProviderKey } from "../api/types";
-import { ProviderBadge } from "./badges";
+import { ProviderMarkBadge } from "./badges";
 import { Thumbnail, type ThumbnailVideo } from "./thumbnail";
 
 type ContinueWatchingCardProps = {
@@ -71,7 +71,7 @@ export function ContinueWatchingCard({
           {entry.videoName}
         </h3>
         <div className="flex flex-wrap items-center gap-1">
-          <ProviderBadge provider={entry.provider as ProviderKey} />
+          <ProviderMarkBadge provider={entry.provider as ProviderKey} />
           {entry.durationSeconds !== null && (
             <span className="text-[10px] opacity-60">
               {formatDuration(entry.durationSeconds * 1000)} total

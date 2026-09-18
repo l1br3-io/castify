@@ -163,6 +163,48 @@ describe("ConnectionsPage", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("renders one card per connection — same-provider sources never collapse", async () => {
+    // Two Google accounts + two S3 buckets: the backend lists all four;
+    // the grid must show every connection (the old one-card-per-provider
+    // map kept only the newest per provider).
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([
+        { ...GOOGLE_CONNECTED, id: "c1", provider_account_email: "one@example.com" },
+        {
+          ...GOOGLE_CONNECTED,
+          id: "c2",
+          provider_account_email: "two@example.com",
+        },
+        { ...S3_CONNECTED, id: "c-s3-a", scan_status: "idle", video_count: 3 },
+        { ...S3_CONNECTED, id: "c-s3-b", scan_status: "idle", video_count: 5 },
+      ]),
+    });
+
+    expect(await screen.findByText("one@example.com")).toBeInTheDocument();
+    expect(screen.getByText("two@example.com")).toBeInTheDocument();
+    // Both S3 buckets surface (their media counts distinguish the cards).
+    expect(screen.getByText(/3 media/)).toBeInTheDocument();
+    expect(screen.getByText(/5 media/)).toBeInTheDocument();
+    // Every connection is independently disconnectable.
+    expect(
+      screen.getAllByRole("button", { name: /disconnect/i }),
+    ).toHaveLength(4);
+  });
+
+  it("keeps a connect card for a configured provider with connections (add another source)", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([GOOGLE_CONNECTED]),
+    });
+
+    expect(await screen.findByText("user@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Add another source")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Connect Google Drive" }),
+    ).toBeInTheDocument();
+  });
+
   it("tells the user the library is ready once a scan has settled", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],

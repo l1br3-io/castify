@@ -1,6 +1,7 @@
-// Suggestion review panel (library-collections task 009): the post-scan
-// banner over browse. Accept/dismiss per group, optimistic removal,
-// "Review later" snooze keyed to the staging regeneration timestamp.
+// Suggestion review (library-collections task 009): the post-scan
+// notification over browse. One-line banner → "Review" opens the modal;
+// accept/dismiss per group, optimistic removal, "Later" snooze keyed to
+// the staging regeneration timestamp.
 
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
@@ -59,7 +60,7 @@ function panelFetch(
   // server's exactly-once accept/dismiss + signature suppression.
   const consumed = new Set<string>();
   let acceptFailedOnce = false;
-  return (input: RequestInfo | URL, init?: RequestInit): Response => {
+  return (input: RequestInfo | URL, init?: FetchInit): Response => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     log?.push({ url, method });
@@ -94,6 +95,19 @@ function panelFetch(
   };
 }
 
+type FetchInit = RequestInit | undefined;
+
+/** Open the review modal from the notification banner — every test below
+ * needs the dialog, and the banner is the only path to it. */
+async function openReviewModal(): Promise<void> {
+  fireEvent.click(
+    await screen.findByRole("button", { name: /^review$/i }),
+  );
+  expect(
+    await screen.findByRole("dialog", { name: /review suggestions/i }),
+  ).toBeInTheDocument();
+}
+
 function renderPanel(
   fetchImplementation: NonNullable<Parameters<typeof renderWithProviders>[1]>["fetchImplementation"],
 ) {
@@ -107,7 +121,21 @@ describe("SuggestionPanel", () => {
     expect(screen.queryByRole("region", { name: /review/i })).not.toBeInTheDocument();
   });
 
-  it("lists groups with kind, title, count, and caps display with show more", async () => {
+  it("shows a one-line banner — the backlog only opens in the modal", async () => {
+    renderPanel(panelFetch([suggestion("s1", "Breaking Bad", 12)]));
+
+    const banner = await screen.findByRole("region", { name: /review suggestions/i });
+    // The banner carries the count + the entry points; the group itself
+    // stays behind the Review button.
+    expect(banner).toHaveTextContent(/1 suggested collection ready to review/i);
+    expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^review$/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /later/i })).toBeInTheDocument();
+  });
+
+  it("lists groups in the modal with kind, title, count, and show more", async () => {
     renderPanel(
       panelFetch([
         suggestion("s1", "Breaking Bad", 12),
@@ -118,9 +146,8 @@ describe("SuggestionPanel", () => {
       ]),
     );
 
-    expect(
-      await screen.findByRole("region", { name: /review suggestions/i }),
-    ).toBeInTheDocument();
+    await openReviewModal();
+
     expect(screen.getByText("Breaking Bad")).toBeInTheDocument();
     expect(screen.getByText(/Series · 12 videos/)).toBeInTheDocument();
     expect(screen.queryByText("Fargo")).not.toBeInTheDocument();
@@ -157,17 +184,17 @@ describe("SuggestionPanel", () => {
       return response;
     };
 
-    const { ...rest } = renderWithProviders(
+    renderWithProviders(
       <>
         <CollectionsRail />
         <SuggestionPanel />
       </>,
       { fetchImplementation: fetchImpl },
     );
-    void rest;
 
+    await openReviewModal();
     fireEvent.click(
-      await screen.findByRole("button", { name: /accept breaking bad/i }),
+      screen.getByRole("button", { name: /accept breaking bad/i }),
     );
 
     await waitFor(() => {
@@ -177,10 +204,11 @@ describe("SuggestionPanel", () => {
         ),
       ).toBe(true);
     });
-    // The group leaves the panel…
+    // The group leaves the dialog (which stays open, all caught up)…
     await waitFor(() =>
       expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument(),
     );
+    expect(screen.getByText(/all caught up/i)).toBeInTheDocument();
     // …and the rail picked up the new collection.
     expect(await screen.findByText("Accepted")).toBeInTheDocument();
   });
@@ -191,8 +219,9 @@ describe("SuggestionPanel", () => {
       panelFetch([suggestion("s1", "Breaking Bad", 3), suggestion("s2", "Buffy", 4)], log),
     );
 
+    await openReviewModal();
     fireEvent.click(
-      await screen.findByRole("button", { name: /dismiss breaking bad/i }),
+      screen.getByRole("button", { name: /dismiss breaking bad/i }),
     );
     await waitFor(() =>
       expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument(),
@@ -213,8 +242,9 @@ describe("SuggestionPanel", () => {
   it("keeps the group with a retry affordance when accept fails", async () => {
     renderPanel(panelFetch([suggestion("s1", "Breaking Bad", 3)], undefined, true));
 
+    await openReviewModal();
     fireEvent.click(
-      await screen.findByRole("button", { name: /accept breaking bad/i }),
+      screen.getByRole("button", { name: /accept breaking bad/i }),
     );
 
     expect(
@@ -234,7 +264,7 @@ describe("SuggestionPanel", () => {
     const { unmount } = renderPanel(
       panelFetch([suggestion("s1", "Breaking Bad", 3, "2026-09-19T00:00:00Z")]),
     );
-    fireEvent.click(await screen.findByRole("button", { name: /review later/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /later/i }));
     await waitFor(() =>
       expect(
         screen.queryByRole("region", { name: /review suggestions/i }),

@@ -18,7 +18,8 @@
 //   │ [1080p]               [2:00]     │  resolution bottom-left,
 //   └──────────────────────────────────┘  duration bottom-right
 //   name (2-line clamp)
-//   2023 · [Provider] [Also in: …]
+//   2023 · [provider mark] [also-in marks]   ← compact identity, full
+//                                             names in title/sr-only
 //   [slot]                                 rating stars (T11)
 //
 // Slot contracts:
@@ -35,7 +36,7 @@ import { Link } from "react-router-dom";
 import { thumbnailUrl, type AccessScope } from "../api/videos";
 import type { VideoSummaryDto } from "../api/types";
 import { otherProviders } from "../lib/video";
-import { DedupBadge, ProviderBadge } from "./badges";
+import { DedupBadge, ProviderMarkBadge } from "./badges";
 import { Thumbnail } from "./thumbnail";
 
 type PosterCardProps = {
@@ -149,7 +150,7 @@ export function PosterCard({
         </h3>
         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-[var(--color-castify-muted)]">
           {year && <span>{year}</span>}
-          <ProviderBadge provider={video.provider} />
+          <ProviderMarkBadge provider={video.provider} />
           {others.length > 0 && <DedupBadge providers={others} />}
           {menuSlot && (
             <span className="relative z-10 ml-auto">
