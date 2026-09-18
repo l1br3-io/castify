@@ -1,3 +1,4 @@
+pub mod collections;
 pub mod connections;
 pub mod csrf;
 pub mod files;

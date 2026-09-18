@@ -8,7 +8,8 @@ use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
 use crate::routes::{
-    connections, csrf, files, folders, health, session, settings, setup, share, shares, videos,
+    collections, connections, csrf, files, folders, health, session, settings, setup, share,
+    shares, videos,
 };
 use crate::spa::spa_handler;
 use crate::state::AppState;
@@ -106,6 +107,18 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/folders/contents",
             axum::routing::get(folders::contents),
+        )
+        .route(
+            "/api/collections/suggestions",
+            axum::routing::get(collections::list_suggestions),
+        )
+        .route(
+            "/api/collections/suggestions/{id}/accept",
+            axum::routing::post(collections::accept_suggestion),
+        )
+        .route(
+            "/api/collections/suggestions/{id}/dismiss",
+            axum::routing::post(collections::dismiss_suggestion),
         )
         .route(
             "/api/files/{id}/download",

@@ -2432,6 +2432,133 @@ impl CatalogRepository {
             .collect()
     }
 
+    /// Union of staged groups across every connection — the review UI
+    /// reads one list after a scan regardless of which connection
+    /// produced it. Same ordering contract as the per-connection read,
+    /// capped at `limit`.
+    pub async fn fetch_all_collection_suggestions(
+        &self,
+        limit: i64,
+    ) -> CatalogResult<Vec<crate::model::CollectionSuggestion>> {
+        let rows = sqlx::query(
+            "SELECT id, connection_id, kind, title, signature, member_count, created_at \
+             FROM collection_suggestions \
+             ORDER BY member_count DESC, signature ASC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| {
+                let kind_str: String = row.get("kind");
+                Ok(crate::model::CollectionSuggestion {
+                    id: row.get("id"),
+                    connection_id: row.get("connection_id"),
+                    kind: crate::model::CollectionKind::parse(&kind_str)
+                        .map_err(CatalogError::Other)?,
+                    title: row.get("title"),
+                    signature: row.get("signature"),
+                    member_count: row.get("member_count"),
+                    created_at: row.get("created_at"),
+                })
+            })
+            .collect()
+    }
+
+    /// Accept a staged group (spec F2): create the persistent
+    /// collection + membership in one transaction, consuming the staged
+    /// group (its items cascade). Items keep their staged order —
+    /// (season, episode | date | name) per the classification cascade.
+    /// `None` when the suggestion id is unknown or already consumed —
+    /// accept is exactly-once.
+    pub async fn accept_collection_suggestion(
+        &self,
+        suggestion_id: &str,
+    ) -> CatalogResult<Option<crate::model::Collection>> {
+        let now = iso_now();
+        let mut tx = self.pool.begin().await?;
+
+        let group = sqlx::query(
+            "SELECT id, kind, title FROM collection_suggestions WHERE id = ?",
+        )
+        .bind(suggestion_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(group) = group else {
+            tx.rollback().await?;
+            return Ok(None);
+        };
+
+        let kind_str: String = group.get("kind");
+        let kind = crate::model::CollectionKind::parse(&kind_str).map_err(CatalogError::Other)?;
+        let collection_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO collections (id, name, kind, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&collection_id)
+        .bind::<String>(group.get("title"))
+        .bind(kind.as_str())
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        let members: Vec<(String,)> = sqlx::query_as(
+            "SELECT video_id FROM collection_suggestion_items \
+             WHERE suggestion_id = ? ORDER BY position ASC",
+        )
+        .bind(suggestion_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for (position, (video_id,)) in members.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO collection_items (collection_id, video_id, position) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(&collection_id)
+            .bind(video_id)
+            .bind(position as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM collection_suggestions WHERE id = ?")
+            .bind(suggestion_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(Some(crate::model::Collection {
+            id: collection_id,
+            name: group.get("title"),
+            kind,
+            created_at: now,
+        }))
+    }
+
+    /// Remove a staged group and hand back its (connection, signature)
+    /// so the caller can persist the dismissal. `None` when unknown or
+    /// already consumed — dismiss is exactly-once per staged group.
+    pub async fn take_collection_suggestion(
+        &self,
+        suggestion_id: &str,
+    ) -> CatalogResult<Option<(String, String)>> {
+        let row = sqlx::query(
+            "SELECT connection_id, signature FROM collection_suggestions WHERE id = ?",
+        )
+        .bind(suggestion_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        sqlx::query("DELETE FROM collection_suggestions WHERE id = ?")
+            .bind(suggestion_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(Some((row.get("connection_id"), row.get("signature"))))
+    }
+
     /// Member video ids of one staged suggestion, in curation order
     /// (episode/chronological) — the accept path copies them straight
     /// into `collection_items` positions.

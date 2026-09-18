@@ -771,7 +771,7 @@ impl CollectionKind {
 /// A user-visible virtual collection. Maps to a row in `collections`
 /// (migration 0015). Persistent — created only by explicit acceptance
 /// of a suggestion or manual creation; scans never write here directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Collection {
     pub id: String,
     pub name: String,
