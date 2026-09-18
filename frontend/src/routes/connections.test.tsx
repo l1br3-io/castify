@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 
 import { ConnectionsPage } from "./connections";
 import { setCsrfToken } from "../api/client";
@@ -772,6 +772,117 @@ describe("ConnectionsPage", () => {
       );
       expect(rescanCall).toBeDefined();
     });
+  });
+
+  // Catalog prune: once a triggered rescan settles, removals earn a
+  // follow-up toast; a clean rescan stays quiet (the initial
+  // "Rescanning…" info toast is the only messaging).
+  it("toasts removals when the triggered rescan prunes rows", async () => {
+    let scanSettled = false;
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1/scan" && method === "POST")
+          return new Response(null, { status: 202 });
+        if (url === "/api/connections/c1/scan") {
+          // First status poll still sees the scan running; the next one
+          // reports the settled outcome with pruned counts.
+          const body = scanSettled
+            ? {
+                status: "idle",
+                videos_found: 5,
+                started_at: "2026-01-01T00:00:00Z",
+                completed_at: "2026-01-01T00:01:00Z",
+                error_message: null,
+                videos_pruned: 2,
+                files_pruned: 1,
+              }
+            : {
+                status: "scanning",
+                videos_found: 3,
+                started_at: "2026-01-01T00:00:00Z",
+                completed_at: null,
+                error_message: null,
+                videos_pruned: 0,
+                files_pruned: 0,
+              };
+          scanSettled = true;
+          return jsonResponse(body);
+        }
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    // Resolve initial state under real timers — findBy's polling uses
+    // setTimeout, which fake timers would freeze.
+    await screen.findByText("user@example.com");
+    const button = screen.getByRole("button", { name: /rescan/i });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(button);
+
+      // Two poll intervals: the first observes "scanning", the second the
+      // settled state with removals.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2 * 2000 + 100);
+      });
+
+      expect(
+        screen.getByText("Rescanned Google Drive — 2 videos and 1 file removed"),
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a clean rescan quiet beyond the Rescanning… toast", async () => {
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1/scan" && method === "POST")
+          return new Response(null, { status: 202 });
+        if (url === "/api/connections/c1/scan")
+          return jsonResponse({
+            status: "idle",
+            videos_found: 7,
+            started_at: "2026-01-01T00:00:00Z",
+            completed_at: "2026-01-01T00:01:00Z",
+            error_message: null,
+            videos_pruned: 0,
+            files_pruned: 0,
+          });
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    await screen.findByText("user@example.com");
+    const button = screen.getByRole("button", { name: /rescan/i });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(button);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2 * 2000 + 100);
+      });
+
+      expect(screen.queryByText(/removed/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows an error when rescan returns 409 conflict", async () => {

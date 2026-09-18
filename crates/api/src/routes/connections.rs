@@ -76,6 +76,10 @@ pub struct ConnectionDto {
     pub scan_status: String,
     pub last_scan_at: Option<String>,
     pub video_count: i64,
+    /// Rows the last completed scan pruned — the connections-page rescan
+    /// toast reports these ("Rescanned — 3 videos removed").
+    pub videos_pruned: i64,
+    pub files_pruned: i64,
 }
 
 /// One entry in the `GET /api/connections/available` listing. `authMode` is
@@ -103,6 +107,9 @@ pub struct ScanStatusDto {
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub error_message: Option<String>,
+    /// Rows the last completed scan pruned (catalog-prune reconcile).
+    pub videos_pruned: i64,
+    pub files_pruned: i64,
 }
 
 impl ScanStatusDto {
@@ -114,6 +121,8 @@ impl ScanStatusDto {
                 started_at: s.started_at,
                 completed_at: s.completed_at,
                 error_message: s.error_message,
+                videos_pruned: s.videos_pruned,
+                files_pruned: s.files_pruned,
             },
             None => Self {
                 status: "idle".into(),
@@ -121,6 +130,8 @@ impl ScanStatusDto {
                 started_at: None,
                 completed_at: None,
                 error_message: None,
+                videos_pruned: 0,
+                files_pruned: 0,
             },
         }
     }
@@ -154,8 +165,10 @@ async fn connection_dto(
             .as_ref()
             .map(|s| s.status.as_str().to_string())
             .unwrap_or_else(|| "idle".into()),
-        last_scan_at: scan.and_then(|s| s.completed_at),
+        last_scan_at: scan.as_ref().and_then(|s| s.completed_at.clone()),
         video_count,
+        videos_pruned: scan.as_ref().map(|s| s.videos_pruned).unwrap_or(0),
+        files_pruned: scan.as_ref().map(|s| s.files_pruned).unwrap_or(0),
     })
 }
 

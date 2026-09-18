@@ -41,6 +41,7 @@ import { useSearchParams } from "react-router-dom";
 
 import {
   disconnectConnection,
+  fetchScanStatus,
   startConnect,
   triggerRescan,
 } from "../api/connections";
@@ -294,6 +295,58 @@ function ScanDetail({ connection }: { connection: ConnectionDto }) {
   );
 }
 
+// How often to check a triggered rescan for completion, and when to give
+// up (large libraries scan for minutes; a silent stop beats polling
+// forever).
+const RESCAN_RESULT_POLL_MS = 2000;
+const RESCAN_RESULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** "2 videos and 1 file removed" — empty string when nothing was pruned. */
+function removalCopy(videos: number, files: number): string {
+  const parts: string[] = [];
+  if (videos > 0) parts.push(`${videos} ${videos === 1 ? "video" : "videos"}`);
+  if (files > 0) parts.push(`${files} ${files === 1 ? "file" : "files"}`);
+  if (parts.length === 0) return "";
+  return `${parts.join(" and ")} removed`;
+}
+
+/** Poll a triggered rescan until it settles and report removals. The
+ * `Rescanning…` info toast already fired; a completed scan with pruned
+ * rows earns a follow-up success toast, zero removals stay quiet. */
+async function watchRescanResult(
+  connectionId: string,
+  providerLabel: string,
+  toast: ReturnType<typeof useToast>,
+  queryClient: ReturnType<typeof useQueryClient>,
+): Promise<void> {
+  const deadline = Date.now() + RESCAN_RESULT_TIMEOUT_MS;
+  await sleep(RESCAN_RESULT_POLL_MS);
+  while (Date.now() < deadline) {
+    let status;
+    try {
+      status = await fetchScanStatus(connectionId);
+    } catch {
+      return;
+    }
+    if (status.status === "scanning") {
+      await sleep(RESCAN_RESULT_POLL_MS);
+      continue;
+    }
+    void queryClient.invalidateQueries({ queryKey: CONNECTIONS_QUERY_KEY });
+    if (status.status === "idle") {
+      const removed = removalCopy(status.videos_pruned, status.files_pruned);
+      if (removed) {
+        toast.success(`Rescanned ${providerLabel} — ${removed}`);
+      }
+    }
+    return;
+  }
+}
+
 function RescanButton({ connection }: { connection: ConnectionDto }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -317,6 +370,15 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
         queryKey: FOLDER_CONTENTS_QUERY_KEY,
       });
       toast.info(`Rescanning ${PROVIDER_LABELS[connection.provider]}…`);
+      // Catalog prune: the scan runs in the background; watch it settle so
+      // removals get their one-line report. Bounded — a stuck scan gives
+      // up silently rather than polling forever.
+      void watchRescanResult(
+        connection.id,
+        PROVIDER_LABELS[connection.provider],
+        toast,
+        queryClient,
+      );
     },
     onError: (err: unknown) => setError(describeError(err)),
   });

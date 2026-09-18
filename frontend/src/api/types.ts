@@ -42,6 +42,10 @@ export interface ConnectionDto {
   scan_status: ScanStatus;
   last_scan_at: string | null;
   video_count: number;
+  // Rows the last completed scan pruned (catalog-prune reconcile); the
+  // rescan toast reports them when > 0.
+  videos_pruned: number;
+  files_pruned: number;
 }
 
 // How a provider connects (`AuthMode` in the backend). OAuth providers
@@ -98,6 +102,8 @@ export interface ScanStatusDto {
   started_at: string | null;
   completed_at: string | null;
   error_message: string | null;
+  videos_pruned: number;
+  files_pruned: number;
 }
 
 // Sort keys accepted by `GET /api/videos?sort=` (see `VideoSort::parse` in

@@ -545,6 +545,51 @@ async fn scan_status_returns_default_idle_for_unscanned_connection() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "idle");
     assert_eq!(body["videos_found"], 0);
+    assert_eq!(body["videos_pruned"], 0);
+    assert_eq!(body["files_pruned"], 0);
+}
+
+/// Catalog prune: the last completed scan's removal counts surface on both
+/// the scan-status endpoint and the connections listing (rescan toast).
+#[tokio::test]
+async fn pruned_counts_surface_in_scan_status_and_connections_list() {
+    let (app, cookie, repo, _guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo).await;
+
+    repo.upsert_scan_state(&castify_catalog::ScanState {
+        connection_id: conn.id.clone(),
+        status: castify_catalog::ScanStatus::Idle,
+        cursor: None,
+        started_at: Some("2026-01-01T00:00:00Z".into()),
+        completed_at: Some("2026-01-01T00:01:00Z".into()),
+        error_message: None,
+        videos_found: 40,
+        videos_pruned: 3,
+        files_pruned: 1,
+    })
+    .await
+    .unwrap();
+
+    let (status, body) = get_json(
+        app.clone(),
+        &format!("/api/connections/{}/scan", conn.id),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["videos_pruned"], 3);
+    assert_eq!(body["files_pruned"], 1);
+
+    let (status, body) = get_json(app, "/api/connections", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = body
+        .as_array()
+        .expect("connections list")
+        .iter()
+        .find(|c| c["id"] == conn.id.as_str())
+        .expect("seeded connection");
+    assert_eq!(entry["videos_pruned"], 3);
+    assert_eq!(entry["files_pruned"], 1);
 }
 
 #[tokio::test]

@@ -21,6 +21,8 @@ function connectionFixture(scan_status: ScanStatus): ConnectionDto {
     scan_status,
     last_scan_at: null,
     video_count: 0,
+    videos_pruned: 0,
+    files_pruned: 0,
   };
 }
 
