@@ -32,6 +32,17 @@ pub struct FolderCount {
     pub video_count: i64,
 }
 
+/// A collection with its member count, returned by
+/// `list_collections_with_counts` (library-collections, spec F3).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CollectionWithCount {
+    pub id: String,
+    pub name: String,
+    pub kind: crate::model::CollectionKind,
+    pub created_at: String,
+    pub member_count: i64,
+}
+
 /// Minimal video fields needed by the thumbnail proxy endpoint. Avoids the
 /// full [`VideoSummary`] with its joins — just enough to resolve the
 /// connection, provider, and file ID for `Provider::fetch_thumbnail`.
@@ -2557,6 +2568,202 @@ impl CatalogRepository {
             .execute(&self.pool)
             .await?;
         Ok(Some((row.get("connection_id"), row.get("signature"))))
+    }
+
+    /// Create a collection (spec F3). The id and timestamp are
+    /// generated here, mirroring the video upsert.
+    pub async fn create_collection(
+        &self,
+        name: &str,
+        kind: crate::model::CollectionKind,
+    ) -> CatalogResult<crate::model::Collection> {
+        let id = Uuid::new_v4().to_string();
+        let now = iso_now();
+        sqlx::query("INSERT INTO collections (id, name, kind, created_at) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(name)
+            .bind(kind.as_str())
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+        Ok(crate::model::Collection {
+            id,
+            name: name.to_string(),
+            kind,
+            created_at: now,
+        })
+    }
+
+    pub async fn fetch_collection(
+        &self,
+        id: &str,
+    ) -> CatalogResult<Option<crate::model::Collection>> {
+        let row = sqlx::query(
+            "SELECT id, name, kind, created_at FROM collections WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| {
+            let kind_str: String = row.get("kind");
+            crate::model::Collection {
+                id: row.get("id"),
+                name: row.get("name"),
+                kind: crate::model::CollectionKind::parse(&kind_str)
+                    .unwrap_or(crate::model::CollectionKind::Manual),
+                created_at: row.get("created_at"),
+            }
+        }))
+    }
+
+    pub async fn rename_collection(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> CatalogResult<Option<crate::model::Collection>> {
+        let updated = sqlx::query("UPDATE collections SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.fetch_collection(id).await
+    }
+
+    /// Delete a collection; membership cascades (migration 0015).
+    /// Returns false when the id was unknown.
+    pub async fn delete_collection(&self, id: &str) -> CatalogResult<bool> {
+        let deleted = sqlx::query("DELETE FROM collections WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(deleted.rows_affected() > 0)
+    }
+
+    /// Every collection with its member count, newest first (rail
+    /// ordering: the just-accepted collection leads).
+    pub async fn list_collections_with_counts(&self) -> CatalogResult<Vec<CollectionWithCount>> {
+        let rows = sqlx::query(
+            "SELECT c.id, c.name, c.kind, c.created_at, COUNT(ci.video_id) AS member_count \
+             FROM collections c \
+             LEFT JOIN collection_items ci ON ci.collection_id = c.id \
+             GROUP BY c.id ORDER BY c.created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let kind_str: String = row.get("kind");
+                CollectionWithCount {
+                    id: row.get("id"),
+                    name: row.get("name"),
+                    kind: crate::model::CollectionKind::parse(&kind_str)
+                        .unwrap_or(crate::model::CollectionKind::Manual),
+                    created_at: row.get("created_at"),
+                    member_count: row.get("member_count"),
+                }
+            })
+            .collect())
+    }
+
+    pub async fn collection_exists(&self, id: &str) -> CatalogResult<bool> {
+        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM collections WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(found.is_some())
+    }
+
+    /// Append a video to a collection at the next position (spec F3).
+    /// `Ok(None)` when the video is already a member (unique PK) —
+    /// surfaced as 409 by the API. Video-only enforcement (spec F5) is
+    /// structural: this writes `videos.id` FKs and there is no code
+    /// path that accepts a `files` row.
+    pub async fn add_collection_item(
+        &self,
+        collection_id: &str,
+        video_id: &str,
+    ) -> CatalogResult<Option<()>> {
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(position) + 1, 0) FROM collection_items \
+                 WHERE collection_id = ?")
+                .bind(collection_id)
+                .fetch_one(&self.pool)
+                .await?;
+        let result = sqlx::query(
+            "INSERT INTO collection_items (collection_id, video_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(collection_id)
+        .bind(video_id)
+        .bind(next)
+        .execute(&self.pool)
+        .await;
+        match result {
+            Ok(_) => Ok(Some(())),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Remove one membership edge. False when the video was not a
+    /// member.
+    pub async fn remove_collection_item(
+        &self,
+        collection_id: &str,
+        video_id: &str,
+    ) -> CatalogResult<bool> {
+        let deleted = sqlx::query(
+            "DELETE FROM collection_items WHERE collection_id = ? AND video_id = ?",
+        )
+        .bind(collection_id)
+        .bind(video_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(deleted.rows_affected() > 0)
+    }
+
+    /// Replace a collection's membership with an explicit order
+    /// (reorder / bulk edit, spec F3). One transaction: prior edges
+    /// vanish, the new list defines positions 0..n.
+    pub async fn replace_collection_items(
+        &self,
+        collection_id: &str,
+        video_ids: &[String],
+    ) -> CatalogResult<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM collection_items WHERE collection_id = ?")
+            .bind(collection_id)
+            .execute(&mut *tx)
+            .await?;
+        for (position, video_id) in video_ids.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO collection_items (collection_id, video_id, position) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(collection_id)
+            .bind(video_id)
+            .bind(position as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Member video ids in curation order (positions ascending).
+    pub async fn fetch_collection_member_ids(&self, collection_id: &str) -> CatalogResult<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT video_id FROM collection_items WHERE collection_id = ? \
+             ORDER BY position ASC",
+        )
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(v,)| v).collect())
     }
 
     /// Member video ids of one staged suggestion, in curation order

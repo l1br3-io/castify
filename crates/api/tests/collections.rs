@@ -106,6 +106,42 @@ async fn request(
     (status, value)
 }
 
+/// Same as [`request`] with a JSON body (POST/PATCH/PUT round-trips).
+async fn request_json(
+    app: axum::Router,
+    method: &str,
+    uri: &str,
+    session: Option<&str>,
+    csrf: Option<(&str, &str)>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    let mut cookie_parts: Vec<String> = Vec::new();
+    if let Some(c) = session {
+        cookie_parts.push(c.to_string());
+    }
+    if let Some((cookie_value, _)) = csrf {
+        cookie_parts.push(format!("castify_csrf={cookie_value}"));
+    }
+    if !cookie_parts.is_empty() {
+        builder = builder.header("cookie", cookie_parts.join("; "));
+    }
+    if let Some((_, header_value)) = csrf {
+        builder = builder.header("x-csrf-token", header_value);
+    }
+    let response = app
+        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
 async fn seed_connection(repo: &CatalogRepository) -> String {
     let conn = repo
         .create_connection(&NewConnection {
@@ -432,6 +468,290 @@ async fn accept_and_dismiss_unknown_ids_are_404() {
         app,
         "POST",
         "/api/collections/suggestions/nope/dismiss",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── Collections CRUD + membership (spec F3) ──────────────────────────
+
+/// Boot the app + session and seed one connection with three videos.
+async fn boot_with_videos() -> (axum::Router, String, CatalogRepository, tempfile::TempPath, String, String, String) {
+    let (app, cookie, repo, guard) = boot_and_setup().await;
+    let conn = seed_connection(&repo).await;
+    let v1 = seed_video(&repo, &conn, "v1", "alpha.mp4").await;
+    let v2 = seed_video(&repo, &conn, "v2", "beta.mp4").await;
+    let v3 = seed_video(&repo, &conn, "v3", "gamma.mp4").await;
+    (app, cookie, repo, guard, v1, v2, v3)
+}
+
+#[tokio::test]
+async fn collections_requires_auth() {
+    let (app, _cookie, _repo, _guard) = boot_and_setup().await;
+    let (status, _) = request(app, "GET", "/api/collections", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn manual_collection_crud_and_membership_roundtrip() {
+    let (app, cookie, repo, _guard, v1, v2, v3) = boot_with_videos().await;
+    let csrf = fetch_csrf(&app, &cookie).await;
+
+    // Create (kind defaults to manual).
+    let (status, body) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "Weekend watchlist"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["kind"], "manual");
+    assert_eq!(body["member_count"], 0);
+    let col_id = body["id"].as_str().unwrap().to_string();
+
+    // Append items.
+    for vid in [&v1, &v2, &v3] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            &format!("/api/collections/{col_id}/items/{vid}"),
+            Some(&cookie),
+            Some((&csrf, &csrf)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    // List shows count + preview.
+    let (status, list) = request(app.clone(), "GET", "/api/collections", Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["member_count"], 3);
+    assert_eq!(list[0]["name"], "Weekend watchlist");
+    assert_eq!(list[0]["preview"].as_array().unwrap().len(), 3);
+
+    // Detail: members in append order.
+    let (status, detail) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let members = detail["members"].as_array().unwrap();
+    assert_eq!(
+        members.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["alpha.mp4", "beta.mp4", "gamma.mp4"]
+    );
+
+    // Reorder: reversed.
+    let (status, _) = request_json(
+        app.clone(),
+        "PUT",
+        &format!("/api/collections/{col_id}/items"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"video_ids": [v3, v1, v2]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let members = detail["members"].as_array().unwrap();
+    assert_eq!(
+        members.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(),
+        vec!["gamma.mp4", "alpha.mp4", "beta.mp4"]
+    );
+
+    // Remove one member.
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/collections/{col_id}/items/{v2}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, detail) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(detail["members"].as_array().unwrap().len(), 2);
+
+    // Rename.
+    let (status, body) = request_json(
+        app.clone(),
+        "PATCH",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "Renamed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "Renamed");
+
+    // Delete: items cascade.
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collection_items")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(items, 0, "membership cascades with the collection");
+    let (status, _) = request(
+        app,
+        "GET",
+        &format!("/api/collections/{col_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_collection_validates_kind_and_name() {
+    let (app, cookie, _repo, _guard) = boot_and_setup().await;
+    let csrf = fetch_csrf(&app, &cookie).await;
+
+    let (status, _) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "X", "kind": "show"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "manual-only");
+
+    let (status, _) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "  "}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "blank name");
+}
+
+#[tokio::test]
+async fn membership_rejects_unknown_collection_video_and_duplicates() {
+    let (app, cookie, repo, _guard, v1, _v2, _v3) = boot_with_videos().await;
+    let csrf = fetch_csrf(&app, &cookie).await;
+
+    let (_, body) = request_json(
+        app.clone(),
+        "POST",
+        "/api/collections",
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+        serde_json::json!({"name": "List"}),
+    )
+    .await;
+    let col_id = body["id"].as_str().unwrap().to_string();
+
+    // Unknown collection.
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/nope/items/{v1}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Non-existent video id (this covers the video-only rule: a `files`
+    // row id simply does not exist in `videos`).
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/{col_id}/items/not-a-video"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A real files row id is equally rejected — no files-join path.
+    sqlx::query(
+        "INSERT INTO files (id, connection_id, provider_file_id, name, kind) \
+         VALUES ('file-row-1', (SELECT connection_id FROM videos WHERE id = ?), 'pf-1', \
+         'song.mp3', 'audio')",
+    )
+    .bind(&v1)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/{col_id}/items/file-row-1"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "files row must never join a collection"
+    );
+
+    // Duplicate membership.
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/{col_id}/items/{v1}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/collections/{col_id}/items/{v1}"),
+        Some(&cookie),
+        Some((&csrf, &csrf)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Removing a non-member 404s.
+    let (status, _) = request(
+        app,
+        "DELETE",
+        &format!("/api/collections/{col_id}/items/not-a-member"),
         Some(&cookie),
         Some((&csrf, &csrf)),
     )

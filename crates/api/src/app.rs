@@ -121,6 +121,25 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::post(collections::dismiss_suggestion),
         )
         .route(
+            "/api/collections",
+            axum::routing::get(collections::list_collections).post(collections::create_collection),
+        )
+        .route(
+            "/api/collections/{id}",
+            axum::routing::get(collections::get_collection)
+                .patch(collections::rename_collection)
+                .delete(collections::delete_collection),
+        )
+        .route(
+            "/api/collections/{id}/items/{video_id}",
+            axum::routing::post(collections::add_collection_item)
+                .delete(collections::remove_collection_item),
+        )
+        .route(
+            "/api/collections/{id}/items",
+            axum::routing::put(collections::replace_collection_items),
+        )
+        .route(
             "/api/files/{id}/download",
             axum::routing::get(files::download),
         )
