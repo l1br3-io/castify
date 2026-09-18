@@ -11,16 +11,18 @@ pub mod scanner;
 pub mod transcode_cache;
 
 pub use classify::{
-    classify_name, cluster_by_time, date_from_path, parse_timestamp, CollectionKind,
-    ParsedName, TimeCluster, TIME_CLUSTER_GAP_DAYS, TIME_CLUSTER_MIN_SIZE,
+    classify_name, cluster_by_time, date_from_path, parse_timestamp, ParsedName, TimeCluster,
+    TIME_CLUSTER_GAP_DAYS, TIME_CLUSTER_MIN_SIZE,
 };
 pub use crypto::{decrypt, encrypt, Credential, S3Credentials, TokenBundle, TokenKey};
 pub use model::{
-    DiscoveredFile, DiscoveredSubtitle, DiscoveredVideo, EmbeddedSubtitleTrack, FileEntry,
-    FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry, FolderFileEntry, FolderNode,
-    FolderVideoEntry, ListPage, NewConnection, NewVideo, PlaybackProgress, Provider,
-    ProviderConnection, PruneResult, ScanState, ScanStatus, SubtitleTrack, TranscodeCacheEntry,
-    VideoCacheEntry, VideoDetail, VideoFilter, VideoPage, VideoSort, VideoSource, VideoSummary,
+    Collection, CollectionKind, CollectionSuggestion, DiscoveredFile, DiscoveredSubtitle,
+    DiscoveredVideo, EmbeddedSubtitleTrack, FileEntry, FileKind, FolderContentsFilter,
+    FolderContentsPage, FolderEntry, FolderFileEntry, FolderNode, FolderVideoEntry, ListPage,
+    NewCollection, NewCollectionItem, NewCollectionSuggestion, NewConnection, NewVideo,
+    PlaybackProgress, Provider, ProviderConnection, PruneResult, ScanState, ScanStatus,
+    SubtitleTrack, TranscodeCacheEntry, VideoCacheEntry, VideoDetail, VideoFilter, VideoPage,
+    VideoSort, VideoSource, VideoSummary,
 };
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
 pub use provider::{

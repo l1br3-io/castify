@@ -22,43 +22,11 @@
 //! re-suggestions across scans (spec F2).
 
 use chrono::{DateTime, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
 
-/// The collection flavor a classification or suggestion produces.
-/// `manual` (spec F3) exists only at the persistence layer — the
-/// cascade never proposes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CollectionKind {
-    Show,
-    Movie,
-    Time,
-}
-
-impl CollectionKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CollectionKind::Show => "show",
-            CollectionKind::Movie => "movie",
-            CollectionKind::Time => "time",
-        }
-    }
-
-    pub fn parse(s: &str) -> Result<Self, String> {
-        match s {
-            "show" => Ok(CollectionKind::Show),
-            "movie" => Ok(CollectionKind::Movie),
-            "time" => Ok(CollectionKind::Time),
-            other => Err(format!("unknown collection kind: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for CollectionKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+// The kind enum lives with the other catalog models (migration 0015's
+// CHECK covers four persistence kinds; the cascade only ever proposes
+// these three).
+pub use crate::model::CollectionKind;
 
 /// A name-tier classification result: tiers 1–2 of the cascade.
 ///
@@ -1127,7 +1095,7 @@ mod tests {
     // ----- Wire forms -----
 
     #[test]
-    fn collection_kind_round_trips() {
+    fn cascade_kinds_are_the_three_non_manual_kinds() {
         for kind in [
             CollectionKind::Show,
             CollectionKind::Movie,
@@ -1135,7 +1103,6 @@ mod tests {
         ] {
             assert_eq!(CollectionKind::parse(kind.as_str()).unwrap(), kind);
         }
-        assert!(CollectionKind::parse("manual").is_err());
         assert_eq!(
             serde_json::to_string(&CollectionKind::Time).unwrap(),
             "\"time\""

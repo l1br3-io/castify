@@ -1210,3 +1210,260 @@ async fn migration_0014_scan_state_pruned_counts_round_trip() {
     assert_eq!(videos_pruned, 2);
     assert_eq!(files_pruned, 1);
 }
+
+// ---- Migration 0015: Library collections ----
+
+/// Every 0015 table accepts its intended shape: collections (all four
+/// kinds incl. `manual`), membership, suggestion staging groups + items,
+/// and signature-keyed dismissals.
+#[tokio::test]
+async fn migration_0015_collections_tables_accept_rows() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    for (i, kind) in ["show", "movie", "time", "manual"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO collections (id, name, kind, created_at) \
+             VALUES (?, ?, ?, '2026-09-19T00:00:00Z')",
+        )
+        .bind(format!("col-{kind}"))
+        .bind(format!("Collection {i}"))
+        .bind(kind)
+        .execute(&pool)
+        .await
+        .unwrap_or_else(|e| panic!("kind = '{kind}' should be accepted: {e}"));
+    }
+
+    sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-show', 'vid-x', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
+         member_count, created_at) \
+         VALUES ('sug-1', 'conn-x', 'show', 'Breaking Bad', 'show:breakingbad', 3, \
+         '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO collection_suggestion_items (suggestion_id, video_id, position) \
+         VALUES ('sug-1', 'vid-x', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
+         VALUES ('conn-x', 'show:breakingbad', '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+/// `collections.kind` accepts exactly the four designed kinds; the
+/// suggestion staging CHECK excludes `manual` (the cascade never
+/// proposes it, so the DB must not accept it either).
+#[tokio::test]
+async fn migration_0015_kind_checks_reject_unknown_and_manual_suggestions() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    let bad_collection = sqlx::query(
+        "INSERT INTO collections (id, name, kind, created_at) \
+         VALUES ('col-bad', 'X', 'playlist', '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(bad_collection.is_err(), "kind = 'playlist' must be rejected");
+
+    let manual_suggestion = sqlx::query(
+        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
+         member_count, created_at) \
+         VALUES ('sug-bad', 'conn-x', 'manual', 'X', 'manual:x', 1, '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        manual_suggestion.is_err(),
+        "suggestion kind = 'manual' must be rejected"
+    );
+}
+
+/// Membership is a set relation: the same video twice in one collection
+/// must reject (spec F3).
+#[tokio::test]
+async fn migration_0015_duplicate_collection_item_rejected() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO collections (id, name, kind, created_at) \
+         VALUES ('col-1', 'My List', 'manual', '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-1', 'vid-x', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let dup = sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-1', 'vid-x', 1)",
+    )
+    .execute(&pool)
+    .await;
+    assert!(dup.is_err(), "duplicate collection membership must reject");
+}
+
+/// Durability mirror of the share_items pattern: deleting a video or a
+/// collection cascades membership away rather than orphaning rows.
+#[tokio::test]
+async fn migration_0015_cascades_remove_membership_and_suggestion_items() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO collections (id, name, kind, created_at) \
+         VALUES ('col-1', 'My List', 'manual', '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-1', 'vid-x', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
+         member_count, created_at) \
+         VALUES ('sug-1', 'conn-x', 'show', 'Buffy', 'show:buffy', 1, '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO collection_suggestion_items (suggestion_id, video_id, position) \
+         VALUES ('sug-1', 'vid-x', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Video delete clears both membership and staged suggestion items.
+    sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collection_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(items, 0, "membership should cascade with the video");
+    let sug_items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collection_suggestion_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sug_items, 0, "suggestion items should cascade with the video");
+
+    // Collection delete clears membership (fresh membership row).
+    sqlx::query(
+        "INSERT INTO videos (id, connection_id, provider, provider_file_id, name, size_bytes, \
+         scanned_at, created_at) \
+         VALUES ('vid-2', 'conn-x', 'google_drive', 'file-2', 'b.mp4', 100, \
+         '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-1', 'vid-2', 0)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM collections WHERE id = 'col-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collection_items")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0, "membership should cascade with the collection");
+}
+
+/// Regeneration identity: one suggestion group per
+/// (connection_id, signature), and one dismissal per the same key —
+/// the staging rewrite relies on both to stay deduplicated.
+#[tokio::test]
+async fn migration_0015_suggestion_and_dismissal_unique_keys() {
+    let (_guard, path) = fresh_db().await;
+    let pool = connect(&path).await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    seed_owner_connection_video(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
+         member_count, created_at) \
+         VALUES ('sug-1', 'conn-x', 'show', 'Buffy', 'show:buffy', 2, '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let dup_suggestion = sqlx::query(
+        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
+         member_count, created_at) \
+         VALUES ('sug-2', 'conn-x', 'show', 'Buffy', 'show:buffy', 3, '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup_suggestion.is_err(),
+        "duplicate connection+signature suggestion must reject"
+    );
+
+    sqlx::query(
+        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
+         VALUES ('conn-x', 'show:buffy', '2026-09-19T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let dup_dismissal = sqlx::query(
+        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
+         VALUES ('conn-x', 'show:buffy', '2026-09-19T01:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        dup_dismissal.is_err(),
+        "duplicate connection+signature dismissal must reject"
+    );
+}

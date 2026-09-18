@@ -732,3 +732,121 @@ pub struct TranscodeCacheEntry {
     pub created_at: String,
     pub last_accessed_at: String,
 }
+
+/// The kind of a virtual collection (library-collections, spec F3).
+/// `Show`/`Movie`/`Time` come from the classification cascade
+/// (`classify.rs`); `Manual` only ever originates from explicit user
+/// creation — the suggestion staging CHECK excludes it. Mirrors the
+/// `collections.kind` CHECK in migration 0015.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionKind {
+    Show,
+    Movie,
+    Time,
+    Manual,
+}
+
+impl CollectionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CollectionKind::Show => "show",
+            CollectionKind::Movie => "movie",
+            CollectionKind::Time => "time",
+            CollectionKind::Manual => "manual",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "show" => Ok(CollectionKind::Show),
+            "movie" => Ok(CollectionKind::Movie),
+            "time" => Ok(CollectionKind::Time),
+            "manual" => Ok(CollectionKind::Manual),
+            other => Err(format!("unknown collection kind: {other}")),
+        }
+    }
+}
+
+/// A user-visible virtual collection. Maps to a row in `collections`
+/// (migration 0015). Persistent — created only by explicit acceptance
+/// of a suggestion or manual creation; scans never write here directly.
+#[derive(Debug, Clone)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub kind: CollectionKind,
+    pub created_at: String,
+}
+
+/// Data needed to create a collection row. The repository generates the
+/// id and timestamp (mirrors `NewVideo` vs the `videos` insert).
+#[derive(Debug, Clone)]
+pub struct NewCollection {
+    pub name: String,
+    pub kind: CollectionKind,
+}
+
+/// One membership edge: a video at a position inside a collection.
+/// Position preserves curation order (episode order, play-all order).
+#[derive(Debug, Clone)]
+pub struct NewCollectionItem {
+    pub collection_id: String,
+    pub video_id: String,
+    pub position: i64,
+}
+
+/// A staged suggestion group from the latest completed scan of a
+/// connection (spec F2). Staging is derived data — regenerated from
+/// scratch per scan, never user state. `member_count` is denormalized
+/// for the review UI's "3 possible shows (27 episodes)" summary.
+#[derive(Debug, Clone)]
+pub struct CollectionSuggestion {
+    pub id: String,
+    pub connection_id: String,
+    pub kind: CollectionKind,
+    pub title: String,
+    /// Canonical suppression key — normalized title or `time:YYYY-MM`.
+    pub signature: String,
+    pub member_count: i64,
+    pub created_at: String,
+}
+
+/// Write-shape for staging one suggestion group (scan hook). Member
+/// ids are ordered (episode/chronological) so accept can copy them
+/// straight into `collection_items` positions.
+#[derive(Debug, Clone)]
+pub struct NewCollectionSuggestion {
+    pub connection_id: String,
+    pub kind: CollectionKind,
+    pub title: String,
+    pub signature: String,
+    pub video_ids: Vec<String>,
+}
+
+#[cfg(test)]
+mod collection_kind_tests {
+    use super::CollectionKind;
+
+    /// Every variant round-trips through `parse(as_str())`, and the
+    /// serde wire form is snake_case (mirrors `FileKind`/`Provider`).
+    #[test]
+    fn collection_kind_round_trips_all_variants() {
+        let all = [
+            CollectionKind::Show,
+            CollectionKind::Movie,
+            CollectionKind::Time,
+            CollectionKind::Manual,
+        ];
+        for kind in all {
+            assert_eq!(CollectionKind::parse(kind.as_str()).unwrap(), kind);
+        }
+        assert!(CollectionKind::parse("playlist").is_err());
+        assert_eq!(
+            serde_json::to_string(&CollectionKind::Manual).unwrap(),
+            "\"manual\""
+        );
+        let back: CollectionKind = serde_json::from_str("\"show\"").unwrap();
+        assert_eq!(back, CollectionKind::Show);
+    }
+}
