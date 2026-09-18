@@ -178,7 +178,11 @@ export async function waitForScanComplete(
     const res = await page.request.get(`/api/connections/${connectionId}/scan`);
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    if (body.status === "idle") return;
+    // `idle` with a NULL started_at is the endpoint's default response
+    // for a connection no scan has touched yet — the spawned task may not
+    // have written its first state. Only a real (started) scan counts as
+    // complete, or the caller reads a pre-scan catalog.
+    if (body.status === "idle" && body.started_at != null) return;
     if (body.status === "error") {
       throw new Error(`scan failed: ${body.error_message ?? "unknown"}`);
     }

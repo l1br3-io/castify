@@ -1289,6 +1289,133 @@ pub fn s3_presign_disabled() -> bool {
     !S3_PRESIGN_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// ── Catalog-prune hooks ─────────────────────────────────────────────
+
+/// Process-global prune-grace override (`None` = use boot config), set by
+/// `POST /api/__e2e/prune-grace`. Lets one stack exercise both `grace(2)`
+/// (the default posture) and `immediate(1)` semantics without a rebuild.
+static PRUNE_GRACE_OVERRIDE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+static PRUNE_GRACE_SET: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Debug, Deserialize)]
+pub struct PruneGraceBody {
+    /// `null` restores the boot-config behavior.
+    pub scans: Option<u32>,
+}
+
+/// `POST /api/__e2e/prune-grace` — override the effective prune grace.
+/// Test-only (e2e feature); read by `spawn_scan`.
+pub async fn set_prune_grace(Json(body): Json<PruneGraceBody>) -> StatusCode {
+    match body.scans {
+        Some(scans) => {
+            PRUNE_GRACE_OVERRIDE.store(scans, std::sync::atomic::Ordering::Relaxed);
+            PRUNE_GRACE_SET.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        None => PRUNE_GRACE_SET.store(false, std::sync::atomic::Ordering::Relaxed),
+    }
+    tracing::info!(scans = ?body.scans, "e2e: prune grace override set");
+    StatusCode::NO_CONTENT
+}
+
+/// The e2e suite's prune-grace override, if any. `spawn_scan` falls back
+/// to the boot config when `None`.
+pub fn prune_grace_override() -> Option<u32> {
+    if PRUNE_GRACE_SET.load(std::sync::atomic::Ordering::Relaxed) {
+        Some(PRUNE_GRACE_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed))
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct S3DeleteBody {
+    pub connection_id: String,
+    /// Object key relative to the bucket (not the connection prefix).
+    pub key: String,
+}
+
+/// `POST /api/__e2e/s3-delete` — delete one object from the connected S3
+/// bucket using the connection's own stored credentials, simulating an
+/// owner-side deletion at the provider. The catalog-prune e2e drives
+/// rescans after this and asserts the reconcile outcome. Owner-auth
+/// required: it is a destructive provider mutation.
+pub async fn delete_s3_object(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    Json(body): Json<S3DeleteBody>,
+) -> Result<StatusCode, crate::error::ApiError> {
+    crate::auth::resolve_owner(&state, &jar).await?;
+
+    let credential = state
+        .catalog_repository()
+        .fetch_credential(&body.connection_id)
+        .await?
+        .ok_or(crate::error::ApiError::NotFound)?;
+    let creds = expect_s3_credential(credential)?;
+
+    let provider = castify_catalog::providers::s3::S3Provider::new(&creds);
+    provider.delete_object(&body.key).await?;
+    tracing::info!(key = %body.key, "e2e: s3 object deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct S3PutBody {
+    pub connection_id: String,
+    pub key: String,
+    pub body_base64: String,
+    /// Mirrors the content type `mc cp` set on the original object —
+    /// without it the restore lands as `application/octet-stream` and
+    /// downstream consumers (stream proxy, <video>) misbehave.
+    pub content_type: Option<String>,
+}
+
+/// `POST /api/__e2e/s3-put` — restore an object deleted by
+/// `s3-delete`, so a prune spec can leave the bucket exactly as the
+/// seeder left it for the later specs in the same run. Owner-auth
+/// required, same as the delete it undoes.
+pub async fn put_s3_object(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    Json(body): Json<S3PutBody>,
+) -> Result<StatusCode, crate::error::ApiError> {
+    use base64::Engine;
+    crate::auth::resolve_owner(&state, &jar).await?;
+
+    let credential = state
+        .catalog_repository()
+        .fetch_credential(&body.connection_id)
+        .await?
+        .ok_or(crate::error::ApiError::NotFound)?;
+    let creds = expect_s3_credential(credential)?;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&body.body_base64)
+        .map_err(|e| crate::error::ApiError::Validation {
+            detail: format!("body_base64 is not valid base64: {e}"),
+        })?;
+
+    let provider = castify_catalog::providers::s3::S3Provider::new(&creds);
+    provider
+        .put_object(&body.key, bytes, body.content_type.as_deref())
+        .await?;
+    tracing::info!(key = %body.key, "e2e: s3 object restored");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn expect_s3_credential(
+    credential: castify_catalog::Credential,
+) -> Result<castify_catalog::S3Credentials, crate::error::ApiError> {
+    match credential {
+        castify_catalog::Credential::S3(creds) => Ok(creds),
+        castify_catalog::Credential::OAuth(_) => Err(crate::error::ApiError::Validation {
+            detail: "connection holds an OAuth credential; this hook needs an S3 connection".into(),
+        }),
+    }
+}
+
 // ── Mock CDN endpoint ──────────────────────────────────────────────
 
 /// `GET /api/__e2e/mock-cdn/{file_id}` — serves the same canned bytes as

@@ -894,6 +894,11 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     };
 
     let prune_grace = state.config().prune.effective_grace_scans();
+    // The e2e suite can flip grace semantics per-test (grace-2 vs
+    // immediate) without rebuilding the stack; production builds carry
+    // the boot config untouched.
+    #[cfg(feature = "e2e")]
+    let prune_grace = crate::e2e::prune_grace_override().or(prune_grace);
     let state = state.clone();
 
     tokio::spawn(async move {

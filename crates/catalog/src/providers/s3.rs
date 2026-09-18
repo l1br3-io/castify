@@ -328,6 +328,42 @@ impl S3Provider {
             .map(|_| ())
             .map_err(map_sdk_error)
     }
+
+    /// Delete one object. Not part of the `Provider` trait — Castify never
+    /// mutates provider storage; this exists for the e2e hook that
+    /// simulates owner-side deletions (catalog-prune) against real MinIO.
+    pub async fn delete_object(&self, key: &str) -> ProviderResult<()> {
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(map_sdk_error)
+    }
+
+    /// Put one object — the e2e hook's restore counterpart to
+    /// [`Self::delete_object`]. `content_type` should mirror what `mc cp`
+    /// set on the original object, or downstream consumers (stream proxy,
+    /// browser `<video>`) see `application/octet-stream`.
+    pub async fn put_object(
+        &self,
+        key: &str,
+        body: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> ProviderResult<()> {
+        let mut request = self.client.put_object().bucket(&self.bucket).key(key);
+        if let Some(ct) = content_type {
+            request = request.content_type(ct);
+        }
+        request
+            .body(body.into())
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(map_sdk_error)
+    }
 }
 
 #[async_trait::async_trait]

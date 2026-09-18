@@ -7,7 +7,6 @@
 
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use castify_catalog::{

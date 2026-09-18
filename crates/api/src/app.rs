@@ -226,6 +226,18 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/__e2e/s3-presign",
             axum::routing::post(crate::e2e::set_s3_presign),
+        )
+        .route(
+            "/api/__e2e/s3-delete",
+            axum::routing::post(crate::e2e::delete_s3_object),
+        )
+        .route(
+            "/api/__e2e/s3-put",
+            axum::routing::post(crate::e2e::put_s3_object),
+        )
+        .route(
+            "/api/__e2e/prune-grace",
+            axum::routing::post(crate::e2e::set_prune_grace),
         );
 
     router
