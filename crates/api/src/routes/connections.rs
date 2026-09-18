@@ -880,8 +880,19 @@ fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
         }
     };
 
+    let prune_grace = state.config().prune.effective_grace_scans();
+
     tokio::spawn(async move {
-        castify_catalog::scanner::run_scan(repo, conn_id, provider, factory).await;
+        castify_catalog::scanner::run_scan(
+            repo,
+            conn_id,
+            provider,
+            factory,
+            castify_catalog::scanner::PrunePolicy {
+                effective_grace_scans: prune_grace,
+            },
+        )
+        .await;
     });
 }
 

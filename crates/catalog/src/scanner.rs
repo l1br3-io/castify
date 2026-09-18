@@ -48,6 +48,33 @@ impl ScanOutcome {
     }
 }
 
+/// What the scanner should do about catalog rows the provider no longer
+/// lists. Threaded in by the api layer (from `CASTIFY_PRUNE_MODE` /
+/// `CASTIFY_PRUNE_GRACE_SCANS`) — the catalog crate never reads env vars.
+#[derive(Debug, Clone, Copy)]
+pub struct PrunePolicy {
+    /// `None` disables reconcile entirely (`CASTIFY_PRUNE_MODE=off` —
+    /// exact pre-effort behavior). `Some(n)` deletes a row after n
+    /// consecutive *completed* scans omitted it.
+    pub effective_grace_scans: Option<u32>,
+}
+
+impl PrunePolicy {
+    pub const OFF: PrunePolicy = PrunePolicy {
+        effective_grace_scans: None,
+    };
+}
+
+/// What a post-scan reconcile pass did (all zero when policy is off, the
+/// listing was empty-guarded, or the scan did not complete).
+struct ReconcileReport {
+    pruned_video_ids: Vec<String>,
+    files_pruned: u64,
+    /// Non-empty when the empty-result guard fired; surfaced on
+    /// `scan_state.error_message` without failing the scan.
+    warning: Option<String>,
+}
+
 /// Run a full scan for a connection: list all video files, store them, then
 /// compute prefix hashes for cross-provider dedup.
 ///
@@ -59,7 +86,8 @@ pub async fn run_scan(
     connection_id: String,
     provider_type: Provider,
     factory: Box<dyn ProviderFactory>,
-) {
+    prune_policy: PrunePolicy,
+) -> Vec<String> {
     tracing::info!(
         connection_id = %connection_id,
         provider = %provider_type,
@@ -83,7 +111,7 @@ pub async fn run_scan(
 
     let result = run_scan_inner(&repo, &connection_id, provider_type, factory.as_ref()).await;
 
-    match &result {
+    match result {
         Ok(outcome) => {
             tracing::info!(
                 connection_id = %connection_id,
@@ -91,6 +119,43 @@ pub async fn run_scan(
                 outcome = ?outcome,
                 "scan finished"
             );
+
+            // Reconcile runs only on the Completed outcome — Cancelled is
+            // a partial pass and must never count as evidence of absence.
+            let report = match &outcome {
+                ScanOutcome::Completed {
+                    seen_video_keys,
+                    seen_file_keys,
+                    ..
+                } => reconcile_after_scan(
+                    &repo,
+                    &connection_id,
+                    seen_video_keys,
+                    seen_file_keys,
+                    prune_policy,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    // A reconcile failure degrades to no-prune — the scan
+                    // itself succeeded and the catalog stays intact.
+                    tracing::warn!(
+                        connection_id = %connection_id,
+                        error = %e,
+                        "reconcile skipped after error"
+                    );
+                    ReconcileReport {
+                        pruned_video_ids: Vec::new(),
+                        files_pruned: 0,
+                        warning: None,
+                    }
+                }),
+                ScanOutcome::Cancelled { .. } => ReconcileReport {
+                    pruned_video_ids: Vec::new(),
+                    files_pruned: 0,
+                    warning: None,
+                },
+            };
+
             let _ = repo
                 .upsert_scan_state(&ScanState {
                     connection_id: connection_id.clone(),
@@ -98,12 +163,13 @@ pub async fn run_scan(
                     cursor: None,
                     started_at: Some(now),
                     completed_at: Some(iso_now()),
-                    error_message: None,
+                    error_message: report.warning.clone(),
                     videos_found: outcome.videos_found(),
-                    videos_pruned: 0,
-                    files_pruned: 0,
+                    videos_pruned: report.pruned_video_ids.len() as i64,
+                    files_pruned: report.files_pruned as i64,
                 })
                 .await;
+            report.pruned_video_ids
         }
         Err(e) => {
             tracing::error!(
@@ -124,8 +190,101 @@ pub async fn run_scan(
                     files_pruned: 0,
                 })
                 .await;
+            Vec::new()
         }
     }
+}
+
+/// Reconcile the catalog with a completed listing: tombstone rows the
+/// provider omitted, prune rows past their grace, report what happened.
+///
+/// Guards (spec §2): pruning only happens for a policy with an effective
+/// grace, and an empty listing on a populated catalog aborts with a
+/// warning — the classic auth-scope / wrong-bucket regression protector.
+async fn reconcile_after_scan(
+    repo: &CatalogRepository,
+    connection_id: &str,
+    seen_video_keys: &std::collections::HashSet<String>,
+    seen_file_keys: &std::collections::HashSet<String>,
+    policy: PrunePolicy,
+) -> Result<ReconcileReport, String> {
+    let no_op = || ReconcileReport {
+        pruned_video_ids: Vec::new(),
+        files_pruned: 0,
+        warning: None,
+    };
+
+    let Some(grace) = policy.effective_grace_scans else {
+        return Ok(no_op());
+    };
+
+    // GOTCHA: a "successful" zero-item listing against a catalog that has
+    // rows is far more likely a scope/wrong-bucket regression than a
+    // simultaneous deletion of everything — refuse to treat it as evidence,
+    // or one bad listing would zero the library in a single grace cycle.
+    if seen_video_keys.is_empty() && seen_file_keys.is_empty() {
+        let video_rows = repo
+            .video_count_by_connection(connection_id)
+            .await
+            .map_err(|e| format!("prune guard count failed: {e}"))?;
+        let file_rows = repo
+            .file_count_by_connection(connection_id)
+            .await
+            .map_err(|e| format!("prune guard count failed: {e}"))?;
+        if video_rows > 0 || file_rows > 0 {
+            tracing::warn!(
+                connection_id = connection_id,
+                video_rows,
+                file_rows,
+                "empty listing on populated catalog — skipping prune"
+            );
+            return Ok(ReconcileReport {
+                warning: Some(format!(
+                    "empty listing: scan completed with 0 items while the catalog holds \
+                     {video_rows} videos and {file_rows} files; prune skipped as a \
+                     safeguard (possible wrong bucket or lost auth scope)"
+                )),
+                ..no_op()
+            });
+        }
+    }
+
+    let now = iso_now();
+    let seen_videos: Vec<String> = seen_video_keys.iter().cloned().collect();
+    let seen_files: Vec<String> = seen_file_keys.iter().cloned().collect();
+
+    let stamped_videos = repo
+        .stamp_missing_videos(connection_id, &seen_videos, &now)
+        .await
+        .map_err(|e| format!("stamp missing videos failed: {e}"))?;
+    let stamped_files = repo
+        .stamp_missing_files(connection_id, &seen_files, &now)
+        .await
+        .map_err(|e| format!("stamp missing files failed: {e}"))?;
+
+    let pruned_video_ids = repo
+        .prune_missing_videos(connection_id, grace)
+        .await
+        .map_err(|e| format!("prune missing videos failed: {e}"))?;
+    let files_pruned = repo
+        .prune_missing_files(connection_id, grace)
+        .await
+        .map_err(|e| format!("prune missing files failed: {e}"))?;
+
+    tracing::info!(
+        connection_id = connection_id,
+        stamped_videos,
+        stamped_files,
+        videos_pruned = pruned_video_ids.len(),
+        files_pruned,
+        "catalog reconcile complete"
+    );
+
+    Ok(ReconcileReport {
+        pruned_video_ids,
+        files_pruned,
+        warning: None,
+    })
 }
 
 async fn run_scan_inner(
@@ -776,6 +935,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -817,6 +977,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -869,6 +1030,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -927,6 +1089,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             factory(),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -938,6 +1101,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             factory(),
+            PrunePolicy::OFF,
         )
         .await;
         assert_eq!(
@@ -1000,6 +1164,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -1044,6 +1209,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(FailingFactory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -1080,6 +1246,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -1135,6 +1302,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -1261,6 +1429,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
@@ -1547,12 +1716,601 @@ mod tests {
                 conn_id: conn_id.clone(),
                 page_sent: Arc::new(AtomicBool::new(false)),
             }),
+            PrunePolicy::OFF,
         )
         .await;
 
         let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
         assert_eq!(scan.status, ScanStatus::Idle);
         assert_eq!(scan.videos_found, 1, "partial count stays recorded");
+    }
+
+    // ── Catalog prune: wiring + guards (task 005) ──────────────────────
+
+    const GRACE_2: PrunePolicy = PrunePolicy {
+        effective_grace_scans: Some(2),
+    };
+
+    async fn scan_video_tombstone(
+        repo: &CatalogRepository,
+        conn: &str,
+        file_id: &str,
+    ) -> (Option<String>, i64) {
+        sqlx::query_as(
+            "SELECT missing_since, missing_scan_count FROM videos \
+             WHERE connection_id = ? AND provider_file_id = ?",
+        )
+        .bind(conn)
+        .bind(file_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn prune_fires_after_two_completed_misses_not_one() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Scan 1: both videos present.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 2);
+
+        // Scan 2: provider deleted v2 — first miss tombstones, row survives.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1"], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 2);
+        let (_, count) = scan_video_tombstone(&repo, &conn_id, "v2").await;
+        assert_eq!(count, 1, "first miss tombstones only");
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_pruned, 0);
+
+        // Scan 3: still missing — confirmed, pruned.
+        let pruned = run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1"], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 1);
+        assert_eq!(pruned.len(), 1, "pruned video id returned for disk cleanup");
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_pruned, 1);
+        assert_eq!(scan.files_pruned, 0);
+        assert!(scan.error_message.is_none());
+    }
+
+    #[tokio::test]
+    async fn reappearance_between_misses_resets_the_tombstone() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &[])),
+            GRACE_2,
+        )
+        .await;
+        // One flaky miss (v2 absent)…
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1"], &[])),
+            GRACE_2,
+        )
+        .await;
+        // …then the provider lists it again — upsert resets the counter.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(
+            scan_video_tombstone(&repo, &conn_id, "v2").await,
+            (None, 0),
+            "reappearance self-heals the tombstone"
+        );
+
+        // The next single miss must NOT prune — grace restarted.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1"], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn cancelled_scan_never_stamps_or_prunes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Seed two videos via a completed scan, then reconnect-cycle the
+        // connection id? Simpler: upsert directly.
+        let conn2 = conn_id.clone();
+        let repo2 = repo.clone();
+        for key in ["v1", "v2"] {
+            let nv = NewVideo::from_discovered(&discovered(key, &format!("{key}.mp4"), 5000));
+            repo2
+                .upsert_video(&conn2, Provider::GoogleDrive, &nv)
+                .await
+                .unwrap();
+        }
+
+        struct DisconnectingProvider {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for DisconnectingProvider {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+                if !self.page_sent.swap(true, Ordering::SeqCst) {
+                    let _ = self.repo.disconnect(&self.conn_id).await;
+                    // Page lists only v1 and promises more — the next
+                    // active-check breaks the walk (Cancelled).
+                    Ok(ListPage {
+                        videos: vec![discovered("v1", "v1.mp4", 5000)],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: Some("page2".into()),
+                    })
+                } else {
+                    Ok(ListPage {
+                        videos: vec![],
+                        subtitles: vec![],
+                        files: vec![],
+                        next_cursor: None,
+                    })
+                }
+            }
+
+            async fn fetch_prefix_hash(
+                &self,
+                _file_id: &str,
+                _size: i64,
+            ) -> ProviderResult<Option<String>> {
+                Ok(None)
+            }
+
+            async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+
+            async fn open_stream(
+                &self,
+                _file_id: &str,
+                _range: Option<&str>,
+            ) -> ProviderResult<StreamResponse> {
+                Err(ProviderError::Other("not supported".into()))
+            }
+        }
+
+        struct DisconnectingFactory {
+            repo: CatalogRepository,
+            conn_id: String,
+            page_sent: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for DisconnectingFactory {
+            fn name(&self) -> &'static str {
+                "disconnecting"
+            }
+
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
+            }
+
+            async fn create(
+                &self,
+                _: &Credential,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Ok(Box::new(DisconnectingProvider {
+                    repo: self.repo.clone(),
+                    conn_id: self.conn_id.clone(),
+                    page_sent: self.page_sent.clone(),
+                }))
+            }
+        }
+
+        let pruned = run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(DisconnectingFactory {
+                repo: repo.clone(),
+                conn_id: conn_id.clone(),
+                page_sent: Arc::new(AtomicBool::new(false)),
+            }),
+            GRACE_2,
+        )
+        .await;
+        assert!(pruned.is_empty());
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            2,
+            "cancelled partial pass loses nothing"
+        );
+        assert_eq!(
+            scan_video_tombstone(&repo, &conn_id, "v2").await,
+            (None, 0),
+            "cancelled pass stamps nothing"
+        );
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_pruned, 0);
+    }
+
+    #[tokio::test]
+    async fn scan_error_never_stamps_or_prunes() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        for key in ["v1", "v2"] {
+            let nv = NewVideo::from_discovered(&discovered(key, &format!("{key}.mp4"), 5000));
+            repo.upsert_video(&conn_id, Provider::GoogleDrive, &nv)
+                .await
+                .unwrap();
+        }
+
+        struct FailingFactory;
+
+        #[async_trait::async_trait]
+        impl ProviderFactory for FailingFactory {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+
+            fn connect_flow(&self) -> crate::provider::ConnectFlow {
+                crate::provider::ConnectFlow::OAuth(Box::new(NoopFlow {
+                    refresh_count: Arc::new(AtomicU32::new(0)),
+                }))
+            }
+
+            async fn create(
+                &self,
+                _: &Credential,
+            ) -> ProviderResult<Box<dyn crate::provider::Provider>> {
+                Err(ProviderError::Other("factory failed".into()))
+            }
+        }
+
+        let pruned = run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(FailingFactory),
+            GRACE_2,
+        )
+        .await;
+        assert!(pruned.is_empty());
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 2);
+        assert_eq!(
+            scan_video_tombstone(&repo, &conn_id, "v2").await,
+            (None, 0),
+            "failed scan stamps nothing"
+        );
+    }
+
+    /// GOTCHA: the empty-result guard is the classic protection against
+    /// auth-scope regressions and wrong-bucket listings — a "successful"
+    /// zero-item listing on a populated catalog would otherwise zero the
+    /// library in one grace cycle.
+    #[tokio::test]
+    async fn empty_listing_on_populated_catalog_warns_and_skips() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &["doc-1"])),
+            GRACE_2,
+        )
+        .await;
+
+        // "Completed" but empty listing on a populated catalog.
+        let pruned = run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&[], &[])),
+            GRACE_2,
+        )
+        .await;
+        assert!(pruned.is_empty());
+        assert_eq!(
+            repo.video_count_by_connection(&conn_id).await.unwrap(),
+            2,
+            "empty listing must not prune"
+        );
+        assert_eq!(
+            scan_video_tombstone(&repo, &conn_id, "v1").await,
+            (None, 0),
+            "empty listing must not stamp"
+        );
+
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(
+            scan.status,
+            ScanStatus::Idle,
+            "listing succeeded — warn, not error"
+        );
+        assert_eq!(scan.videos_pruned, 0);
+        let warning = scan.error_message.expect("warning recorded");
+        assert!(
+            warning.to_lowercase().contains("empty"),
+            "warning = {warning}"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_mode_is_byte_identical_to_pre_prune_behavior() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &["doc-1"])),
+            PrunePolicy::OFF,
+        )
+        .await;
+
+        // Repeated omitting listings with pruning off: rows survive,
+        // nothing stamped, counters zero.
+        for _ in 0..3 {
+            run_scan(
+                repo.clone(),
+                conn_id.clone(),
+                Provider::GoogleDrive,
+                Box::new(single_page_factory(&[], &[])),
+                PrunePolicy::OFF,
+            )
+            .await;
+        }
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 2);
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 1);
+        assert_eq!(
+            scan_video_tombstone(&repo, &conn_id, "v1").await,
+            (None, 0),
+            "off mode never stamps"
+        );
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_pruned, 0);
+        assert_eq!(scan.files_pruned, 0);
+        assert!(
+            scan.error_message.is_none(),
+            "off mode skips the empty-result warning too"
+        );
+    }
+
+    #[tokio::test]
+    async fn files_prune_with_grace_in_scan_flow() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1"], &["doc-1", "doc-2"])),
+            GRACE_2,
+        )
+        .await;
+
+        // doc-2 deleted at provider: video still listed, so the
+        // empty-result guard does not apply — only the file goes missing.
+        for expected in [0, 1] {
+            let _ = run_scan(
+                repo.clone(),
+                conn_id.clone(),
+                Provider::GoogleDrive,
+                Box::new(single_page_factory(&["v1"], &["doc-1"])),
+                GRACE_2,
+            )
+            .await;
+            let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+            assert_eq!(scan.files_pruned, expected, "grace applies to files too");
+        }
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 1);
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn demoted_video_row_is_not_double_pruned() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        // Pre-classification: f9 cataloged as a video.
+        let stale = NewVideo::from_discovered(&discovered("f9", "main.ts", 100));
+        repo.upsert_video(&conn_id, Provider::GoogleDrive, &stale)
+            .await
+            .unwrap();
+
+        // Scan reclassifies f9 as a file: demote deletes the video row,
+        // the file row replaces it, and the new file row is seen so prune
+        // never touches it.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&[], &["f9"])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 0);
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 1);
+
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(
+            scan.videos_pruned, 0,
+            "demote is not a prune — no disk-cleanup ids for it"
+        );
+
+        // And the file row survives subsequent scans that keep seeing it.
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&[], &["f9"])),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.file_count_by_connection(&conn_id).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn pruned_video_takes_server_side_history_with_it() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        sqlx::query(
+            "INSERT INTO owners (id, created_at) VALUES ('owner-x', '2026-01-01T00:00:00Z')",
+        )
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &[])),
+            GRACE_2,
+        )
+        .await;
+        let vid2: String = sqlx::query_scalar(
+            "SELECT id FROM videos WHERE connection_id = ? AND provider_file_id = 'v2'",
+        )
+        .bind(&conn_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO video_favorites (owner_id, video_id, created_at) VALUES ('owner-x', ?, '2026-01-01T00:00:00Z')")
+            .bind(&vid2).execute(repo.pool()).await.unwrap();
+        sqlx::query("INSERT INTO playback_progress (owner_id, video_id, position_seconds, updated_at) VALUES ('owner-x', ?, 60.0, '2026-01-01T00:00:00Z')")
+            .bind(&vid2).execute(repo.pool()).await.unwrap();
+
+        for _ in 0..2 {
+            run_scan(
+                repo.clone(),
+                conn_id.clone(),
+                Provider::GoogleDrive,
+                Box::new(single_page_factory(&["v1"], &[])),
+                GRACE_2,
+            )
+            .await;
+        }
+
+        for (table, label) in [
+            ("video_favorites", "favorite"),
+            ("playback_progress", "progress"),
+        ] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+            assert_eq!(n, 0, "{label} cascades away with the pruned video");
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_identical_scans_converge_without_flapping() {
+        let pool = fresh_pool().await;
+        let repo = CatalogRepository::new(pool, test_key());
+        let conn_id = setup_connection(&repo).await;
+
+        let listing = || Box::new(single_page_factory(&["v1"], &[])) as Box<dyn ProviderFactory>;
+
+        // Seed v1 + v2, then two omitting scans prune v2 (grace 2)…
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            Box::new(single_page_factory(&["v1", "v2"], &[])),
+            GRACE_2,
+        )
+        .await;
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            listing(),
+            GRACE_2,
+        )
+        .await;
+        run_scan(
+            repo.clone(),
+            conn_id.clone(),
+            Provider::GoogleDrive,
+            listing(),
+            GRACE_2,
+        )
+        .await;
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 1);
+
+        // …further identical scans must be no-ops: v1 never flaps,
+        // videos_pruned settles at 0.
+        for _ in 0..2 {
+            let pruned = run_scan(
+                repo.clone(),
+                conn_id.clone(),
+                Provider::GoogleDrive,
+                listing(),
+                GRACE_2,
+            )
+            .await;
+            assert!(pruned.is_empty(), "converged scans prune nothing");
+        }
+        assert_eq!(repo.video_count_by_connection(&conn_id).await.unwrap(), 1);
+        let scan = repo.fetch_scan_state(&conn_id).await.unwrap().unwrap();
+        assert_eq!(scan.videos_pruned, 0);
     }
 
     #[tokio::test]
@@ -1603,6 +2361,7 @@ mod tests {
             conn_id.clone(),
             Provider::GoogleDrive,
             Box::new(factory),
+            PrunePolicy::OFF,
         )
         .await;
 
