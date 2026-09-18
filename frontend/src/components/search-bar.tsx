@@ -43,9 +43,9 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
           value={value}
           onChange={(e) => onChange(e.target.value)}
           aria-label="Search videos"
-          placeholder={"Search videos\u2026"}
+          placeholder={"Search your library — titles, folders, subtitles\u2026"}
           title="Press / to focus"
-          className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-transparent py-2 pl-10 pr-9 text-sm transition placeholder:opacity-40 focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]"
+          className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-sunken)] py-2 pl-10 pr-9 text-[13px] text-[var(--color-castify-text)] transition placeholder:text-[var(--color-castify-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]"
         />
 
         {/* Clear button */}

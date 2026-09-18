@@ -33,11 +33,7 @@ import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { SharesSection } from "./shares-list";
-import {
-  jsonResponse,
-  jsonError,
-  renderWithProviders,
-} from "../test/utils";
+import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 import { setCsrfToken } from "../api/client";
 import type { ShareDto } from "../api/shares";
 import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
@@ -75,8 +71,7 @@ const ORIGINAL_EXEC_COMMAND = document.execCommand;
 
 function stubExecCommand(returns: boolean): ReturnType<typeof vi.fn> {
   const execCommand = vi.fn().mockReturnValue(returns);
-  document.execCommand =
-    execCommand as unknown as typeof document.execCommand;
+  document.execCommand = execCommand as unknown as typeof document.execCommand;
   return execCommand;
 }
 
@@ -128,17 +123,16 @@ function sharesFetch(shares: unknown) {
   return (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = init?.method ?? "GET";
-    if (url === "/api/shares" && method === "GET")
-      return jsonResponse(shares);
+    if (url === "/api/shares" && method === "GET") return jsonResponse(shares);
     if (url.startsWith("/api/shares/") && method === "DELETE")
       return new Response(null, { status: 204 });
     return jsonError(404, `unmocked ${method} ${url}`);
   };
 }
 
-function countShareListCalls(
-  fetchSpy: { mock: { calls: [unknown, RequestInit?][] } },
-): number {
+function countShareListCalls(fetchSpy: {
+  mock: { calls: [unknown, RequestInit?][] };
+}): number {
   return fetchSpy.mock.calls.filter(([input, init]) => {
     const url = String(input);
     return url === "/api/shares" && (init?.method ?? "GET") === "GET";
@@ -174,9 +168,7 @@ describe("SharesSection", () => {
     expect(nameCells).toEqual(["Trip footage", "Wedding cut", "Old share"]);
 
     // Single GET on mount, no polling.
-    await waitFor(() =>
-      expect(countShareListCalls(fetchSpy)).toBe(1),
-    );
+    await waitFor(() => expect(countShareListCalls(fetchSpy)).toBe(1));
   });
 
   it("mounts with the Active chip applied — past shares invisible until asked for", async () => {
@@ -185,9 +177,10 @@ describe("SharesSection", () => {
     });
 
     await screen.findByText("Trip footage");
-    expect(
-      screen.getByRole("button", { name: /^active/i }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /^active/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByRole("button", { name: /^all/i })).toHaveAttribute(
       "aria-pressed",
       "false",
@@ -241,14 +234,20 @@ describe("SharesSection", () => {
     });
 
     await screen.findByText("Trip footage");
-    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
-      target: { value: "share" },
-    });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: /search shares/i }),
+      {
+        target: { value: "share" },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: /^expired/i }));
     fireEvent.click(screen.getByRole("button", { name: /^all/i }));
-    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
-      target: { value: "" },
-    });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: /search shares/i }),
+      {
+        target: { value: "" },
+      },
+    );
     fireEvent.click(screen.getByRole("button", { name: /^active/i }));
 
     expect(await screen.findByText("Trip footage")).toBeInTheDocument();
@@ -280,9 +279,12 @@ describe("SharesSection", () => {
     expect(screen.getByRole("button", { name: "All 4" })).toBeInTheDocument();
 
     // "share" matches only the two past shares — counts follow the query.
-    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
-      target: { value: "share" },
-    });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: /search shares/i }),
+      {
+        target: { value: "share" },
+      },
+    );
     expect(
       screen.getByRole("button", { name: "Active 0" }),
     ).toBeInTheDocument();
@@ -295,9 +297,12 @@ describe("SharesSection", () => {
     });
 
     await screen.findByText("Trip footage");
-    fireEvent.change(screen.getByRole("searchbox", { name: /search shares/i }), {
-      target: { value: "nonexistent" },
-    });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: /search shares/i }),
+      {
+        target: { value: "nonexistent" },
+      },
+    );
 
     // Filter-excluded, not share-less — a distinct empty state, and the
     // controls stay up so the filter can be cleared.
@@ -322,8 +327,9 @@ describe("SharesSection", () => {
         const url = String(input);
         const method = init?.method ?? "GET";
         if (url === "/api/shares" && method === "GET") {
-          return fetchSpy.mock.calls.filter(([u]) => String(u) === "/api/shares")
-            .length <= 1
+          return fetchSpy.mock.calls.filter(
+            ([u]) => String(u) === "/api/shares",
+          ).length <= 1
             ? jsonError(500, "boom")
             : jsonResponse([ACTIVE]);
         }
@@ -331,7 +337,9 @@ describe("SharesSection", () => {
       },
     });
 
-    expect(await screen.findByText(/couldn't load shares/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/couldn't load shares/i),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 
     expect(await screen.findByText("Trip footage")).toBeInTheDocument();
@@ -370,9 +378,7 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE]),
     });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: /copy link/i }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /copy link/i }));
 
     expect(execCommand).toHaveBeenCalledWith("copy");
     expect(
@@ -390,13 +396,9 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE]),
     });
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: /copy link/i }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /copy link/i }));
 
-    expect(
-      await screen.findByText(/couldn't copy/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/couldn't copy/i)).toBeInTheDocument();
     restoreExecCommand();
   });
 
@@ -409,9 +411,9 @@ describe("SharesSection", () => {
 
     await screen.findByText("Wedding cut");
     // Exactly one copy button — for the locally-created share.
-    expect(
-      screen.getAllByRole("button", { name: /copy link/i }),
-    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /copy link/i })).toHaveLength(
+      1,
+    );
     expect(screen.getByText("Wedding cut")).toBeInTheDocument();
   });
 
@@ -443,9 +445,7 @@ describe("SharesSection", () => {
     // under the default Active chip it would (correctly) vanish instead.
     fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: /copy link/i }),
-    ); // ensure the row rendered with a link
+    fireEvent.click(await screen.findByRole("button", { name: /copy link/i })); // ensure the row rendered with a link
     fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
 
     expect(confirmSpy).toHaveBeenCalled();
@@ -470,9 +470,7 @@ describe("SharesSection", () => {
       screen.queryByRole("button", { name: /copy link/i }),
     ).not.toBeInTheDocument();
     // The dead link is dropped from the local store.
-    await waitFor(() =>
-      expect(deleteShareLink).toHaveBeenCalledWith("s1"),
-    );
+    await waitFor(() => expect(deleteShareLink).toHaveBeenCalledWith("s1"));
 
     confirmSpy.mockRestore();
   });
@@ -483,9 +481,7 @@ describe("SharesSection", () => {
     });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: /^revoke$/i }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: /^revoke$/i }));
 
     expect(confirmSpy).toHaveBeenCalled();
     expect(
@@ -521,7 +517,9 @@ describe("SharesSection", () => {
 
     expect(await screen.findByRole("table")).toBeInTheDocument();
     for (const column of ["Name", "Items", "Created", "Expires", "Status"]) {
-      expect(screen.getByRole("columnheader", { name: column })).toBeInTheDocument();
+      expect(
+        screen.getByRole("columnheader", { name: column }),
+      ).toBeInTheDocument();
     }
   });
 
@@ -556,19 +554,19 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE]),
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /purge share/i }),
+    );
     const dialog = screen.getByRole("dialog", { name: /purge/i });
     // The confirmation names the share (in the heading)…
     expect(
       within(dialog).getByText(/Purge "Trip footage"/),
     ).toBeInTheDocument();
-    expect(
-      within(dialog).getByText(/cannot be undone/i),
-    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/cannot be undone/i)).toBeInTheDocument();
     // The confirm action carries the same verb as the row button.
     expect(
       within(dialog).getByRole("button", { name: /purge share/i }),
-    ).toHaveClass("border-[var(--color-danger)]");
+    ).toHaveClass("bg-[var(--color-danger-subtle)]");
   });
 
   it("purge: cancelling deletes nothing", async () => {
@@ -576,7 +574,9 @@ describe("SharesSection", () => {
       fetchImplementation: sharesFetch([ACTIVE]),
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /purge share/i }),
+    );
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: "Cancel",
@@ -614,7 +614,9 @@ describe("SharesSection", () => {
       },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /purge share/i }),
+    );
     // The confirm action carries the identical verb (FR-5.3 audit).
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
@@ -642,9 +644,7 @@ describe("SharesSection", () => {
       expect(screen.queryByText("Trip footage")).not.toBeInTheDocument(),
     );
     // The dead link is dropped from the local store.
-    await waitFor(() =>
-      expect(deleteShareLink).toHaveBeenCalledWith("s1"),
-    );
+    await waitFor(() => expect(deleteShareLink).toHaveBeenCalledWith("s1"));
   });
 
   it("disables the purge while it is in flight", async () => {
@@ -664,7 +664,9 @@ describe("SharesSection", () => {
       },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /purge share/i }),
+    );
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: /purge share/i,
@@ -695,7 +697,9 @@ describe("SharesSection", () => {
       },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /purge share/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /purge share/i }),
+    );
     fireEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
         name: /purge share/i,
@@ -705,7 +709,9 @@ describe("SharesSection", () => {
     // The failure surfaces inside the dialog, and the row (and dialog) stay
     // for a retry.
     const dialog = screen.getByRole("dialog");
-    expect(await within(dialog).findByText(/purge failed/i)).toBeInTheDocument();
+    expect(
+      await within(dialog).findByText(/purge failed/i),
+    ).toBeInTheDocument();
     expect(screen.getByText("Trip footage")).toBeInTheDocument();
   });
 
@@ -717,9 +723,7 @@ describe("SharesSection", () => {
     // All rows visible so this tests the status gating, not the filter.
     fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
 
-    expect(
-      screen.getAllByRole("link", { name: /manage/i }),
-    ).toHaveLength(1);
+    expect(screen.getAllByRole("link", { name: /manage/i })).toHaveLength(1);
     // The link targets the share's detail route (share-manage-page 003).
     expect(screen.getByRole("link", { name: /manage/i })).toHaveAttribute(
       "href",
@@ -731,10 +735,7 @@ describe("SharesSection", () => {
     renderWithProviders(
       <Routes>
         <Route path="/settings" element={<SharesSection />} />
-        <Route
-          path="/settings/shares/:id"
-          element={<p>manage page probe</p>}
-        />
+        <Route path="/settings/shares/:id" element={<p>manage page probe</p>} />
       </Routes>,
       {
         initialEntries: ["/settings"],

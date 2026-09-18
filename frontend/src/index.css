@@ -1,98 +1,74 @@
 @import "tailwindcss";
 
-/* Castify design tokens — Classical edition (app-redesign D5).
-   Source of truth: demo/ (the "Classical" system — demo/readme.md,
-   demo/styles.css, demo/theme.json). Editorial serif (Cormorant Garamond
-   headings over Lora body), paper-light default ground, gold accent applied
-   as stroke rather than fill, hairline rules, whisper elevation. The dark
-   theme is re-derived from the same ramps (the demo's colophon near-black,
-   per its watch page) so the existing toggle keeps working.
+/* Castify design tokens — "Console" edition.
+   Source of truth: castify-design.html (the app-frame spec): Spline Sans
+   for voice, IBM Plex Mono for data, cool-gray grounds with a single amber
+   accent, teal/red status pairings, 6/10/16px radii, one soft shadow.
 
-   AA notes the demo doesn't give us for free:
-   - The raw gold (#b68235) is ~3.0:1 on paper — enough for borders, rules,
-     and chrome, NOT for body-size text. Accent-text uses the deeper
-     ramp step via --color-castify-accent-strong (light: accent-700,
-     dark: accent-300), per the demo readme's own guidance.
-   - Focus on light uses accent-600 (#a06f24) so the ring clears the 3:1
-     UI floor on the darkest ground (#eae9e9), not just the canvas.
-   - Muted text is a 70% ink mix (demo labels), not the demo's 55%
-     .text-muted, to hold 4.5:1.
+   Ground roles (four, per the design's frame interior):
+   - canvas   the page behind everything            (--bg)
+   - surface  panels: topbar, cards, dialogs        (--bg-panel)
+   - raised   floaters: menus, tooltips, toasts     (--bg-elevated)
+   - sunken   wells: sidebar, inputs, thumbnails    (--bg-sunken)
+
+   AA notes the design doesn't give us for free:
+   - The raw amber (#b9750f) is ~3.7:1 on white — enough for borders,
+     icons, and fills, NOT for body-size text. Accent text uses the
+     deepened step via --color-castify-accent-strong (light #7e5207,
+     dark = the raw amber). Soft-fill chips pair strong-on-subtle.
+   - Status hues are nudged from the design's raw teal/red where the raw
+     value missed 4.5:1 on a ground (teal #0c7469, red #ae3c29 in light).
    src/index.test.ts recomputes every gated ratio below — an edit that
    drops a token below AA fails the suite. */
 
 @theme {
-  /* Type — Fontsource variable packages imported in main.tsx. Cormorant
-     Garamond is the heading voice (semibold is the interface ceiling);
-     Lora is the body voice; Spline Sans Mono stays the data voice
-     (tabular figures, paths, counts). */
-  --font-sans: "Lora Variable", Georgia, "Times New Roman", serif;
-  --font-display: "Cormorant Garamond Variable", Georgia, "Times New Roman", serif;
-  --font-mono: "Spline Sans Mono Variable", ui-monospace, monospace;
+  /* Type — Fontsource packages imported in main.tsx. Spline Sans is both
+     the interface and the heading voice (600 is the ceiling); IBM Plex
+     Mono is the data voice (counts, paths, timestamps). */
+  --font-sans: "Spline Sans Variable", system-ui, sans-serif;
+  --font-display: "Spline Sans Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  /* Signal — mono gold scheme (demo theme.json: scheme "mono"). The
-     -strong step is the AA text pairing; the raw accent is for strokes,
-     chrome, and large marks only. */
-  --color-castify-accent: #b68235;
-  --color-castify-accent-dim: #7d5411;
-  --color-castify-accent-strong: #7d5411;
-  --color-castify-accent-subtle: #b6823526;
+  /* Signal — amber scheme. The -strong step is the AA text pairing; the
+     raw accent is for borders, fills, and large marks only. */
+  --color-castify-accent: #b9750f;
+  --color-castify-accent-dim: #7e5207;
+  --color-castify-accent-strong: #7e5207;
+  --color-castify-accent-subtle: #f3e3cb;
 
-  /* Classical tonal ramps (demo styles.css, OKLCH-shared lightness scale).
-     Same step of any ramp matches the others in visual value; light steps
-     (100–300) tint, 500 is the role base, 700–900 carry text on tints and
-     pressed states. */
-  --color-castify-neutral-100: #f8f4f4;
-  --color-castify-neutral-200: #eae7e7;
-  --color-castify-neutral-300: #d7d3d3;
-  --color-castify-neutral-400: #bab6b6;
-  --color-castify-neutral-500: #9b9797;
-  --color-castify-neutral-600: #7d7979;
-  --color-castify-neutral-700: #605d5d;
-  --color-castify-neutral-800: #444141;
-  --color-castify-neutral-900: #2d2b2b;
-  --color-castify-accent-100: #fff3e4;
-  --color-castify-accent-200: #ffe3bf;
-  --color-castify-accent-300: #facb8d;
-  --color-castify-accent-400: #e1ad66;
-  --color-castify-accent-500: #c28d41;
-  --color-castify-accent-600: #a06f24;
-  --color-castify-accent-700: #7d5411;
-  --color-castify-accent-800: #5a3b0a;
-  --color-castify-accent-900: #3a270d;
+  /* Geometry — the design's 6/10/16 set. Controls take 6, cards/panels
+     10, the mobile drawer (and top-elevation surfaces) 16; pills are
+     fully round, as the design's chips and status pills are. */
+  --radius-card: 10px;
+  --radius-button: 6px;
+  --radius-pill: 999px;
+  --radius-drawer: 16px;
 
-  /* Geometry — Classical's 2/4/7 set. Cards and controls share the 4px
-     step; the drawer (and top-elevation panels) take 7px; the pill is the
-     tag's 3px (0.75× of 4). */
-  --radius-card: 4px;
-  --radius-button: 4px;
-  --radius-pill: 3px;
-  --radius-drawer: 7px;
-
-  /* Elevation — whispers tuned to the paper ground (ink-tinted), per the
-     demo. Heavy drops are off-system. */
-  --shadow-sm: 0 1px 2px rgb(45 43 43 / 14%);
-  --shadow-md: 0 3px 10px rgb(45 43 43 / 16%);
-  --shadow-lg: 0 12px 32px rgb(45 43 43 / 22%);
+  /* Elevation — the design's one shadow, at three strengths (cool-black
+     tinted). Heavy drops are off-system. */
+  --shadow-sm: 0 1px 2px rgb(20 23 28 / 6%);
+  --shadow-md: 0 1px 2px rgb(20 23 28 / 6%), 0 8px 24px rgb(20 23 28 / 6%);
+  --shadow-lg: 0 1px 2px rgb(20 23 28 / 8%), 0 12px 32px rgb(20 23 28 / 12%);
 
   /* Themeable surface tokens — defaults match the light theme, which is
-     the no-preference default (paper-first per D5). Dark values live in
-     the dark block below and override these via the cascade. */
-  --color-castify-canvas: #f3f2f2;
-  --color-castify-surface: #eae9e9;
-  --color-castify-surface-raised: #f8f4f4;
-  --color-castify-text: #201f1d;
-  --color-castify-muted: color-mix(in srgb, #201f1d 70%, #f3f2f2);
-  --color-castify-rule: color-mix(in srgb, #201f1d 16%, transparent);
-  /* Neutral washes for outlined/ghost hovers (demo: text-tint, not
-     gold-tint, on non-primary chrome). */
-  --color-castify-hover: color-mix(in srgb, #201f1d 7%, transparent);
-  --color-castify-press: color-mix(in srgb, #201f1d 14%, transparent);
-  --color-castify-accent-press: color-mix(in srgb, #b68235 22%, transparent);
+     the no-preference default. Dark values live in the dark block below
+     and override these via the cascade. */
+  --color-castify-canvas: #f1f2f4;
+  --color-castify-surface: #ffffff;
+  --color-castify-surface-raised: #ffffff;
+  --color-castify-sunken: #e7e9ec;
+  --color-castify-text: #14171c;
+  --color-castify-muted: #5a616d;
+  --color-castify-rule: #dadee3;
+  /* Neutral washes for outlined/ghost hovers. */
+  --color-castify-hover: color-mix(in srgb, #14171c 5%, transparent);
+  --color-castify-press: color-mix(in srgb, #14171c 10%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #b9750f 22%, transparent);
 
   /* Kind taxonomy — small-area hues (kind tabs, glyphs) at low chroma,
      never large fills. Video keeps the accent; `other` is muted by
      design. Defaults are light-theme values; the dark block lifts
-     luminance per kind where the colophon ground demands AA. */
+     luminance per kind where the dark ground demands AA. */
   --color-kind-audio: oklch(48% 0.13 300);
   --color-kind-image: oklch(45% 0.09 200);
   --color-kind-document: oklch(48% 0.05 250);
@@ -101,46 +77,43 @@
   --color-kind-other: oklch(51% 0.02 240);
 
   /* Semantic — status hues for text, icons, and small-area fills; the
-     `-subtle` variants are their soft-fill pair. Danger is the only red:
-     destructive actions and errors. Verified at WCAG 2.2 AA text contrast
+     `-subtle` variants are their soft-fill pair (the design's
+     teal-soft / red-soft pills). Verified at WCAG 2.2 AA text contrast
      (4.5:1) on canvas/surface/raised in BOTH themes; focus shown at its
      3:1 UI floor (non-text contrast). Ratios computed from the values
      below — src/index.test.ts recomputes them, so an edit that drops a
      token below AA fails the suite.
 
      token     light: canvas/surface/raised        dark: canvas/surface/raised
-     success    6.05:1 / 5.58:1 / 6.19:1           8.15:1 / 7.43:1 / 6.41:1
-     warning    6.15:1 / 5.67:1 / 6.29:1           9.48:1 / 8.64:1 / 7.46:1
-     danger     6.97:1 / 6.42:1 / 7.13:1           6.28:1 / 5.73:1 / 4.94:1
-     info       7.24:1 / 6.68:1 / 7.41:1           7.53:1 / 6.86:1 / 5.92:1
-     focus      3.92:1 / 3.62:1 / 4.01:1 (UI ≥3:1) 10.29:1 / 9.38:1 / 8.09:1
-     on-accent vs accent fill: light 4.89:1, dark 7.62:1 */
-  --color-success: oklch(46% 0.11 152);
-  --color-success-subtle: oklch(46% 0.11 152 / 12%);
-  --color-warning: oklch(47% 0.11 85);
-  --color-warning-subtle: oklch(47% 0.11 85 / 12%);
-  --color-danger: oklch(46% 0.17 27);
-  --color-danger-subtle: oklch(46% 0.17 27 / 12%);
-  --color-info: oklch(43% 0.10 250);
-  --color-info-subtle: oklch(43% 0.10 250 / 12%);
+     success    5.04:1 / 5.65:1 / 5.65:1          10.26:1 / 9.51:1 / 8.66:1
+     warning    6.05:1 / 6.78:1 / 6.78:1           9.24:1 / 8.57:1 / 7.80:1
+     danger     5.39:1 / 6.04:1 / 6.04:1           7.08:1 / 6.57:1 / 5.98:1
+     info       5.15:1 / 5.77:1 / 5.77:1           8.35:1 / 7.75:1 / 7.05:1
+     focus      4.97:1 / 5.57:1 / 5.57:1 (UI ≥3:1) 9.24:1 / 8.57:1 / 7.80:1
+     on-accent vs accent fill: light 4.80:1, dark 8.57:1 */
+  --color-success: #0c7469;
+  --color-success-subtle: #d9f0ec;
+  --color-warning: #7e5207;
+  --color-warning-subtle: #f3e3cb;
+  --color-danger: #ae3c29;
+  --color-danger-subtle: #f6deda;
+  --color-info: #2b6a9b;
+  --color-info-subtle: #dce9f5;
 
   /* Focus — ring color for :focus-visible across the app (player chrome
-     keeps its over-video white treatment). Light uses accent-600 so the
-     ring clears 3:1 on the darkest ground, not just the canvas. */
-  --color-focus: #a06f24;
+     keeps its over-video white treatment). Light uses the deepened amber
+     step so the ring clears 3:1 on the darkest ground (sunken), not just
+     the canvas. */
+  --color-focus: #8f5e0a;
   --focus-ring-offset: 2px;
 
   /* On-accent — the label color on the few accent FILLS that remain
-     (destructive-adjacent chips, badges). Black-on-gold, like an
-     engraved plate. */
-  --color-on-accent: #201f1d;
+     (active chips, badges). Ink-on-amber, like the design's active nav. */
+  --color-on-accent: #14171c;
 
   /* Player chrome — scrims and overlay chips sit over video, which is dark
      regardless of app theme, so these are theme-invariant (no per-theme
-     override). Gold chrome accents over dark scrims use accent-400
-     (~7.7:1 on the colophon ground). Tested as white-on-layer over a
-     fully bright frame: scrim-bottom ~12.6:1, scrim-top 4.76:1, overlay
-     chip 5.74:1, caption bg 8.52:1. */
+     override). Tested as white-on-layer over a fully bright frame. */
   --color-player-scrim-top: oklch(14.5% 0.02 260 / 55%);
   --color-player-scrim-bottom: oklch(14.5% 0.02 260 / 80%);
   --color-player-overlay-surface: oklch(0% 0 0 / 60%);
@@ -166,9 +139,9 @@
   --color-brand-dropbox: #0061fe;
   --color-brand-onedrive: #0078d4;
 
-  /* Sanctioned motion — exactly two effects (spec § Motion): the
-     page-load stagger and the scan pulse. Both collapse under the global
-     reduced-motion override at the bottom of this file. */
+  /* Sanctioned motion — exactly two effects: the page-load stagger and
+     the scan pulse. Both collapse under the global reduced-motion
+     override at the bottom of this file. */
   --animate-stagger-in: stagger-in 240ms ease-out both;
   --animate-scan-pulse: scan-pulse 2s ease-in-out infinite;
 
@@ -194,100 +167,102 @@
   }
 }
 
-/* Light theme — Classical paper. This is both the explicit light choice
-   and the no-preference default: paper-first per D5. */
+/* Light theme — the design's default daylight ground. This is both the
+   explicit light choice and the no-preference default. */
 :root,
 :root[data-theme="light"] {
-  --color-castify-accent: #b68235;
-  --color-castify-accent-dim: #7d5411;
-  --color-castify-accent-strong: #7d5411;
-  --color-castify-accent-subtle: #b6823526;
-  --color-castify-canvas: #f3f2f2;
-  --color-castify-surface: #eae9e9;
-  --color-castify-surface-raised: #f8f4f4;
-  --color-castify-text: #201f1d;
-  --color-castify-muted: color-mix(in srgb, #201f1d 70%, #f3f2f2);
-  --color-castify-rule: color-mix(in srgb, #201f1d 16%, transparent);
-  --color-castify-hover: color-mix(in srgb, #201f1d 7%, transparent);
-  --color-castify-press: color-mix(in srgb, #201f1d 14%, transparent);
-  --color-castify-accent-press: color-mix(in srgb, #b68235 22%, transparent);
+  --color-castify-accent: #b9750f;
+  --color-castify-accent-dim: #7e5207;
+  --color-castify-accent-strong: #7e5207;
+  --color-castify-accent-subtle: #f3e3cb;
+  --color-castify-canvas: #f1f2f4;
+  --color-castify-surface: #ffffff;
+  --color-castify-surface-raised: #ffffff;
+  --color-castify-sunken: #e7e9ec;
+  --color-castify-text: #14171c;
+  --color-castify-muted: #5a616d;
+  --color-castify-rule: #dadee3;
+  --color-castify-hover: color-mix(in srgb, #14171c 5%, transparent);
+  --color-castify-press: color-mix(in srgb, #14171c 10%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #b9750f 22%, transparent);
   --color-kind-audio: oklch(48% 0.13 300);
   --color-kind-image: oklch(45% 0.09 200);
   --color-kind-document: oklch(48% 0.05 250);
   --color-kind-archive: oklch(52% 0.12 45);
   --color-kind-subtitle: oklch(45% 0.11 150);
   --color-kind-other: oklch(51% 0.02 240);
-  --color-success: oklch(46% 0.11 152);
-  --color-success-subtle: oklch(46% 0.11 152 / 12%);
-  --color-warning: oklch(47% 0.11 85);
-  --color-warning-subtle: oklch(47% 0.11 85 / 12%);
-  --color-danger: oklch(46% 0.17 27);
-  --color-danger-subtle: oklch(46% 0.17 27 / 12%);
-  --color-info: oklch(43% 0.10 250);
-  --color-info-subtle: oklch(43% 0.10 250 / 12%);
-  --color-focus: #a06f24;
-  --color-on-accent: #201f1d;
+  --color-success: #0c7469;
+  --color-success-subtle: #d9f0ec;
+  --color-warning: #7e5207;
+  --color-warning-subtle: #f3e3cb;
+  --color-danger: #ae3c29;
+  --color-danger-subtle: #f6deda;
+  --color-info: #2b6a9b;
+  --color-info-subtle: #dce9f5;
+  --color-focus: #8f5e0a;
+  --color-on-accent: #14171c;
   color-scheme: light;
 }
 
-/* Dark theme — the colophon page: the demo's deep warm near-black (a
-   shade below neutral-900) with the gold lifted to accent-400, exactly
-   as its watch page does. Explicit opt-in via data-theme="dark". */
+/* Dark theme — the design's midnight ground with the amber lifted to its
+   dark-mode value. Explicit opt-in via data-theme="dark". */
 :root[data-theme="dark"] {
-  --color-castify-accent: #e1ad66;
-  --color-castify-accent-dim: #facb8d;
-  --color-castify-accent-strong: #facb8d;
-  --color-castify-accent-subtle: #e1ad6631;
-  --color-castify-canvas: #262424;
-  --color-castify-surface: #2d2b2b;
-  --color-castify-surface-raised: #383535;
-  --color-castify-text: #f8f4f4;
-  --color-castify-muted: #bab6b6;
-  --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
-  --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
-  --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
-  --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
+  --color-castify-accent: #f0a93a;
+  --color-castify-accent-dim: #f0a93a;
+  --color-castify-accent-strong: #f0a93a;
+  --color-castify-accent-subtle: #3a2e13;
+  --color-castify-canvas: #10131a;
+  --color-castify-surface: #171b24;
+  --color-castify-surface-raised: #1e2330;
+  --color-castify-sunken: #0c0e13;
+  --color-castify-text: #e7e9ee;
+  --color-castify-muted: #9096a5;
+  --color-castify-rule: #2a3040;
+  --color-castify-hover: color-mix(in srgb, #e7e9ee 7%, transparent);
+  --color-castify-press: color-mix(in srgb, #e7e9ee 14%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #f0a93a 26%, transparent);
   --color-kind-audio: oklch(76% 0.13 300);
   --color-kind-image: oklch(78% 0.1 190);
   --color-kind-document: oklch(76% 0.04 250);
   --color-kind-archive: oklch(78% 0.11 50);
   --color-kind-subtitle: oklch(78% 0.12 150);
   --color-kind-other: oklch(70% 0.015 80);
-  --color-success: oklch(78% 0.14 152);
-  --color-success-subtle: oklch(78% 0.14 152 / 14%);
-  --color-warning: oklch(84% 0.13 95);
-  --color-warning-subtle: oklch(84% 0.13 95 / 14%);
-  --color-danger: oklch(74% 0.15 25);
-  --color-danger-subtle: oklch(74% 0.15 25 / 14%);
-  --color-info: oklch(77% 0.11 245);
-  --color-info-subtle: oklch(77% 0.11 245 / 14%);
-  --color-focus: #facb8d;
-  --color-on-accent: #262424;
+  --color-success: #52d4c6;
+  --color-success-subtle: #123330;
+  --color-warning: #f0a93a;
+  --color-warning-subtle: #3a2e13;
+  --color-danger: #f0806a;
+  --color-danger-subtle: #3a1c16;
+  --color-info: #7ab3e8;
+  --color-info-subtle: #16283b;
+  --color-focus: #f0a93a;
+  --color-on-accent: #171b24;
   color-scheme: dark;
 }
 
-/* Dark editorial surface (task 012) — the watch page's theme-invariant
-   colophon ground (demo watch spread): near-black regardless of the app
-   theme. Re-maps the themeable tokens to the dark-theme pairings on the
-   subtree, so components consuming tokens (Button, badges, EmptyState…)
-   render their dark-theme treatment inside it. Values mirror the
-   :root[data-theme="dark"] block — edit both together. */
+/* Dark editorial surface — the watch page's theme-invariant theater
+   ground: near-black regardless of the app theme. Re-maps the themeable
+   tokens to the dark-theme pairings on the subtree, so components
+   consuming tokens (Button, badges, EmptyState…) render their dark-theme
+   treatment inside it. Values mirror the :root[data-theme="dark"] block —
+   edit both together. */
 .dark-editorial {
-  --color-castify-accent: #e1ad66;
-  --color-castify-accent-dim: #facb8d;
-  --color-castify-accent-strong: #facb8d;
-  --color-castify-accent-subtle: #e1ad6631;
-  --color-castify-canvas: #262424;
-  --color-castify-surface: #2d2b2b;
-  --color-castify-surface-raised: #383535;
-  --color-castify-text: #f8f4f4;
-  --color-castify-muted: #bab6b6;
-  --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
-  --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
-  --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
-  --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
-  --color-focus: #facb8d;
-  --color-on-accent: #262424;
+  --color-castify-accent: #f0a93a;
+  --color-castify-accent-dim: #f0a93a;
+  --color-castify-accent-strong: #f0a93a;
+  --color-castify-accent-subtle: #3a2e13;
+  --color-castify-canvas: #10131a;
+  --color-castify-surface: #171b24;
+  --color-castify-surface-raised: #1e2330;
+  --color-castify-sunken: #0c0e13;
+  --color-castify-text: #e7e9ee;
+  --color-castify-muted: #9096a5;
+  --color-castify-rule: #2a3040;
+  --color-castify-hover: color-mix(in srgb, #e7e9ee 7%, transparent);
+  --color-castify-press: color-mix(in srgb, #e7e9ee 14%, transparent);
+  --color-castify-accent-press: color-mix(in srgb, #f0a93a 26%, transparent);
+  --color-focus: #f0a93a;
+  --color-on-accent: #171b24;
   background-color: var(--color-castify-canvas);
   color: var(--color-castify-text);
   color-scheme: dark;
@@ -295,40 +270,41 @@
 
 /* System dark-mode preference wins when the user hasn't picked
    explicitly. NOTE: dark — not light — is the override here. The default
-   (:root above) is already paper, so the cascade only needs to flip users
+   (:root above) is already light, so the cascade only needs to flip users
    whose system says dark; an explicit data-theme="light" must still win,
    hence the :not() guard. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-castify-accent: #e1ad66;
-    --color-castify-accent-dim: #facb8d;
-    --color-castify-accent-strong: #facb8d;
-    --color-castify-accent-subtle: #e1ad6631;
-    --color-castify-canvas: #262424;
-    --color-castify-surface: #2d2b2b;
-    --color-castify-surface-raised: #383535;
-    --color-castify-text: #f8f4f4;
-    --color-castify-muted: #bab6b6;
-    --color-castify-rule: color-mix(in srgb, #f8f4f4 14%, transparent);
-    --color-castify-hover: color-mix(in srgb, #f8f4f4 8%, transparent);
-    --color-castify-press: color-mix(in srgb, #f8f4f4 16%, transparent);
-    --color-castify-accent-press: color-mix(in srgb, #e1ad66 26%, transparent);
+    --color-castify-accent: #f0a93a;
+    --color-castify-accent-dim: #f0a93a;
+    --color-castify-accent-strong: #f0a93a;
+    --color-castify-accent-subtle: #3a2e13;
+    --color-castify-canvas: #10131a;
+    --color-castify-surface: #171b24;
+    --color-castify-surface-raised: #1e2330;
+    --color-castify-sunken: #0c0e13;
+    --color-castify-text: #e7e9ee;
+    --color-castify-muted: #9096a5;
+    --color-castify-rule: #2a3040;
+    --color-castify-hover: color-mix(in srgb, #e7e9ee 7%, transparent);
+    --color-castify-press: color-mix(in srgb, #e7e9ee 14%, transparent);
+    --color-castify-accent-press: color-mix(in srgb, #f0a93a 26%, transparent);
     --color-kind-audio: oklch(76% 0.13 300);
     --color-kind-image: oklch(78% 0.1 190);
     --color-kind-document: oklch(76% 0.04 250);
     --color-kind-archive: oklch(78% 0.11 50);
     --color-kind-subtitle: oklch(78% 0.12 150);
     --color-kind-other: oklch(70% 0.015 80);
-    --color-success: oklch(78% 0.14 152);
-    --color-success-subtle: oklch(78% 0.14 152 / 14%);
-    --color-warning: oklch(84% 0.13 95);
-    --color-warning-subtle: oklch(84% 0.13 95 / 14%);
-    --color-danger: oklch(74% 0.15 25);
-    --color-danger-subtle: oklch(74% 0.15 25 / 14%);
-    --color-info: oklch(77% 0.11 245);
-    --color-info-subtle: oklch(77% 0.11 245 / 14%);
-    --color-focus: #facb8d;
-    --color-on-accent: #262424;
+    --color-success: #52d4c6;
+    --color-success-subtle: #123330;
+    --color-warning: #f0a93a;
+    --color-warning-subtle: #3a2e13;
+    --color-danger: #f0806a;
+    --color-danger-subtle: #3a1c16;
+    --color-info: #7ab3e8;
+    --color-info-subtle: #16283b;
+    --color-focus: #f0a93a;
+    --color-on-accent: #171b24;
     color-scheme: dark;
   }
 }
@@ -342,26 +318,28 @@ body,
 body {
   margin: 0;
   font-family: var(--font-sans);
-  /* Classical body: 15px Lora on a 1.55 leading. */
-  font-size: 0.9375rem;
+  /* Console body: 14px Spline Sans on a 1.55 leading — the design's
+     density (its components speak at 12–14px). */
+  font-size: 0.875rem;
   line-height: 1.55;
   background-color: var(--color-castify-canvas);
   color: var(--color-castify-text);
+  -webkit-font-smoothing: antialiased;
   transition:
     background-color 200ms ease-out,
     color 200ms ease-out;
 }
 
-/* Headings speak in the display voice (Cormorant Garamond, semibold —
-   the interface ceiling; never bold). Tight leading, per demo styles.css. */
+/* Headings share the interface voice at semibold — the design has a
+   single family; weight and tracking do the hierarchy work. */
 h1,
 h2,
 h3,
 h4 {
   font-family: var(--font-display);
   font-weight: var(--font-heading-weight, 600);
-  line-height: 1.12;
-  letter-spacing: -0.015em;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
 }
 
 /* Standing numbers (counts, sizes, timestamps) set tabular; both faces
@@ -398,19 +376,14 @@ video::cue {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
-/* Plate — the Classical image treatment (demo foundations/image.html):
-   every content photograph/poster is matted like a tipped-in book plate.
-   Warm archival grade inside a thin surface-colored mat with a hairline
-   outline. Dark-context plates (watch page) keep the grade but sit on
-   the dark mat via .plate-dark. */
+/* Thumb — the design's image treatment (.thumb): every content
+   photograph/poster sits on a sunken well with a hairline border. No
+   grading filter — the frames speak for themselves. Dark-context thumbs
+   (watch page) inherit the same tokens via .dark-editorial. */
 .plate {
-  filter: sepia(0.22) saturate(0.82) contrast(1.05);
   box-sizing: border-box;
-  border: 6px solid var(--color-castify-surface);
-  outline: 1px solid var(--color-castify-rule);
-}
-.plate-dark {
-  border-color: var(--color-castify-neutral-800);
+  background-color: var(--color-castify-sunken);
+  border: 1px solid var(--color-castify-rule);
 }
 
 /* Hide scrollbar on horizontal shelf containers while keeping scroll
@@ -423,9 +396,9 @@ video::cue {
 }
 
 /* Keycap — chip primitive for provider/filter segments, breadcrumbs,
-   and other monospaced metadata (organizer). Mono, hairline rule,
-   3px radius: a small tag from the ramps. Interactive variants layer
-   their own hover/active states on top. */
+   and other monospaced metadata (organizer). Mono, hairline rule, fully
+   rounded: the design's .chip. Interactive variants layer their own
+   hover/active states on top. */
 .keycap {
   display: inline-flex;
   align-items: center;
@@ -433,31 +406,38 @@ video::cue {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1;
-  padding: 0.25rem 0.5rem;
+  padding: 0.375rem 0.75rem;
   border: 1px solid var(--color-castify-rule);
   border-radius: var(--radius-pill);
   color: var(--color-castify-muted);
+  background-color: var(--color-castify-surface);
 }
 
 /* Interactive keycap variants — chips layer these on .keycap (provider
    filters, breadcrumbs). Defined here, not as Tailwind utilities, because
    unlayered .keycap declarations outrank the utilities layer in the
    cascade; only sibling rules can override the primitive. Hover shifts
-   the border only (spec § Motion: no lifts). Text uses the AA-strong
-   accent step on paper. */
+   the border only (spec § Motion: no lifts). Active wears the design's
+   soft amber fill with the AA-strong accent text. */
 .keycap-active {
-  border-color: var(--color-castify-accent);
+  border-color: transparent;
   background-color: var(--color-castify-accent-subtle);
   color: var(--color-castify-accent-strong);
+  font-weight: 600;
 }
 
 .keycap-inactive:hover {
-  border-color: color-mix(in oklab, var(--color-castify-accent) 40%, transparent);
+  border-color: color-mix(
+    in oklab,
+    var(--color-castify-accent) 40%,
+    transparent
+  );
+  color: var(--color-castify-text);
 }
 
-/* Eyebrow — mono uppercase tracked label for shelf titles, stat strips,
-   section markers. Uppercasing is CSS-only so DOM text stays
-   byte-identical (spec § Copy freeze). */
+/* Eyebrow — mono uppercase tracked label for stat strips, section
+   markers. Uppercasing is CSS-only so DOM text stays byte-identical
+   (spec § Copy freeze). */
 .eyebrow {
   font-family: var(--font-mono);
   font-size: 0.6875rem;
@@ -508,11 +488,21 @@ video::cue {
   }
 }
 
+/* Sidebar drawer entrance — slides in from the left (the design's mobile
+   nav). Reduced-motion is handled globally by the * transition-duration
+   override above. */
+@keyframes sidebar-drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
 /* Filter preset buttons — shared between inline provider chips and the
    drawer's preset groups. Defines the active/inactive states once so the
-   patterns don't drift. Padding tuned for ≥36px touch target (44px is the
-   floor for primary touch UIs, but compact preset rows at ~36px keep dense
-   filter groups scannable; primary actions use larger explicit padding). */
+   patterns don't drift. Padding tuned for ≥36px touch target. */
 .preset-active,
 .preset-inactive {
   border-radius: var(--radius-button);
@@ -527,7 +517,7 @@ video::cue {
 }
 
 .preset-active {
-  border: 1px solid var(--color-castify-accent);
+  border: 1px solid transparent;
   background-color: var(--color-castify-accent-subtle);
   color: var(--color-castify-accent-strong);
 }

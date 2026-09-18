@@ -296,7 +296,7 @@ test.describe("S3-compatible storage (MinIO, task 009)", () => {
       // ── Browse UI ────────────────────────────────────────────────────
       await page.goto("/");
       await expect(
-        page.getByRole("heading", { name: "All files" }),
+        page.getByRole("heading", { name: "All videos" }),
       ).toBeVisible();
       await expect(
         page.locator("#all-videos").getByRole("link", {

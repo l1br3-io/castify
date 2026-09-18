@@ -23,7 +23,13 @@ const TREE: FolderNodeDto[] = [
     video_count: 2,
     file_count: 2,
     children: [
-      { name: "Movies", path: "/Media/Movies", video_count: 2, file_count: 0, children: [] },
+      {
+        name: "Movies",
+        path: "/Media/Movies",
+        video_count: 2,
+        file_count: 0,
+        children: [],
+      },
     ],
   },
 ];
@@ -39,7 +45,9 @@ function video(id: string, name: string): { kind: "video" } & VideoSummaryDto {
     duration_ms: 60_000,
     width: 1920,
     height: 1080,
-    sources: [{ connection_id: "c1", provider: "google_drive", provider_file_id: id }],
+    sources: [
+      { connection_id: "c1", provider: "google_drive", provider_file_id: id },
+    ],
     created_at: "2026-01-01T00:00:00Z",
     path: `/Media/Movies/${name}`,
     is_favorite: false,
@@ -104,10 +112,15 @@ function organizerFetch(opts: OrganizerOpts = {}) {
   };
 }
 
-function renderOrganizer(opts: OrganizerOpts = {}, initialEntries: string[] = ["/"]) {
+function renderOrganizer(
+  opts: OrganizerOpts = {},
+  initialEntries: string[] = ["/"],
+) {
   return renderWithProviders(
     <FolderOrganizer
-      connectedProviders={(opts.connectedProviders ?? ["google_drive"]) as ProviderKey[]}
+      connectedProviders={
+        (opts.connectedProviders ?? ["google_drive"]) as ProviderKey[]
+      }
     />,
     {
       initialEntries,
@@ -117,10 +130,9 @@ function renderOrganizer(opts: OrganizerOpts = {}, initialEntries: string[] = ["
 }
 
 describe("FolderOrganizer", () => {
-  it("renders the tree and the contents pane with mixed kinds", async () => {
+  it("renders the contents pane with mixed kinds", async () => {
     renderOrganizer();
 
-    expect(await screen.findByRole("treeitem", { name: /Media/ })).toBeInTheDocument();
     expect(await screen.findByText("Zeta.mp4")).toBeInTheDocument();
     expect(screen.getByText("Alpha.mp3")).toBeInTheDocument();
     expect(screen.getByText("Notes.pdf")).toBeInTheDocument();
@@ -140,32 +152,16 @@ describe("FolderOrganizer", () => {
     expect(
       screen.getByRole("link", { name: "Download Alpha.mp3" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Play Alpha/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Play Notes/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Play Alpha/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Play Notes/ }),
+    ).not.toBeInTheDocument();
   });
 
-  it("selecting a tree node refetches contents for that path", async () => {
-    renderOrganizer();
-    await screen.findByText("Zeta.mp4");
-
-    fireEvent.click(screen.getByRole("button", { name: "Expand Media" }));
-    const moviesSelect = screen
-      .getByRole("treeitem", { name: /Movies/ })
-      .querySelector<HTMLButtonElement>("button[data-tree-path]")!;
-    fireEvent.click(moviesSelect);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("contents-path")).toHaveTextContent("Movies");
-      const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-        (c) => String(c[0]),
-      );
-      expect(
-        calls.some((c) =>
-          c.includes(`path=${encodeURIComponent("/Media/Movies")}`),
-        ),
-      ).toBe(true);
-    });
-  });
+  // Tree selection lives in the app sidebar (SidebarFolders) — see
+  // sidebar-folders.test.tsx for the tree-driving tests.
 
   it("provider chips filter contents and All clears the filter", async () => {
     renderOrganizer({ connectedProviders: ["google_drive", "dropbox"] });
@@ -173,18 +169,18 @@ describe("FolderOrganizer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dropbox" }));
     await waitFor(() => {
-      const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-        (c) => String(c[0]),
-      );
-      expect(
-        calls.some((c) => c.includes("provider=dropbox")),
-      ).toBe(true);
+      const calls = (
+        globalThis.fetch as ReturnType<typeof vi.fn>
+      ).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((c) => c.includes("provider=dropbox"))).toBe(true);
     });
 
     // All resets to an unfiltered listing (no provider param).
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     await waitFor(() => {
-      const lastContents = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      const lastContents = (
+        globalThis.fetch as ReturnType<typeof vi.fn>
+      ).mock.calls
         .map((c) => String(c[0]))
         .filter((c) => c.startsWith("/api/folders/contents"))
         .pop();
@@ -204,19 +200,25 @@ describe("FolderOrganizer", () => {
   });
 
   it("shows an empty state for empty folders", async () => {
-    renderOrganizer({ contents: { entries: [], total: 0, page: 1, limit: 50 } });
+    renderOrganizer({
+      contents: { entries: [], total: 0, page: 1, limit: 50 },
+    });
     await screen.findByText(/This folder is empty/i);
   });
 
   it("distinguishes filter-empty from folder-empty", async () => {
-    renderOrganizer({ contents: { entries: [], total: 0, page: 1, limit: 50 } });
+    renderOrganizer({
+      contents: { entries: [], total: 0, page: 1, limit: 50 },
+    });
     await screen.findByText(/This folder is empty/i);
 
     fireEvent.change(screen.getByLabelText("Filter by name"), {
       target: { value: "zzz-no-match" },
     });
     await waitFor(() => {
-      expect(screen.getByText(/No entries match the current filters/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/No entries match the current filters/i),
+      ).toBeInTheDocument();
     });
   });
 
@@ -228,37 +230,15 @@ describe("FolderOrganizer", () => {
       target: { value: "zeta" },
     });
     await waitFor(() => {
-      const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-        (c) => String(c[0]),
-      );
+      const calls = (
+        globalThis.fetch as ReturnType<typeof vi.fn>
+      ).mock.calls.map((c) => String(c[0]));
       expect(calls.some((c) => c.includes("q=zeta"))).toBe(true);
     });
   });
 
-  // FR-9.2: a ?dir= naming no known folder (stale bookmark, hand-edited
-  // URL) falls back to the root listing once the tree loads.
-  it("falls back to the root listing when ?dir= is unknown", async () => {
-    renderOrganizer({}, [`/?dir=${encodeURIComponent("/nope/not/a/folder")}`]);
-
-    // The bogus path may fetch first, but the tree rejects it…
-    await waitFor(() => {
-      expect(screen.getByTestId("contents-path")).toHaveTextContent("(Root)");
-    });
-
-    // …and the root contents are fetched (no path param value).
-    await waitFor(() => {
-      const rootFetch = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-        .map((c) => String(c[0]))
-        .filter((c) => c.startsWith("/api/folders/contents"))
-        .some((c) => !c.includes(`path=${encodeURIComponent("/nope")}`));
-      expect(rootFetch).toBe(true);
-    });
-
-    // Root is the selected tree node afterwards.
-    expect(
-      document.querySelector<HTMLElement>("[data-tree-path='']"),
-    ).toHaveAttribute("aria-current");
-  });
+  // FR-9.2's unknown-dir fallback lives with the tree in SidebarFolders —
+  // see sidebar-folders.test.tsx.
 });
 
 // --- Identity-pass task 004: full-path line, keycap chips, mono filter ---
@@ -280,7 +260,8 @@ describe("FolderOrganizer identity styling", () => {
     // Sits above the leaf-name heading in DOM order.
     const heading = screen.getByTestId("contents-path");
     expect(
-      heading.compareDocumentPosition(pathLine) & Node.DOCUMENT_POSITION_PRECEDING,
+      heading.compareDocumentPosition(pathLine) &
+        Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy();
   });
 
@@ -295,13 +276,21 @@ describe("FolderOrganizer identity styling", () => {
       {
         tree: [
           ...TREE,
-          { name: "(Unsorted)", path: "(Unsorted)", video_count: 0, file_count: 0, children: [] },
+          {
+            name: "(Unsorted)",
+            path: "(Unsorted)",
+            video_count: 0,
+            file_count: 0,
+            children: [],
+          },
         ],
       },
       [`/?dir=${encodeURIComponent("(Unsorted)")}`],
     );
     await screen.findByText("Zeta.mp4");
-    expect(screen.getByTestId("contents-full-path")).toHaveTextContent("(Unsorted)");
+    expect(screen.getByTestId("contents-full-path")).toHaveTextContent(
+      "(Unsorted)",
+    );
   });
 
   it("styles provider chips as keycaps (aria-pressed contract unchanged)", async () => {
@@ -321,7 +310,9 @@ describe("FolderOrganizer identity styling", () => {
     renderOrganizer({}, [`/?dir=${encodeURIComponent("/Media/Movies")}`]);
     await screen.findByText("Zeta.mp4");
 
-    expect(screen.getByRole("button", { name: "All folders" })).toHaveClass("keycap");
+    expect(screen.getByRole("button", { name: "All folders" })).toHaveClass(
+      "keycap",
+    );
     expect(screen.getByRole("button", { name: "Media" })).toHaveClass("keycap");
     expect(
       screen.getByText("Movies", { selector: "span[aria-current='page']" }),
@@ -340,14 +331,13 @@ describe("FolderOrganizer identity styling", () => {
 
 describe("FolderOrganizer breadcrumbs", () => {
   it("renders breadcrumb chips for the selected path, tappable to navigate up", async () => {
-    renderOrganizer(
-      {},
-      [`/?dir=${encodeURIComponent("/Media/Movies")}`],
-    );
+    renderOrganizer({}, [`/?dir=${encodeURIComponent("/Media/Movies")}`]);
     await screen.findByText("Zeta.mp4");
 
     // Breadcrumb trail: root + each segment.
-    expect(screen.getByRole("button", { name: "All folders" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "All folders" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Media" })).toBeInTheDocument();
     // Deepest segment is the current location — not a button. (The expanded
     // tree also shows a Movies node; assert at least one plain text.)

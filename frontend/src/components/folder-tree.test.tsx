@@ -39,7 +39,13 @@ const TREE: FolderNodeDto[] = [
           },
         ],
       },
-      { name: "Music", path: "/Media/Music", video_count: 0, file_count: 4, children: [] },
+      {
+        name: "Music",
+        path: "/Media/Music",
+        video_count: 0,
+        file_count: 4,
+        children: [],
+      },
     ],
   },
   {
@@ -79,8 +85,12 @@ describe("FolderTree", () => {
     renderTree();
 
     expect(screen.getByRole("treeitem", { name: /Media/ })).toBeInTheDocument();
-    expect(screen.getByRole("treeitem", { name: /\(Root\)/ })).toBeInTheDocument();
-    expect(screen.getByRole("treeitem", { name: /\(Unsorted\)/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("treeitem", { name: /\(Root\)/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("treeitem", { name: /\(Unsorted\)/ }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/3 videos/)).toBeInTheDocument(); // Media cumulative count
   });
 
@@ -93,7 +103,9 @@ describe("FolderTree", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Media" }));
 
-    expect(screen.getByRole("treeitem", { name: /Movies/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("treeitem", { name: /Movies/ }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("treeitem", { name: /Sci-fi/ }),
     ).not.toBeInTheDocument();
@@ -102,8 +114,16 @@ describe("FolderTree", () => {
   it("selection writes ?dir= to the URL", () => {
     renderTree(["/"]);
 
-    fireEvent.click(screen.getByRole("treeitem", { name: /\(Root\)/ }).querySelector("button[data-tree-path]")!);
-    fireEvent.click(screen.getByRole("treeitem", { name: /Media/ }).querySelector("button[data-tree-path]")!);
+    fireEvent.click(
+      screen
+        .getByRole("treeitem", { name: /\(Root\)/ })
+        .querySelector("button[data-tree-path]")!,
+    );
+    fireEvent.click(
+      screen
+        .getByRole("treeitem", { name: /Media/ })
+        .querySelector("button[data-tree-path]")!,
+    );
 
     expect(screen.getByTestId("location").textContent).toContain(
       `dir=${encodeURIComponent("/Media")}`,
@@ -115,10 +135,18 @@ describe("FolderTree", () => {
   it("back navigates to the previously selected folder", () => {
     renderTree(["/"]);
 
-    fireEvent.click(screen.getByRole("treeitem", { name: /Media/ }).querySelector("button[data-tree-path]")!);
+    fireEvent.click(
+      screen
+        .getByRole("treeitem", { name: /Media/ })
+        .querySelector("button[data-tree-path]")!,
+    );
     expect(screen.getByTestId("location").textContent).toContain("dir=");
 
-    fireEvent.click(screen.getByRole("treeitem", { name: /\(Unsorted\)/ }).querySelector("button[data-tree-path]")!);
+    fireEvent.click(
+      screen
+        .getByRole("treeitem", { name: /\(Unsorted\)/ })
+        .querySelector("button[data-tree-path]")!,
+    );
     // URLSearchParams escapes parens (encodeURIComponent does not).
     expect(screen.getByTestId("location").textContent).toContain(
       "dir=%28Unsorted%29",
@@ -143,10 +171,10 @@ describe("FolderTree", () => {
 
     // The tree itself is router-free — it simply has nothing selected
     // (fallback-to-root is FolderOrganizer's job, tested there).
-    expect(screen.getByRole("treeitem", { name: /\(Root\)/ })).toBeInTheDocument();
     expect(
-      document.querySelector("[data-tree-path][aria-current]"),
-    ).toBeNull();
+      screen.getByRole("treeitem", { name: /\(Root\)/ }),
+    ).toBeInTheDocument();
+    expect(document.querySelector("[data-tree-path][aria-current]")).toBeNull();
   });
 
   it("supports arrow-key navigation through visible nodes", () => {
@@ -226,9 +254,7 @@ describe("FolderTree", () => {
     expect(unsorted).toHaveFocus();
 
     fireEvent.keyDown(screen.getByRole("tree"), { key: "Home" });
-    const root = document.querySelector<HTMLElement>(
-      "[data-tree-path='']",
-    )!;
+    const root = document.querySelector<HTMLElement>("[data-tree-path='']")!;
     expect(root).toHaveFocus();
   });
 });
@@ -236,14 +262,16 @@ describe("FolderTree", () => {
 // --- Identity-pass task 004: index-tab selection, mono tabular counts ---
 
 describe("FolderTree identity styling", () => {
-  it("marks the selected node with the 3px amber index-tab bar + subtle fill", () => {
+  it("marks the selected node with the 2px amber index-tab bar + raised fill (design tree-row.active)", () => {
     renderTree(["/?dir=/Media"]);
 
     const selected = document.querySelector<HTMLElement>(
       "[data-tree-path='/Media'][aria-current]",
     )!;
-    expect(selected).toHaveClass("shadow-[inset_3px_0_0_var(--color-castify-accent)]");
-    expect(selected).toHaveClass("bg-[var(--color-castify-accent-subtle)]");
+    expect(selected).toHaveClass(
+      "shadow-[inset_2px_0_0_var(--color-castify-accent)]",
+    );
+    expect(selected).toHaveClass("bg-[var(--color-castify-surface-raised)]");
   });
 
   it("renders counts right-aligned in mono tabular-nums", () => {
@@ -269,7 +297,11 @@ describe("useFolderDir", () => {
   it("clearing the dir param removes it from the URL", () => {
     function Probe() {
       const [dir, setDir] = useFolderDir();
-      return <button type="button" onClick={() => setDir("")}>{dir}</button>;
+      return (
+        <button type="button" onClick={() => setDir("")}>
+          {dir}
+        </button>
+      );
     }
     renderWithProviders(<Probe />, {
       initialEntries: [`/?dir=${encodeURIComponent("/Media")}`],

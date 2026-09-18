@@ -203,7 +203,8 @@ Gotcha baked into the recipe: rclone's pre-upload bucket probe trips a denied
   boot; forward-only — back up first):
 
   ```sh
-  just deploy root@<ip>   # builds, ships over SSH, restarts, health-checks
+  # just deploy root@[public ipv4 droplet ip] [domain]
+  just deploy root@203.0.113.10 media.mydomain.com
   ```
 
   Manual equivalent:

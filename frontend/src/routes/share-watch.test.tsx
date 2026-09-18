@@ -173,10 +173,7 @@ function renderShareWatchPage(
 ) {
   return renderWithProviders(
     <Routes>
-      <Route
-        path="/share/:token/watch/:videoId"
-        element={<ShareWatchPage />}
-      />
+      <Route path="/share/:token/watch/:videoId" element={<ShareWatchPage />} />
     </Routes>,
     {
       initialEntries: [`/share/${TOKEN}/watch/${videoId}`],
@@ -228,14 +225,17 @@ describe("ShareWatchPage", () => {
 
   it("attaches hls.js to the share-rooted master playlist (transcode strategy)", async () => {
     hlsMock.loadSource.mockClear();
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      streamUrl: () =>
-        jsonResponse({
-          url: `${BASE}/transcode/master.m3u8`,
-          strategy: "transcode",
-          expires_at: null,
-        }),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        streamUrl: () =>
+          jsonResponse({
+            url: `${BASE}/transcode/master.m3u8`,
+            strategy: "transcode",
+            expires_at: null,
+          }),
+      }),
+    );
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
@@ -298,7 +298,9 @@ describe("ShareWatchPage", () => {
     expect(
       screen.queryByRole("button", { name: "Next video" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /Download/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Download/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the unsupported-format card without a download link when the browser can't decode", async () => {
@@ -310,7 +312,9 @@ describe("ShareWatchPage", () => {
     ).toBeInTheDocument();
     expect(document.querySelector("video")).toBeNull();
     // v1 line: no download endpoints for recipients (spec Never-list).
-    expect(screen.queryByRole("link", { name: /Download/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Download/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("resumes from the same IndexedDB store the owner player uses", async () => {
@@ -348,9 +352,12 @@ describe("ShareWatchPage", () => {
   });
 
   it("renders a back-link state when the share is locked (items 401)", async () => {
-    const { fetchSpy } = renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      items: () => jsonError(401, "locked"),
-    }));
+    const { fetchSpy } = renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        items: () => jsonError(401, "locked"),
+      }),
+    );
 
     expect(
       await screen.findByText(/protected by a password/i),
@@ -366,9 +373,12 @@ describe("ShareWatchPage", () => {
   });
 
   it("renders the terminal state when the share died (items 410)", async () => {
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      items: () => jsonError(410, "share expired"),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        items: () => jsonError(410, "share expired"),
+      }),
+    );
 
     expect(
       await screen.findByText("This share is no longer available."),
@@ -377,9 +387,12 @@ describe("ShareWatchPage", () => {
   });
 
   it("renders a not-in-share state for a non-member video id", async () => {
-    renderShareWatchPage("vZ", shareWatchHandler({
-      items: () => jsonResponse([shareVideo("vA", "Video A")]),
-    }));
+    renderShareWatchPage(
+      "vZ",
+      shareWatchHandler({
+        items: () => jsonResponse([shareVideo("vA", "Video A")]),
+      }),
+    );
 
     expect(
       await screen.findByText(/isn't part of the share/i),
@@ -389,19 +402,22 @@ describe("ShareWatchPage", () => {
 
   it("surfaces a generic stream error — never the owner's reconnect flow", async () => {
     mockCanPlayType("probably");
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      streamUrl: () =>
-        jsonResponse(
-          {
-            status: "error",
-            code: "reauth_required",
-            message: "google_drive connection needs reconnecting.",
-            connection_id: "c1",
-            provider: "google_drive",
-          },
-          401,
-        ),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        streamUrl: () =>
+          jsonResponse(
+            {
+              status: "error",
+              code: "reauth_required",
+              message: "google_drive connection needs reconnecting.",
+              connection_id: "c1",
+              provider: "google_drive",
+            },
+            401,
+          ),
+      }),
+    );
 
     await screen.findByRole("heading", { name: "cat.mp4" });
     expect(
@@ -409,21 +425,28 @@ describe("ShareWatchPage", () => {
     ).toBeInTheDocument();
     // The reconnect card is an owner recovery path — a recipient can't
     // re-grant the owner's OAuth tokens.
-    expect(screen.queryByRole("heading", { name: /Reconnect/i })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: "Go to Sources" }),
+      screen.queryByRole("heading", { name: /Reconnect/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Go to Connections" }),
     ).not.toBeInTheDocument();
     expect(document.querySelector("video")).toBeNull();
   });
 
   it("shows the removed-from-share card when the stream-url mirror 404s", async () => {
     mockCanPlayType("probably");
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      streamUrl: () => jsonError(404, "not a member"),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        streamUrl: () => jsonError(404, "not a member"),
+      }),
+    );
 
     expect(
-      await screen.findByText("This video is no longer available in this share"),
+      await screen.findByText(
+        "This video is no longer available in this share",
+      ),
     ).toBeInTheDocument();
     const back = screen.getByRole("link", { name: /share page/i });
     expect(back).toHaveAttribute("href", `/share/${TOKEN}`);
@@ -435,16 +458,22 @@ describe("ShareWatchPage", () => {
   });
 
   it("shows the removed-from-share card when the subtitles mirror 404s", async () => {
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      subtitles: () => jsonError(404, "not a member"),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        subtitles: () => jsonError(404, "not a member"),
+      }),
+    );
 
     expect(
-      await screen.findByText("This video is no longer available in this share"),
+      await screen.findByText(
+        "This video is no longer available in this share",
+      ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: /share page/i }),
-    ).toHaveAttribute("href", `/share/${TOKEN}`);
+    expect(screen.getByRole("link", { name: /share page/i })).toHaveAttribute(
+      "href",
+      `/share/${TOKEN}`,
+    );
     expect(
       screen.queryByRole("button", { name: /Try again/i }),
     ).not.toBeInTheDocument();
@@ -452,9 +481,12 @@ describe("ShareWatchPage", () => {
   });
 
   it("keeps the generic error card for non-404 mirror failures (502)", async () => {
-    renderShareWatchPage(VIDEO_ID, shareWatchHandler({
-      subtitles: () => jsonError(502, "provider uplink failed"),
-    }));
+    renderShareWatchPage(
+      VIDEO_ID,
+      shareWatchHandler({
+        subtitles: () => jsonError(502, "provider uplink failed"),
+      }),
+    );
 
     expect(
       await screen.findByText(/Couldn't load this share/i),

@@ -15,17 +15,19 @@ export const BUTTON_SIZES = {
 } as const;
 
 export const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  // D5 (Classical): the primary is an accent OUTLINE on transparent ground —
-  // gold border + AA-strong gold text, tint on hover, deeper tint pressed.
-  // Never a solid fill.
+  // The design's .btn.primary: a solid ink fill with the surface-colored
+  // label (dark button in light mode, light button in dark mode). Hover
+  // eases the ink toward transparency — no lifts.
   primary:
-    "border border-[var(--color-castify-accent)] text-[var(--color-castify-accent-strong)] hover:bg-[var(--color-castify-accent-subtle)] active:bg-[var(--color-castify-accent-press)]",
+    "border border-transparent bg-[var(--color-castify-text)] text-[var(--color-castify-surface)] hover:opacity-90 active:opacity-80",
   secondary:
     "border border-[var(--color-castify-rule)] text-[var(--color-castify-text)] hover:bg-[var(--color-castify-hover)] active:bg-[var(--color-castify-press)]",
   ghost:
     "text-[var(--color-castify-accent-strong)] hover:bg-[var(--color-castify-accent-subtle)]",
+  // The design's .btn.warn: soft red fill, danger text (AA pair — see
+  // index.css ratio table).
   destructive:
-    "border border-[var(--color-danger)] text-[var(--color-danger)] hover:bg-[var(--color-danger-subtle)]",
+    "border border-transparent bg-[var(--color-danger-subtle)] text-[var(--color-danger)] hover:opacity-85 active:opacity-75",
 };
 
 /** Class builder for elements that must look like a button but can't be
@@ -35,7 +37,7 @@ export function buttonClasses(
   size: keyof typeof BUTTON_SIZES = "md",
 ): string {
   return cn(
-    "inline-flex items-center justify-center gap-2 rounded-[var(--radius-button)] font-display font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70",
+    "inline-flex items-center justify-center gap-2 rounded-[var(--radius-button)] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70",
     FOCUS_RING,
     BUTTON_SIZES[size],
     BUTTON_VARIANTS[variant],

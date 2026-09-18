@@ -78,7 +78,7 @@ test.describe("A11y (axe) — redesigned screens", () => {
     await scanAxe(page, "setup");
   });
 
-  test("/connections Sources (task 010) — no serious or critical violations", async ({
+  test("/connections (design) — no serious or critical violations", async ({
     page,
   }) => {
     await ensureAuthenticated(page);

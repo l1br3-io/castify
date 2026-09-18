@@ -117,9 +117,11 @@ describe("HomePage", () => {
       fetchImplementation: fetchFor([SAMPLE_CONNECTION]),
     });
 
-    expect(await screen.findByText("All files")).toBeInTheDocument();
+    expect(await screen.findByText("All videos")).toBeInTheDocument();
     // "sample.mp4" appears in the hero, Recently Added shelf, and grid.
-    expect((await screen.findAllByText("sample.mp4")).length).toBeGreaterThanOrEqual(1);
+    expect(
+      (await screen.findAllByText("sample.mp4")).length,
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it("shows a loading state while connections resolve", () => {
@@ -127,8 +129,10 @@ describe("HomePage", () => {
       fetchImplementation: () => new Promise<Response>(() => {}),
     });
     // Skeleton placeholders render while the connections query is pending.
-    // No browse content (hero, shelves, "All files") should be visible yet.
-    expect(screen.queryByText("All files")).not.toBeInTheDocument();
-    expect(screen.queryByText("Connect your first cloud")).not.toBeInTheDocument();
+    // No browse content (hero, shelves, "All videos") should be visible yet.
+    expect(screen.queryByText("All videos")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Connect your first cloud"),
+    ).not.toBeInTheDocument();
   });
 });

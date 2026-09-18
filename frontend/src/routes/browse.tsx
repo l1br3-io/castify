@@ -1,31 +1,30 @@
 // Browse page — M2 T7 poster-grid view + T8 scrollable shelves + T9 search
-// + T10 filter panel / URL deep-linking + T13 continue-watching. Task 011
-// (Classical): the page follows the demo's library structure — a stat-cards
-// row (Files / Providers / Now scanning) over the rails, over the All-files
-// grid + search field, then the folder organizer.
+// + T10 filter panel / URL deep-linking + T13 continue-watching.
 //
-// Layout (spec IA § Library):
-//   0. sr-only h1 "Your library" (a11y page heading — stats live in cards).
-//   1. Stat cards row: Files (catalog total) · Providers (connections) ·
-//      Now scanning (provider label, or an em-dash when idle). The demo's
-//      Cache card is deliberately absent: the app exposes no cache-size
-//      API and the spec forbids new queries.
+// Layout (the design's Library view, castify-design.html):
+//   0. sr-only h1 "Your library" (a11y page heading — stats live in cells).
+//   1. Stat cells row (the design's joined stat-row): Files (catalog
+//      total) · Providers (connections) · Now scanning (provider label, or
+//      an em-dash when idle). The design's Cache cell is deliberately
+//      absent: the app exposes no cache-size API and the spec forbids new
+//      queries. The design's 4th cell (Favorites) has no count API either.
 //   2. Rails: Continue watching & listening (IndexedDB-backed, hidden when
 //      empty), Recently added, Favorites (when any).
-//   3. All-files section: heading + search field + select/sort + filter
-//      panel + poster grid + pagination.
-//   4. Folder organizer (tree + contents + provider chips).
+//   3. All-videos section: heading + mono result count + sort + filter
+//      panel + poster grid + pagination. Search lives in the app topbar
+//      (the design's placement) and writes this page's `?q=` param.
+//   4. Folder organizer (sidebar tree + contents + provider chips).
 //
-// Search (T9, FR-2): when the debounced query is non-empty, the layout enters
-// a focused search-results mode — rails (incl. continue-watching) and the
-// organizer are hidden and the grid section shows "Search results for "q"" +
-// count. Search composes with sort and all filters (FR-2.2).
+// Search (T9, FR-2): the topbar owns the input and writes the debounced
+// query into the URL. When `?q` is non-empty, the layout enters a focused
+// search-results mode — rails (incl. continue-watching) and the organizer
+// are hidden and the grid section shows "Search results for "q"" + count.
+// Search composes with sort and all filters (FR-2.2).
 //
-// URL state (T10): all filter + sort + search state lives in URL search params
-// via `useBrowseFilters()` for deep-linking + back-button support; the tree's
-// `?dir=` (use-folder-dir) is separate. `page` is the only state kept local
-// (deep-linking to page N is fragile). The raw search input is also local
-// (debounced before writing to URL).
+// URL state (T10): all filter + sort + search state lives in URL search
+// params via `useBrowseFilters()` for deep-linking + back-button support;
+// the tree's `?dir=` (use-folder-dir) is separate. `page` is the only
+// state kept local (deep-linking to page N is fragile).
 //
 // Empty states:
 //   * Library truly empty (recentlyAdded has 0 videos): scan-aware CTA.
@@ -44,13 +43,11 @@ import { FilterPanel } from "../components/filter-panel";
 import { FavoriteToggle } from "../components/favorite-toggle";
 import { PosterCard } from "../components/poster-card";
 import { RatingStars } from "../components/rating-stars";
-import { SearchBar } from "../components/search-bar";
 import { Shelf } from "../components/shelf";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import { useConnections } from "../hooks/use-connections";
-import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
@@ -73,16 +70,12 @@ import { Button } from "../components/ui/button";
 // ---------------------------------------------------------------------------
 
 export function BrowsePage() {
-  // URL-backed filter state (T10). All filters, sort, and the debounced search
-  // query live in URL search params via this hook.
+  // URL-backed filter state (T10). All filters, sort, and the search query
+  // (written by the topbar search) live in URL search params via this hook.
   const filters = useBrowseFilters();
 
-  // Local state: page (not deep-linked — fragile across library churn) and the
-  // raw search input (debounced before syncing to URL).
+  // Local state: page (not deep-linked — fragile across library churn).
   const [page, setPage] = useState(1);
-  const [query, setQuery] = useState(filters.values.q);
-  const debouncedQuery = useDebouncedValue(query, 300);
-  const searchRef = useRef<HTMLInputElement>(null);
 
   // Task 012: multi-select share mode. `selectedIds` is an array (not a
   // Set) so the owner's click order becomes the share's curation order.
@@ -101,14 +94,6 @@ export function BrowsePage() {
     setSelectedIds([]);
   }
 
-  // Sync debounced search → URL. URL `q` is the single source of truth for the
-  // API call + `isSearching` display. The setter identity changes per render
-  // (closure over searchParams); only fire on debouncedQuery change.
-  useEffect(() => {
-    filters.setQ(debouncedQuery);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQuery]);
-
   // Reset page to 1 whenever any filter value changes (not on initial mount).
   const filterSignature = JSON.stringify(filters.values);
   const prevSignature = useRef(filterSignature);
@@ -118,25 +103,6 @@ export function BrowsePage() {
       setPage(1);
     }
   }, [filterSignature]);
-
-  // Keyboard shortcut: "/" focuses the search bar (T9). Ignored when the user
-  // is already typing in an input/textarea or holding a modifier key.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const el = e.target as HTMLElement;
-      if (
-        el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        el.isContentEditable
-      )
-        return;
-      e.preventDefault();
-      searchRef.current?.focus();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
 
   // Recently Added rail — always fires; also drives the empty check.
   const recentlyAdded = useVideos({ page: 1, sort: "date-desc", limit: 20 });
@@ -156,11 +122,9 @@ export function BrowsePage() {
     new Set((connections.data ?? []).map((c) => c.provider)),
   );
 
-
   function handleViewAll(filter: ViewAllFilter): void {
-    // Clear search input + URL immediately, then clear all filters and apply
+    // Clear the URL query immediately, then clear all filters and apply
     // the shelf's single filter.
-    setQuery("");
     filters.setQ("");
     filters.clearAll();
     if (filter.favoritesOnly) filters.setFavoritesOnly(true);
@@ -205,19 +169,19 @@ export function BrowsePage() {
       {/* A11y page heading — the visible identity is the stat cards below. */}
       <h1 className="sr-only">Your library</h1>
 
-      {/* Stat cards row (task 011, demo `cf-grid` stats): kicker + display
-          figure per card, stagger step 1. */}
-      <div className="grid animate-stagger-in grid-cols-2 gap-4 sm:grid-cols-3 motion-reduce:animate-none">
-        <StatCard
-          kicker="Files"
+      {/* Stat cells row (the design's joined stat-row): figures share a
+           hairline-ruled strip, mono counts. Stagger step 1. */}
+      <div className="grid animate-stagger-in grid-cols-2 gap-px overflow-hidden rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-rule)] shadow-sm sm:grid-cols-3 motion-reduce:animate-none">
+        <StatCell
+          label="Files"
           value={recentlyAdded.data.total.toLocaleString()}
         />
-        <StatCard
-          kicker="Providers"
+        <StatCell
+          label="Providers"
           value={String(connections.data?.length ?? 0)}
         />
-        <StatCard
-          kicker="Now scanning"
+        <StatCell
+          label="Now scanning"
           value={
             scanningConnection
               ? (PROVIDER_LABELS[scanningConnection.provider] ??
@@ -271,21 +235,29 @@ export function BrowsePage() {
         className="animate-stagger-in space-y-4 pt-2 [animation-delay:120ms] motion-reduce:animate-none"
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
+          <div className="flex flex-wrap items-baseline gap-3">
             {isSearching ? (
               <>
-                <h2 className="text-2xl">
+                <h2 className="text-xl">
                   Search results for &ldquo;{filters.values.q}&rdquo;
                 </h2>
                 {videos.data && (
-                  <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
+                  <p className="figure font-mono text-xs text-[var(--color-castify-muted)]">
                     {videos.data.total}{" "}
                     {videos.data.total === 1 ? "result" : "results"}
                   </p>
                 )}
               </>
             ) : (
-              <h2 className="text-2xl">All files</h2>
+              <>
+                <h2 className="text-xl">All videos</h2>
+                {videos.data && (
+                  <p className="figure font-mono text-xs text-[var(--color-castify-muted)]">
+                    {videos.data.total.toLocaleString()}{" "}
+                    {videos.data.total === 1 ? "video" : "videos"}
+                  </p>
+                )}
+              </>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -304,8 +276,10 @@ export function BrowsePage() {
               <select
                 aria-label="Sort videos"
                 value={filters.values.sort}
-                onChange={(e) => filters.setSort(e.target.value as VideoSortKey)}
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-transparent px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
+                onChange={(e) =>
+                  filters.setSort(e.target.value as VideoSortKey)
+                }
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
               >
                 {VIDEO_SORT_OPTIONS.map((key) => (
                   <option key={key} value={key}>
@@ -317,20 +291,14 @@ export function BrowsePage() {
           </div>
         </div>
 
-        {/* Search field (T9) — Classical placement: its own input line
-            above the filter chips + grid. "/" focuses it from anywhere. */}
-        <div className="max-w-sm">
-          <SearchBar ref={searchRef} value={query} onChange={setQuery} />
-        </div>
-
         {/* Task 012: multi-select action bar — shown while select mode is
             active. "Share N items" opens the same creation dialog the
             watch page uses; it needs ≥1 selection. */}
         {selectMode && (
           <div className="flex flex-wrap items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] px-4 py-3">
             <span className="text-sm">
-              {selectedIds.length}{" "}
-              {selectedIds.length === 1 ? "item" : "items"} selected
+              {selectedIds.length} {selectedIds.length === 1 ? "item" : "items"}{" "}
+              selected
             </span>
             <Button
               size="sm"
@@ -365,10 +333,7 @@ export function BrowsePage() {
           hasActiveFilter={hasActiveFilter}
           searchQuery={isSearching ? filters.values.q : undefined}
           onClearFilters={() => filters.clearAll()}
-          onClearSearch={() => {
-            setQuery("");
-            filters.setQ("");
-          }}
+          onClearSearch={() => filters.setQ("")}
           selection={
             selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
           }
@@ -377,7 +342,9 @@ export function BrowsePage() {
 
       {/* Stagger step 4: the folder organizer (spec IA: after the grid). */}
       <div className="animate-stagger-in [animation-delay:180ms] motion-reduce:animate-none">
-        {!isSearching && <FolderOrganizer connectedProviders={connectedProviders} />}
+        {!isSearching && (
+          <FolderOrganizer connectedProviders={connectedProviders} />
+        )}
       </div>
 
       {/* Task 012: creation dialog from the multi-select bar. Closing it
@@ -400,27 +367,29 @@ export function BrowsePage() {
 }
 
 // ---------------------------------------------------------------------------
-// Stat card (task 011, demo stats row)
+// Stat cell (the design's joined stat-row cell: figure over label)
 // ---------------------------------------------------------------------------
 
-function StatCard({
-  kicker,
+function StatCell({
+  label,
   value,
   muted = false,
 }: {
-  kicker: string;
+  label: string;
   value: string;
   muted?: boolean;
 }) {
   return (
-    <div className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
-      <span className="eyebrow">{kicker}</span>
+    <div className="bg-[var(--color-castify-surface)] px-4 py-3.5">
       <span
-        className={`mt-1 block truncate font-display text-2xl figure ${
+        className={`figure block truncate text-[22px] font-semibold leading-tight ${
           muted ? "text-[var(--color-castify-muted)]" : ""
         }`}
       >
         {value}
+      </span>
+      <span className="mt-0.5 block text-xs text-[var(--color-castify-muted)]">
+        {label}
       </span>
     </div>
   );
@@ -597,9 +566,6 @@ function BrowseGrid({
     <div
       className={`space-y-4 transition-opacity duration-150 ${containerOpacity}`}
     >
-      <p className="text-sm text-[var(--color-castify-muted)]">
-        {data.total} {data.total === 1 ? "video" : "videos"}
-      </p>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
         {data.videos.map((video: VideoSummaryDto) => (
           <PosterCard
@@ -612,9 +578,7 @@ function BrowseGrid({
             topRightSlot={
               selection ? undefined : <FavoriteToggle video={video} />
             }
-            ratingSlot={
-              selection ? undefined : <RatingStars video={video} />
-            }
+            ratingSlot={selection ? undefined : <RatingStars video={video} />}
             selection={
               selection
                 ? {

@@ -10,7 +10,9 @@ import { Button } from "./button";
 describe("Button", () => {
   it("renders a button with its accessible name", () => {
     render(<Button>Save changes</Button>);
-    expect(screen.getByRole("button", { name: "Save changes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Save changes" }),
+    ).toBeInTheDocument();
   });
 
   it("fires onClick", () => {
@@ -22,11 +24,17 @@ describe("Button", () => {
 
   it.each([
     // D5: primary is an accent outline — marker is the gold border + the
-    // AA-strong text pairing, not a fill.
-    ["primary", "border-[var(--color-castify-accent)] text-[var(--color-castify-accent-strong)]"],
+    // The design's solid ink fill with the surface-colored label.
+    [
+      "primary",
+      "bg-[var(--color-castify-text)] text-[var(--color-castify-surface)]",
+    ],
     ["secondary", "border-[var(--color-castify-rule)]"],
     ["ghost", "text-[var(--color-castify-accent-strong)]"],
-    ["destructive", "text-[var(--color-danger)]"],
+    [
+      "destructive",
+      "bg-[var(--color-danger-subtle)] text-[var(--color-danger)]",
+    ],
   ] as const)("%s variant carries its token styling", (variant, marker) => {
     render(<Button variant={variant}>Go</Button>);
     expect(screen.getByRole("button").className).toContain(marker);
@@ -35,7 +43,7 @@ describe("Button", () => {
   it("defaults to the primary variant", () => {
     render(<Button>Go</Button>);
     expect(screen.getByRole("button").className).toContain(
-      "border-[var(--color-castify-accent)]",
+      "bg-[var(--color-castify-text)]",
     );
   });
 

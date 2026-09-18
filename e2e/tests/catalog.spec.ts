@@ -41,7 +41,7 @@ test.describe("Catalog flow (e2e mock)", () => {
     // Verify 3 videos on the home page (vacation, concert, shared-doc)
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All files" }),
+      page.getByRole("heading", { name: "All videos" }),
     ).toBeVisible();
     await expect(
       page.locator("#all-videos").getByText("3 videos"),
@@ -56,7 +56,7 @@ test.describe("Catalog flow (e2e mock)", () => {
     // 4 unique videos: 3 GD + 2 DB − 1 shared deduped
     await page.reload();
     await expect(
-      page.getByRole("heading", { name: "All files" }),
+      page.getByRole("heading", { name: "All videos" }),
     ).toBeVisible();
     // Scope to the grid — M9's library header ("Your library · 4 videos …")
     // also matches the substring.

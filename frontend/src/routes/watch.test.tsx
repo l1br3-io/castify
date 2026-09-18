@@ -1,5 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, screen, act, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  screen,
+  act,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { WatchPage } from "./watch";
@@ -267,10 +273,10 @@ describe("WatchPage", () => {
     fireEvent.click(
       within(details as HTMLElement).getByText("Technical details"),
     );
+    expect(within(details as HTMLElement).getByText("video/mp4")).toBeVisible();
     expect(
-      within(details as HTMLElement).getByText("video/mp4"),
+      within(details as HTMLElement).getByText("1920 × 1080"),
     ).toBeVisible();
-    expect(within(details as HTMLElement).getByText("1920 × 1080")).toBeVisible();
   });
 
   it("renders the video optimistically when mime_type is null, then falls back on error", async () => {
@@ -311,7 +317,9 @@ describe("WatchPage", () => {
   it("shows a generic error message on 500", async () => {
     renderWatchPage("v1", () => jsonError(500, "database is locked"));
 
-    expect(await screen.findByText("Couldn't load this video")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Couldn't load this video"),
+    ).toBeInTheDocument();
     expect(screen.getByText(/database is locked/)).toBeInTheDocument();
     // FR-4.2: non-404 errors are transient — must NOT wipe the progress entry.
     expect(mockClearProgress).not.toHaveBeenCalled();
@@ -432,24 +440,21 @@ describe("WatchPage", () => {
     setCsrfToken("csrf-test");
     mockSaveShareLink.mockResolvedValue(undefined);
     const base = watchFetch();
-    const { fetchSpy } = renderWatchPage(
-      "v1",
-      (input, init) => {
-        const url = String(input);
-        if (url === "/api/shares" && (init?.method ?? "GET") === "POST") {
-          return jsonResponse(
-            {
-              id: "s1",
-              title: "cat.mp4",
-              token: "tok_abc",
-              share_url: "/share/tok_abc",
-            },
-            201,
-          );
-        }
-        return base(input);
-      },
-    );
+    const { fetchSpy } = renderWatchPage("v1", (input, init) => {
+      const url = String(input);
+      if (url === "/api/shares" && (init?.method ?? "GET") === "POST") {
+        return jsonResponse(
+          {
+            id: "s1",
+            title: "cat.mp4",
+            token: "tok_abc",
+            share_url: "/share/tok_abc",
+          },
+          201,
+        );
+      }
+      return base(input);
+    });
 
     await screen.findByRole("heading", { name: "cat.mp4" });
     fireEvent.click(screen.getByRole("button", { name: "Share" }));
@@ -462,7 +467,9 @@ describe("WatchPage", () => {
     // Create → exactly one POST for this item with defaults omitted. The
     // generated-name prefill is cleared first — title semantics live in
     // share-dialog.test.tsx; this test targets the page flow.
-    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: "" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
     let posts: [unknown, RequestInit?][] = [];
     await waitFor(() => {
@@ -991,7 +998,10 @@ describe("WatchPage", () => {
       expect(el).toHaveAttribute("src");
       return el!;
     });
-    expect(video).toHaveAttribute("src", "https://cdn.example.com/v1-attempt1.mp4");
+    expect(video).toHaveAttribute(
+      "src",
+      "https://cdn.example.com/v1-attempt1.mp4",
+    );
     expect(streamUrlCallCount).toBe(1);
 
     // Simulate CDN URL expiry: the `<video>` element fires `error`. The
@@ -1000,7 +1010,10 @@ describe("WatchPage", () => {
     fireEvent(video, new Event("error"));
 
     await waitFor(() => {
-      expect(video).toHaveAttribute("src", "https://cdn.example.com/v1-attempt2.mp4");
+      expect(video).toHaveAttribute(
+        "src",
+        "https://cdn.example.com/v1-attempt2.mp4",
+      );
     });
     expect(streamUrlCallCount).toBe(2);
 
@@ -1034,7 +1047,10 @@ describe("WatchPage", () => {
     // Wait for the retry to land (the same URL is returned, but the retry
     // counter has advanced).
     await waitFor(() => {
-      expect(video).toHaveAttribute("src", "https://cdn.example.com/broken.mp4");
+      expect(video).toHaveAttribute(
+        "src",
+        "https://cdn.example.com/broken.mp4",
+      );
     });
 
     // Second error → now `hasError` flips and the unsupported-format card
@@ -1089,13 +1105,11 @@ describe("WatchPage", () => {
     expect(
       await screen.findByText("Reconnect Google Drive to play this video"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/invalid_grant/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/invalid_grant/)).not.toBeInTheDocument();
 
     // Call-to-action link points at the Sources page.
     expect(
-      screen.getByRole("link", { name: "Go to Sources" }),
+      screen.getByRole("link", { name: "Go to Connections" }),
     ).toHaveAttribute("href", "/connections");
 
     // No `<video>` element — the player is replaced entirely.
@@ -1103,7 +1117,9 @@ describe("WatchPage", () => {
 
     // Video metadata still renders (DB row is local — only provider byte
     // access is blocked).
-    expect(screen.getByRole("heading", { name: "cat.mp4" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "cat.mp4" }),
+    ).toBeInTheDocument();
   });
 
   it("falls back to the video's provider label when reauth body omits provider", async () => {
@@ -1145,10 +1161,7 @@ describe("WatchPage", () => {
       if (url === `/api/videos/v1/stream-url`) {
         // A plain 502 — e.g. transient provider outage — must NOT trigger
         // the reconnect UI; only `code: "reauth_required"` does.
-        return jsonResponse(
-          { status: "error", message: "provider down" },
-          502,
-        );
+        return jsonResponse({ status: "error", message: "provider down" }, 502);
       }
       return jsonError(404, "unmocked");
     };
@@ -1158,9 +1171,7 @@ describe("WatchPage", () => {
     // Wait for the video metadata to render, then verify the reconnect
     // card never appears.
     await screen.findByRole("heading", { name: "cat.mp4" });
-    expect(
-      screen.queryByText(/Reconnect/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reconnect/)).not.toBeInTheDocument();
   });
 
   it("surfaces the Reconnect card even when the video's MIME type is unplayable", async () => {
@@ -1215,9 +1226,7 @@ describe("WatchPage", () => {
         url.startsWith("/api/connections/google_drive/start") &&
         method === "POST"
       ) {
-        expect(url).toContain(
-          `return_to=${encodeURIComponent("/watch/v1")}`,
-        );
+        expect(url).toContain(`return_to=${encodeURIComponent("/watch/v1")}`);
         return jsonResponse({ auth_url: "https://provider.example/auth" });
       }
       return jsonError(404, "unmocked");
@@ -1536,9 +1545,7 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     // Select the PGS track → burn confirmation dialog appears.
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /PGS/ }));
-    expect(
-      screen.getByRole("dialog", { name: /burn/i }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: /burn/i })).toBeInTheDocument();
 
     // Confirm → the master URL gains ?burn_subtitles=p1.
     fireEvent.click(screen.getByRole("button", { name: "Yes" }));
@@ -1609,7 +1616,10 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
     renderWatchPage("v1", (input) => {
       const url = String(input);
       if (url === `/api/videos/v1`)
-        return jsonResponse({ ...VIDEO_DETAIL, subtitle_tracks: [SRT_TRACK, PGS_TRACK] });
+        return jsonResponse({
+          ...VIDEO_DETAIL,
+          subtitle_tracks: [SRT_TRACK, PGS_TRACK],
+        });
       if (url === `/api/videos/v1/thumbnail`)
         return new Response("fake-image", { status: 200 });
       if (url === `/api/videos/v1/stream-url`) {
@@ -1624,8 +1634,6 @@ describe("WatchPage — burn-in stream refetch (M8 Task 010)", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(
-      screen.getByRole("menuitemradio", { name: /PGS/ }),
-    ).toBeDisabled();
+    expect(screen.getByRole("menuitemradio", { name: /PGS/ })).toBeDisabled();
   });
 });

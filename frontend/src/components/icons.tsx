@@ -329,6 +329,24 @@ export function CloseIcon({ className }: PlayerIconProps) {
   );
 }
 
+/** Menu — hamburger, opens the mobile navigation drawer. */
+export function MenuIcon({ className }: PlayerIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 6h18M3 12h18M3 18h18" />
+    </svg>
+  );
+}
+
 /** Sliders — "more filters" drawer toggle. */
 export function SlidersIcon({ className }: PlayerIconProps) {
   return (

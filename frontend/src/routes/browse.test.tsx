@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { Route, Routes } from "react-router-dom";
 
+import { AppLayout } from "../layouts/app-layout";
 import { BrowsePage } from "./browse";
 import { setCsrfToken } from "../api/client";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
@@ -30,7 +32,11 @@ const VIDEO_PAGE_ONE = {
       width: 1920,
       height: 1080,
       sources: [
-        { connection_id: "c1", provider: "google_drive", provider_file_id: "gd-1" },
+        {
+          connection_id: "c1",
+          provider: "google_drive",
+          provider_file_id: "gd-1",
+        },
       ],
       created_at: "2026-01-01T00:00:00Z",
       path: "/Movies/cat.mp4",
@@ -50,7 +56,11 @@ const VIDEO_PAGE_ONE = {
       width: 3840,
       height: 2160,
       sources: [
-        { connection_id: "c1", provider: "google_drive", provider_file_id: "gd-2" },
+        {
+          connection_id: "c1",
+          provider: "google_drive",
+          provider_file_id: "gd-2",
+        },
         { connection_id: "c2", provider: "dropbox", provider_file_id: "db-1" },
       ],
       created_at: "2026-01-02T00:00:00Z",
@@ -140,6 +150,34 @@ function browseFetch(opts: BrowseFetchOpts = {}) {
   };
 }
 
+/** Render BrowsePage inside the app shell — the search field lives in the
+ * topbar (AppLayout), so search tests drive it through the layout. The
+ * wrapper answers the shell's own GETs (/api/session, /api/folders/tree)
+ * before delegating to the browse handler. */
+function renderBrowse(
+  options: Parameters<typeof renderWithProviders>[1] = {},
+): ReturnType<typeof renderWithProviders> {
+  const inner = options.fetchImplementation;
+  return renderWithProviders(
+    <Routes>
+      <Route path="/" element={<AppLayout />}>
+        <Route index element={<BrowsePage />} />
+      </Route>
+    </Routes>,
+    {
+      ...options,
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        if (url === "/api/session")
+          return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
+        if (url === "/api/folders/tree") return jsonResponse([]);
+        if (inner) return inner(input, init);
+        return browseFetch()(input);
+      },
+    },
+  );
+}
+
 describe("BrowsePage", () => {
   // `restoreMocks: true` in vitest config resets the module-level
   // `vi.mock` factory defaults between tests. Re-establish the
@@ -155,7 +193,7 @@ describe("BrowsePage", () => {
   // --- Classical stat cards row (task 011) ---
 
   it("renders the Classical stat cards row with honest figures and no featured hero", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         connections: [
           {
@@ -189,7 +227,7 @@ describe("BrowsePage", () => {
   });
 
   it("names the scanning provider in the Now scanning card while a scan runs", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         connections: [
           {
@@ -214,20 +252,22 @@ describe("BrowsePage", () => {
   });
 
   it("keeps a single page heading for a11y while stats move into cards", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     const h1 = await screen.findByRole("heading", { level: 1 });
     expect(h1).toHaveTextContent("Your library");
   });
 
   it("staggers the four top-level sections with ~60ms offsets on mount", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
     await screen.findByRole("heading", { level: 1 });
 
-    const staggered = Array.from(container.querySelectorAll(".animate-stagger-in"));
+    const staggered = Array.from(
+      container.querySelectorAll(".animate-stagger-in"),
+    );
     // stats → rails → all-files grid → folder organizer (spec IA order).
     expect(staggered).toHaveLength(4);
     expect(staggered[2]).toHaveAttribute("id", "all-videos");
@@ -238,7 +278,7 @@ describe("BrowsePage", () => {
   });
 
   it("does not replay the stagger when search clears — animated containers stay mounted", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
@@ -261,19 +301,30 @@ describe("BrowsePage", () => {
     expect(container.contains(railsWrapper)).toBe(true);
   });
 
-  it("renders skeleton header on initial load before data resolves", () => {
-    renderWithProviders(<BrowsePage />, {
-      fetchImplementation: () => new Promise<Response>(() => {}),
+  it("renders skeleton header on initial load before data resolves", async () => {
+    renderBrowse({
+      // Session settles (chrome renders) while the catalog stays pending —
+      // BrowsePage holds its skeleton.
+      fetchImplementation: (input) => {
+        if (String(input) === "/api/session")
+          return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
+        return new Promise<Response>(() => {});
+      },
     });
-    // Skeleton has animate-pulse and no heading text.
-    expect(screen.queryByRole("heading", { name: "cat.mp4" })).not.toBeInTheDocument();
-    expect(document.querySelector(".animate-pulse")).not.toBeNull();
+    // Skeleton has animate-pulse and no heading text. The shell settles
+    // the session query first (async), so poll for the browse skeleton.
+    expect(
+      screen.queryByRole("heading", { name: "cat.mp4" }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.querySelector(".animate-pulse")).not.toBeNull();
+    });
   });
 
   // --- Grid ---
 
   it("renders poster cards in the grid section with thumbnail srcs", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -290,18 +341,20 @@ describe("BrowsePage", () => {
   });
 
   it("renders all nine sort options in the dropdown", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     const select = screen.getByLabelText("Sort videos");
     const options = select.querySelectorAll("option");
     expect(options.length).toBe(9);
     expect(screen.getByRole("option", { name: "Newest" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Top Rated" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Top Rated" }),
+    ).toBeInTheDocument();
   });
 
   it("changes the sort query param and resets to page 1 when sort changes", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -323,7 +376,7 @@ describe("BrowsePage", () => {
   });
 
   it("navigates to the next page when Next is clicked", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: (input) => {
         const url = String(input);
         if (url === "/api/connections") return jsonResponse([]);
@@ -337,7 +390,13 @@ describe("BrowsePage", () => {
             videos:
               page === 1
                 ? VIDEO_PAGE_ONE.videos
-                : [{ ...VIDEO_PAGE_ONE.videos[0], id: "v-page2", name: "page2.mp4" }],
+                : [
+                    {
+                      ...VIDEO_PAGE_ONE.videos[0],
+                      id: "v-page2",
+                      name: "page2.mp4",
+                    },
+                  ],
           });
         }
         return jsonError(404, "unmocked");
@@ -354,7 +413,7 @@ describe("BrowsePage", () => {
   });
 
   it("uses a responsive grid with the spec'd breakpoints in the grid section", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -367,12 +426,13 @@ describe("BrowsePage", () => {
   });
 
   it("shows an error message when the videos request fails", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: (input) => {
         const url = String(input);
         if (url === "/api/connections") return jsonResponse([]);
         if (url.startsWith("/api/videos/folders")) return jsonResponse([]);
-        if (url.startsWith("/api/videos")) return jsonError(500, "database is locked");
+        if (url.startsWith("/api/videos"))
+          return jsonError(500, "database is locked");
         return jsonError(404, "unmocked");
       },
     });
@@ -383,7 +443,7 @@ describe("BrowsePage", () => {
   // --- Empty states ---
 
   it("shows the scan-aware empty state when the library is empty", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({ videoPage: EMPTY_VIDEO_PAGE }),
     });
 
@@ -394,7 +454,7 @@ describe("BrowsePage", () => {
   });
 
   it("shows the scanning message when a connection is mid-scan", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         videoPage: EMPTY_VIDEO_PAGE,
         connections: [
@@ -411,7 +471,9 @@ describe("BrowsePage", () => {
       }),
     });
 
-    expect(await screen.findByText("Scanning your cloud\u2026")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Scanning your cloud\u2026"),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Connect a provider" }),
     ).not.toBeInTheDocument();
@@ -420,12 +482,14 @@ describe("BrowsePage", () => {
   // --- Shelves ---
 
   it("renders the Recently added shelf with a View All button", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     // "Recently added" appears as a rail heading (level 2), alongside
-    // "All files" in the grid section.
+    // "All videos" in the grid section.
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    expect(screen.getByRole("heading", { name: "Recently added" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Recently added" }),
+    ).toBeInTheDocument();
 
     // View All button for Recently Added.
     const viewAllButtons = screen.getAllByRole("button", { name: "View All" });
@@ -433,14 +497,16 @@ describe("BrowsePage", () => {
   });
 
   it("hides the Favorites shelf when owner has no favorites", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    expect(screen.queryByRole("heading", { name: "Favorites" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Favorites" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the Favorites shelf when favorites exist", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         favorites: {
           videos: [{ ...VIDEO_PAGE_ONE.videos[1], is_favorite: true }],
@@ -451,13 +517,15 @@ describe("BrowsePage", () => {
       }),
     });
 
-    expect(await screen.findByRole("heading", { name: "Favorites" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Favorites" }),
+    ).toBeInTheDocument();
   });
 
   // --- View All ---
 
   it("View All on Favorites applies favorites filter to the grid section", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch({
         favorites: {
           videos: [{ ...VIDEO_PAGE_ONE.videos[1], is_favorite: true }],
@@ -469,11 +537,15 @@ describe("BrowsePage", () => {
     });
 
     // Wait for the Favorites shelf to appear.
-    const favoritesHeading = await screen.findByRole("heading", { name: "Favorites" });
+    const favoritesHeading = await screen.findByRole("heading", {
+      name: "Favorites",
+    });
 
     // The Favorites shelf's View All is the button within the same section.
     const favoritesSection = favoritesHeading.closest("section")!;
-    const viewAllBtn = within(favoritesSection).getByRole("button", { name: "View All" });
+    const viewAllBtn = within(favoritesSection).getByRole("button", {
+      name: "View All",
+    });
 
     fireEvent.click(viewAllBtn);
 
@@ -481,14 +553,16 @@ describe("BrowsePage", () => {
     // The Favorites chip should appear in the grid section.
     await waitFor(() => {
       const gridSection = container.querySelector("#all-videos");
-      expect(within(gridSection as HTMLElement).getByText("Favorites")).toBeInTheDocument();
+      expect(
+        within(gridSection as HTMLElement).getByText("Favorites"),
+      ).toBeInTheDocument();
     });
   });
 
   // --- Search (T9) ---
 
   it("fires a search request after debounce when the user types", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
@@ -510,7 +584,7 @@ describe("BrowsePage", () => {
   });
 
   it("coalesces rapid keystrokes into a single debounced request", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
@@ -533,7 +607,7 @@ describe("BrowsePage", () => {
   });
 
   it("hides rails and shows search results header when searching", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
@@ -546,7 +620,7 @@ describe("BrowsePage", () => {
     // Wait for search results to appear.
     await waitFor(() => {
       expect(
-        screen.getByText('Search results for \u201cconcert\u201d'),
+        screen.getByText("Search results for \u201cconcert\u201d"),
       ).toBeInTheDocument();
     });
 
@@ -557,11 +631,13 @@ describe("BrowsePage", () => {
     expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
 
     // Rails are gone (the poster cards + their headings).
-    expect(screen.queryByRole("heading", { name: "Recently added" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Recently added" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the search-specific empty state when results are empty", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         searchResults: EMPTY_VIDEO_PAGE,
       }),
@@ -575,13 +651,13 @@ describe("BrowsePage", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('No videos match \u201cxyz\u201d'),
+        screen.getByText("No videos match \u201cxyz\u201d"),
       ).toBeInTheDocument();
     });
   });
 
   it("clears the search and returns to browse layout when clear button is clicked", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
 
@@ -593,7 +669,7 @@ describe("BrowsePage", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByText('Search results for \u201cconcert\u201d'),
+        screen.getByText("Search results for \u201cconcert\u201d"),
       ).toBeInTheDocument();
     });
 
@@ -603,14 +679,16 @@ describe("BrowsePage", () => {
     // Should return to browse layout (rails reappear).
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { name: "All files" }),
+        screen.getByRole("heading", { name: "All videos" }),
       ).toBeInTheDocument();
     });
-    expect(screen.queryByRole("heading", { name: /Search results/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: /Search results/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("focuses the search bar when the / keyboard shortcut is pressed", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -624,22 +702,26 @@ describe("BrowsePage", () => {
     expect(searchInput).toHaveFocus();
   });
 
-  it("places the search field in the All-files section, above the grid (Classical IA)", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+  it("places the search field in the topbar, outside the grid section (design IA)", async () => {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
     await screen.findByRole("heading", { level: 1 });
 
+    // The search field lives in the app topbar (its role="search" region),
+    // NOT inside the All-videos grid section.
+    const search = screen.getByRole("search");
+    expect(within(search).getByLabelText("Search videos")).toBeInTheDocument();
     const gridSection = container.querySelector("#all-videos");
     expect(gridSection).not.toBeNull();
     expect(
-      within(gridSection as HTMLElement).getByLabelText("Search videos"),
-    ).toBeInTheDocument();
+      within(gridSection as HTMLElement).queryByLabelText("Search videos"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not trigger the shortcut when typing inside an input", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -662,7 +744,7 @@ describe("BrowsePage", () => {
   // --- T10: Filter panel + URL deep-linking ---
 
   it("deep-links: applies provider filter from URL on initial render", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       initialEntries: ["/?provider=dropbox"],
       fetchImplementation: browseFetch(),
     });
@@ -681,7 +763,7 @@ describe("BrowsePage", () => {
   });
 
   it("writes sort to URL when the dropdown changes", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -703,7 +785,7 @@ describe("BrowsePage", () => {
   });
 
   it("composes search with filters (both q and provider in the request)", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       initialEntries: ["/?provider=google_drive"],
       fetchImplementation: browseFetch({ searchResults: SEARCH_PAGE }),
     });
@@ -728,22 +810,25 @@ describe("BrowsePage", () => {
   });
 
   it("renders the FilterPanel More filters toggle in the grid section", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const gridSection = container.querySelector("#all-videos");
-    const filterToggle = within(gridSection as HTMLElement).getByRole("button", {
-      name: /More filters/i,
-    });
+    const filterToggle = within(gridSection as HTMLElement).getByRole(
+      "button",
+      {
+        name: /More filters/i,
+      },
+    );
     expect(filterToggle).toBeInTheDocument();
     expect(filterToggle).toHaveAttribute("aria-expanded", "false");
   });
 
   it("shows inline provider chips without opening the drawer", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch({
         connections: [
           {
@@ -772,7 +857,7 @@ describe("BrowsePage", () => {
   });
 
   it("applies a filter via the drawer and sends the param in the grid query", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch({
         connections: [
           {
@@ -806,7 +891,7 @@ describe("BrowsePage", () => {
   });
 
   it("shows active-filter chips when a filter is applied via the drawer", async () => {
-    renderWithProviders(<BrowsePage />, {
+    renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -824,7 +909,7 @@ describe("BrowsePage", () => {
   });
 
   it("removes a filter when its chip is clicked", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       fetchImplementation: browseFetch(),
     });
 
@@ -855,7 +940,7 @@ describe("BrowsePage", () => {
   });
 
   it("Clear all resets all filters", async () => {
-    const { fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { fetchSpy } = renderBrowse({
       initialEntries: ["/?provider=google_drive&duration=short&resolution=hd"],
       fetchImplementation: browseFetch({
         connections: [
@@ -891,7 +976,11 @@ describe("BrowsePage", () => {
     await waitFor(() => {
       const lastCall = fetchSpy.mock.calls[fetchSpy.mock.calls.length - 1];
       const url = String(lastCall[0]);
-      if (url.startsWith("/api/videos") && !url.includes("limit=20") && !url.includes("folders")) {
+      if (
+        url.startsWith("/api/videos") &&
+        !url.includes("limit=20") &&
+        !url.includes("folders")
+      ) {
         expect(url).not.toContain("provider=");
         expect(url).not.toContain("duration=");
         expect(url).not.toContain("resolution=");
@@ -900,7 +989,7 @@ describe("BrowsePage", () => {
   });
 
   it("View All on Favorites writes favorites filter to URL (deep-linkable)", async () => {
-    const { container } = renderWithProviders(<BrowsePage />, {
+    const { container } = renderBrowse({
       fetchImplementation: browseFetch({
         favorites: {
           videos: [{ ...VIDEO_PAGE_ONE.videos[1], is_favorite: true }],
@@ -911,23 +1000,29 @@ describe("BrowsePage", () => {
       }),
     });
 
-    const favoritesHeading = await screen.findByRole("heading", { name: "Favorites" });
+    const favoritesHeading = await screen.findByRole("heading", {
+      name: "Favorites",
+    });
     const favoritesSection = favoritesHeading.closest("section")!;
-    const viewAllBtn = within(favoritesSection).getByRole("button", { name: "View All" });
+    const viewAllBtn = within(favoritesSection).getByRole("button", {
+      name: "View All",
+    });
 
     fireEvent.click(viewAllBtn);
 
     // Favorites chip should appear in the grid section.
     await waitFor(() => {
       const gridSection = container.querySelector("#all-videos");
-      expect(within(gridSection as HTMLElement).getByText("Favorites")).toBeInTheDocument();
+      expect(
+        within(gridSection as HTMLElement).getByText("Favorites"),
+      ).toBeInTheDocument();
     });
   });
 
   // --- T11 personalization integration ---
 
   it("favorite toggle on a grid card fires POST /favorite", async () => {
-    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { container, fetchSpy } = renderBrowse({
       fetchImplementation: (input, init) => {
         const url = String(input);
         const method = init?.method ?? "GET";
@@ -944,9 +1039,12 @@ describe("BrowsePage", () => {
     // Scope to the grid section — the hero + Recently added shelf also have
     // favorite toggles for v1.
     const gridSection = container.querySelector("#all-videos")!;
-    const gridFavoriteBtns = within(gridSection as HTMLElement).getAllByRole("button", {
-      name: /add to favorites/i,
-    });
+    const gridFavoriteBtns = within(gridSection as HTMLElement).getAllByRole(
+      "button",
+      {
+        name: /add to favorites/i,
+      },
+    );
     expect(gridFavoriteBtns.length).toBeGreaterThan(0);
     fireEvent.click(gridFavoriteBtns[0]);
 
@@ -961,7 +1059,7 @@ describe("BrowsePage", () => {
   });
 
   it("rating star click on a grid card fires PUT /rating", async () => {
-    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { container, fetchSpy } = renderBrowse({
       fetchImplementation: (input, init) => {
         const url = String(input);
         const method = init?.method ?? "GET";
@@ -976,9 +1074,12 @@ describe("BrowsePage", () => {
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     const gridSection = container.querySelector("#all-videos")!;
-    const gridStarBtns = within(gridSection as HTMLElement).getAllByRole("radio", {
-      name: "4 stars",
-    });
+    const gridStarBtns = within(gridSection as HTMLElement).getAllByRole(
+      "radio",
+      {
+        name: "4 stars",
+      },
+    );
     expect(gridStarBtns.length).toBeGreaterThan(0);
     fireEvent.click(gridStarBtns[0]);
 
@@ -1053,7 +1154,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("hides the Continue watching & listening shelf when no entries exist (FR-11.5)", async () => {
     mockGetInProgressVideos.mockResolvedValue([]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
@@ -1063,8 +1164,10 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("hides the Continue watching & listening shelf while IndexedDB is still loading", async () => {
     // Never-resolving promise keeps the query in `isLoading` state.
-    mockGetInProgressVideos.mockReturnValue(new Promise<ProgressEntry[]>(() => {}));
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    mockGetInProgressVideos.mockReturnValue(
+      new Promise<ProgressEntry[]>(() => {}),
+    );
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
@@ -1074,10 +1177,12 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("renders the Continue watching & listening shelf when entries exist (FR-11.1)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     expect(
-      await screen.findByRole("heading", { name: "Continue watching & listening" }),
+      await screen.findByRole("heading", {
+        name: "Continue watching & listening",
+      }),
     ).toBeInTheDocument();
     // Card renders the entry's name.
     expect(screen.getByText("continue-me.mp4")).toBeInTheDocument();
@@ -1085,9 +1190,11 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("renders a progress bar on each continue-watching card (FR-11.3)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue watching & listening" });
+    await screen.findByRole("heading", {
+      name: "Continue watching & listening",
+    });
     const bar = screen.getByRole("progressbar", { name: "Watch progress" });
     // 30s of 120s = 25%
     expect(bar).toHaveAttribute("aria-valuenow", "25");
@@ -1095,9 +1202,11 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("resume link points at /watch/:id (FR-11.4)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue watching & listening" });
+    await screen.findByRole("heading", {
+      name: "Continue watching & listening",
+    });
     const resumeLink = screen.getByRole("link", {
       name: "Resume continue-me.mp4",
     });
@@ -1106,7 +1215,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("places the Continue watching & listening rail between the library header and Recently Added", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     const cwHeading = await screen.findByRole("heading", {
       name: "Continue watching & listening",
@@ -1125,7 +1234,7 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("styles the Continue watching & listening heading in the display serif voice", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     const heading = await screen.findByRole("heading", {
       name: "Continue watching & listening",
@@ -1137,9 +1246,11 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
   it("hides the Continue watching & listening shelf during active search (T9 focused-results mode)", async () => {
     mockGetInProgressVideos.mockResolvedValue([inProgressEntry()]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue watching & listening" });
+    await screen.findByRole("heading", {
+      name: "Continue watching & listening",
+    });
 
     // Type a query — hero + shelves (incl. CW) hide during search.
     fireEvent.change(screen.getByRole("textbox", { name: "Search videos" }), {
@@ -1148,7 +1259,9 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
 
     await waitFor(() => {
       expect(
-        screen.queryByRole("heading", { name: "Continue watching & listening" }),
+        screen.queryByRole("heading", {
+          name: "Continue watching & listening",
+        }),
       ).not.toBeInTheDocument();
     });
   });
@@ -1156,11 +1269,17 @@ describe("BrowsePage — continue-watching shelf (T13)", () => {
   it("passes the sibling list as router state queue on each card (T11)", async () => {
     mockGetInProgressVideos.mockResolvedValue([
       inProgressEntry({ videoId: "cw-a", videoName: "cw-a.mp4" }),
-      inProgressEntry({ videoId: "cw-b", videoName: "cw-b.mp4", updatedAt: 2_000 }),
+      inProgressEntry({
+        videoId: "cw-b",
+        videoName: "cw-b.mp4",
+        updatedAt: 2_000,
+      }),
     ]);
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
-    await screen.findByRole("heading", { name: "Continue watching & listening" });
+    await screen.findByRole("heading", {
+      name: "Continue watching & listening",
+    });
 
     // Clicking the first card should navigate to /watch/cw-a carrying the
     // full sibling list in router state.
@@ -1195,7 +1314,7 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
   afterEach(() => setCsrfToken(null));
 
   it("selects items, shares them in click order, and shows the link once", async () => {
-    const { container, fetchSpy } = renderWithProviders(<BrowsePage />, {
+    const { container, fetchSpy } = renderBrowse({
       fetchImplementation: (input, init) => {
         const url = String(input);
         const method = init?.method ?? "GET";
@@ -1238,7 +1357,9 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
     // Create → one POST in click order. The generated-name prefill is
     // cleared first — title semantics live in share-dialog.test.tsx; this
     // test targets the page flow.
-    fireEvent.change(screen.getByLabelText(/title/i), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText(/title/i), {
+      target: { value: "" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /create share/i }));
 
     let posts: [unknown, RequestInit?][] = [];
@@ -1264,7 +1385,7 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
   });
 
   it("Cancel exits select mode and clears the selection", async () => {
-    renderWithProviders(<BrowsePage />, { fetchImplementation: browseFetch() });
+    renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 

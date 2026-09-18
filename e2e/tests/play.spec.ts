@@ -168,7 +168,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All files" }),
+      page.getByRole("heading", { name: "All videos" }),
     ).toBeVisible();
 
     const vacation = gdByName("vacation.mp4");
@@ -315,7 +315,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All files" }),
+      page.getByRole("heading", { name: "All videos" }),
     ).toBeVisible();
 
     // Click the FIRST playable PosterCard in the All files grid. The grid's

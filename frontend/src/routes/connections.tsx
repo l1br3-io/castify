@@ -88,7 +88,7 @@ export function ConnectionsPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h1 className="text-3xl">Sources</h1>
+        <h1 className="text-2xl">Connections</h1>
         <p className="mt-2 text-[var(--color-castify-muted)]">
           Connect a cloud provider to scan it for media. Your tokens are
           encrypted at rest.
@@ -194,16 +194,22 @@ function ProviderCard({
 function ConnectedCard({ connection }: { connection: ConnectionDto }) {
   const provider = connection.provider;
   return (
-    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2.5">
-          <ProviderMark
-            provider={provider}
-            className={cn("size-5 shrink-0", MARK_TONE[provider])}
-          />
+          {/* Mark in a sunken tile (the design's icon well). Brand color
+              appears only on the mark itself — never as a fill. */}
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-[var(--color-castify-rule)] bg-[var(--color-castify-sunken)]">
+            <ProviderMark
+              provider={provider}
+              className={cn("size-5 shrink-0", MARK_TONE[provider])}
+            />
+          </span>
           <div>
-            <h2 className="text-lg">{PROVIDER_LABELS[provider]}</h2>
-            <p className="text-sm text-[var(--color-castify-muted)]">
+            <h2 className="text-[15px] font-semibold">
+              {PROVIDER_LABELS[provider]}
+            </h2>
+            <p className="text-xs text-[var(--color-castify-muted)]">
               {connection.provider_account_email ?? "Connected"}
             </p>
           </div>
@@ -248,36 +254,43 @@ function ScanBadge({ status }: { status: ConnectionDto["scan_status"] }) {
       </span>
     );
   }
+  // The design's teal "Synced" pill — success on its soft fill is an AA
+  // pair in both themes (index.css ratio table).
   return (
-    <span className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-muted)]">
-      Connected
+    <span className="rounded-[var(--radius-pill)] bg-[var(--color-success-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-success)]">
+      Synced
     </span>
   );
 }
 
 function ScanDetail({ connection }: { connection: ConnectionDto }) {
   const videos = connection.video_count;
+  // The design's pcard-stats row: hairline-topped strip, mono metadata.
   if (connection.scan_status === "scanning") {
     return (
-      <p className="text-sm text-[var(--color-castify-muted)]">
-        {videos > 0 ? `Found ${videos} media…` : "Starting scan…"}
-      </p>
+      <div className="flex items-center justify-between border-t border-[var(--color-castify-rule)] pt-3 text-xs text-[var(--color-castify-muted)]">
+        <span>{videos > 0 ? `Found ${videos} media…` : "Starting scan…"}</span>
+      </div>
     );
   }
   if (connection.scan_status === "error") {
     return (
-      <p className="text-sm text-[var(--color-danger)]">
-        Scan failed. Try reconnecting the provider.
-      </p>
+      <div className="flex items-center justify-between border-t border-[var(--color-castify-rule)] pt-3 text-xs">
+        <span className="text-[var(--color-danger)]">
+          Scan failed. Try reconnecting the provider.
+        </span>
+      </div>
     );
   }
   return (
-    <p className="figure text-sm text-[var(--color-castify-muted)]">
-      {videos} media
-      {connection.last_scan_at
-        ? ` · last scanned ${formatDate(connection.last_scan_at)}`
-        : ""}
-    </p>
+    <div className="flex items-center justify-between gap-2 border-t border-[var(--color-castify-rule)] pt-3 text-xs text-[var(--color-castify-muted)]">
+      <span className="figure">{videos} media</span>
+      {connection.last_scan_at && (
+        <span className="figure font-mono">
+          Scanned {formatDate(connection.last_scan_at)}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -307,8 +320,6 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
     },
     onError: (err: unknown) => setError(describeError(err)),
   });
-
-
 
   return (
     <>
@@ -340,9 +351,7 @@ function RescanButton({ connection }: { connection: ConnectionDto }) {
           {rescan.isPending ? "Starting…" : "Rescan"}
         </Button>
       )}
-      {error && (
-        <p className="text-xs text-[var(--color-danger)]">{error}</p>
-      )}
+      {error && <p className="text-xs text-[var(--color-danger)]">{error}</p>}
     </>
   );
 }
@@ -412,16 +421,16 @@ function DisconnectButton({ connection }: { connection: ConnectionDto }) {
 // Google and Microsoft brand guidelines specify a light surface button with
 // the multicolor mark and dark ink; Dropbox specifies its brand-blue fill
 // with a white label (≥4.5:1 AA). Labels state the action ("Connect Google
-// Drive"). S3 has no brand — the standard primary (gold outline). The
+// Drive"). S3 has no brand — the standard primary (ink fill). The
 // embedded mark is re-tagged `brand-mark`: the card header already carries
 // the canonical decorative mark.
 const BRAND_BUTTON_CLASSES: Record<ProviderKey, string> = {
   google_drive:
-    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-neutral-100)] text-[var(--color-castify-neutral-900)] hover:bg-[var(--color-castify-neutral-200)] active:bg-[var(--color-castify-neutral-300)]",
+    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] text-[var(--color-castify-text)] hover:bg-[var(--color-castify-hover)] active:bg-[var(--color-castify-press)]",
   dropbox:
     "border border-transparent bg-[var(--color-brand-dropbox)] text-white hover:opacity-90 active:opacity-80",
   onedrive:
-    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-neutral-100)] text-[var(--color-castify-neutral-900)] hover:bg-[var(--color-castify-neutral-200)] active:bg-[var(--color-castify-neutral-300)]",
+    "border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] text-[var(--color-castify-text)] hover:bg-[var(--color-castify-hover)] active:bg-[var(--color-castify-press)]",
   s3: "",
 };
 
@@ -450,7 +459,7 @@ function BrandConnectButton({
       disabled={pending}
       aria-busy={pending || undefined}
       className={cn(
-        "inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius-button)] px-5 py-2 text-sm font-display font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70",
+        "inline-flex w-full items-center justify-center gap-2 rounded-[var(--radius-button)] px-5 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-progress aria-busy:opacity-70",
         FOCUS_RING,
         BRAND_BUTTON_CLASSES[provider],
       )}
@@ -471,13 +480,17 @@ function BrandConnectButton({
 function AvailableCardHeader({ provider }: { provider: ProviderKey }) {
   return (
     <div className="flex items-center gap-2.5">
-      <ProviderMark
-        provider={provider}
-        className={cn("size-5 shrink-0", MARK_TONE[provider])}
-      />
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-[var(--color-castify-rule)] bg-[var(--color-castify-sunken)]">
+        <ProviderMark
+          provider={provider}
+          className={cn("size-5 shrink-0", MARK_TONE[provider])}
+        />
+      </span>
       <div>
-        <h2 className="text-lg">{PROVIDER_LABELS[provider]}</h2>
-        <p className="text-sm text-[var(--color-castify-muted)]">
+        <h2 className="text-[15px] font-semibold">
+          {PROVIDER_LABELS[provider]}
+        </h2>
+        <p className="text-xs text-[var(--color-castify-muted)]">
           Not connected
         </p>
       </div>
@@ -506,7 +519,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   // than a form with nothing to render.
   if (entry.authMode === "credentials") {
     return (
-      <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+      <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
         <AvailableCardHeader provider={provider} />
         <p className="text-sm text-[var(--color-castify-muted)]">
           Connects with storage credentials — an endpoint, bucket, and access
@@ -536,7 +549,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   }
 
   return (
-    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] p-4">
+    <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
       <AvailableCardHeader provider={provider} />
       <p className="text-sm text-[var(--color-castify-muted)]">
         Connect to scan your {PROVIDER_LABELS[provider]} for media.
@@ -592,7 +605,10 @@ function Banner({
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss"
-        className={cn("shrink-0 px-1 opacity-60 transition hover:opacity-100", FOCUS_RING)}
+        className={cn(
+          "shrink-0 px-1 opacity-60 transition hover:opacity-100",
+          FOCUS_RING,
+        )}
       >
         ×
       </button>

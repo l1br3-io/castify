@@ -57,11 +57,11 @@ type PosterCardProps = {
   /** Rating row in the card body — T11 RatingStars, below the year/provider
    *  line. Always visible (the slot itself controls its own styling). */
   ratingSlot?: ReactNode;
-/**
- * Access scope for media URLs. Defaults to owner routes; share pages pass
- * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
- * share mirror instead of the session-gated owner route.
- */
+  /**
+   * Access scope for media URLs. Defaults to owner routes; share pages pass
+   * `{ kind: "share", token }` so thumbnails resolve through the pre-auth
+   * share mirror instead of the session-gated owner route.
+   */
   scope?: AccessScope;
   /**
    * Selection mode (task 012 browse multi-select). When set, the card
@@ -96,15 +96,8 @@ export function PosterCard({
       onClick={selection ? selection.onToggle : undefined}
       className={`
         relative group flex flex-col gap-2
-        rounded-[var(--radius-card)] border
-        border-[var(--color-castify-rule)]
-        bg-[var(--color-castify-surface)] p-2
-        transition duration-150 ease-out
-        hover:border-[var(--color-castify-accent)]/40
-        focus-within:border-[var(--color-castify-accent)]/40
-        motion-reduce:transition-none
         ${selection ? "cursor-pointer" : ""}
-        ${selection?.isSelected ? "border-[var(--color-castify-accent)] ring-1 ring-[var(--color-castify-accent)]" : ""}
+        ${selection?.isSelected ? "rounded-[var(--radius-card)] ring-2 ring-[var(--color-castify-accent)]" : ""}
       `}
     >
       {!selection && href && (
@@ -116,9 +109,9 @@ export function PosterCard({
           // `focus-within:ring` below so it visually wraps the whole card.
           className="absolute inset-0 rounded-[var(--radius-card)] z-0
                      outline-none focus-visible:ring-2
-                     focus-visible:ring-[var(--color-castify-accent)]
+                     focus-visible:ring-[var(--color-focus)]
                      focus-visible:ring-offset-2
-                     focus-visible:ring-offset-[var(--color-castify-surface)]"
+                     focus-visible:ring-offset-[var(--color-castify-canvas)]"
           aria-label={`Play ${video.name}`}
         />
       )}
@@ -139,9 +132,9 @@ export function PosterCard({
         src={scope ? thumbnailUrl(video.id, scope) : undefined}
         topRightSlot={topRightSlot}
       />
-      <div className="flex flex-col gap-1 px-1 pb-1">
+      <div className="flex flex-col gap-1">
         <h3
-          className="line-clamp-2 text-sm font-medium leading-tight group-hover:underline group-focus-within:underline"
+          className="line-clamp-2 text-[13px] font-semibold leading-snug group-hover:underline group-focus-within:underline"
           title={video.name}
         >
           {video.name}
@@ -151,9 +144,7 @@ export function PosterCard({
           <ProviderBadge provider={video.provider} />
           {others.length > 0 && <DedupBadge providers={others} />}
         </div>
-        {ratingSlot && (
-          <div className="relative z-10 w-fit">{ratingSlot}</div>
-        )}
+        {ratingSlot && <div className="relative z-10 w-fit">{ratingSlot}</div>}
       </div>
     </article>
   );

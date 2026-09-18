@@ -36,15 +36,24 @@ function renderLayout(fetchImpl: FetchHandler) {
       </Route>
       <Route path="/login" element={<div data-testid="login">Login</div>} />
     </Routes>,
-    { initialEntries: ["/"], fetchImplementation: fetchImpl },
+    {
+      initialEntries: ["/"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        // The shell answers the Library sidebar's folder tree; individual
+        // tests mock everything else.
+        if (url === "/api/folders/tree") return jsonResponse([]);
+        return fetchImpl(input, init);
+      },
+    },
   );
 }
 
-describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
+describe("AppLayout (design frame shell: topbar + sidebar + drawer)", () => {
   beforeEach(() => setCsrfToken(null));
   afterEach(() => setCsrfToken(null));
 
-  it("renders the sidebar nav in demo order with the owner chrome when session present", async () => {
+  it("renders the sidebar nav in design order with the owner chrome when session present", async () => {
     renderLayout(() =>
       jsonResponse({
         owner: { id: "u1", display_name: "Alex" },
@@ -54,32 +63,37 @@ describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
     await waitFor(() => {
       expect(screen.getByText("Alex")).toBeInTheDocument();
     });
+    // The account menu is closed — Sign out lives behind it.
     expect(
-      screen.getByRole("button", { name: /sign out/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /sign out/i }),
+    ).not.toBeInTheDocument();
 
-    // Sidebar nav (demo order): Library / Sources / Shares / Settings —
-    // icons are decorative; the link text is the accessible name.
+    // Sidebar nav (design order): Library / Connections / Shares /
+    // Settings — icons are decorative; the link text is the accessible
+    // name.
     const nav = screen.getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
       "Library",
-      "Sources",
+      "Connections",
       "Shares",
       "Settings",
     ]);
+    expect(within(nav).getByRole("link", { name: "Library" })).toHaveAttribute(
+      "href",
+      "/",
+    );
     expect(
-      within(nav).getByRole("link", { name: "Library" }),
-    ).toHaveAttribute("href", "/");
-    expect(
-      within(nav).getByRole("link", { name: "Sources" }),
+      within(nav).getByRole("link", { name: "Connections" }),
     ).toHaveAttribute("href", "/connections");
-    expect(
-      within(nav).getByRole("link", { name: "Shares" }),
-    ).toHaveAttribute("href", "/shares");
-    expect(
-      within(nav).getByRole("link", { name: "Settings" }),
-    ).toHaveAttribute("href", "/settings");
+    expect(within(nav).getByRole("link", { name: "Shares" })).toHaveAttribute(
+      "href",
+      "/shares",
+    );
+    expect(within(nav).getByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "/settings",
+    );
   });
 
   it("sends DELETE /api/session with x-csrf-token on sign-out", async () => {
@@ -101,7 +115,9 @@ describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
       expect(screen.getByText("Alex")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    // Sign out lives in the account menu.
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /sign out/i }));
 
     await waitFor(() => {
       const deleteCall = fetchSpy.mock.calls.find(
@@ -110,9 +126,7 @@ describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
           (init as RequestInit)?.method === "DELETE",
       );
       expect(deleteCall).toBeDefined();
-      const headers = new Headers(
-        (deleteCall![1] as RequestInit).headers,
-      );
+      const headers = new Headers((deleteCall![1] as RequestInit).headers);
       expect(headers.get("x-csrf-token")).toBe("test-csrf");
     });
   });
@@ -127,10 +141,12 @@ describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
-    expect(screen.queryByText("Sources")).not.toBeInTheDocument();
-    // The sidebar wordmark is session chrome; logged-out pages render
+    expect(screen.queryByText("Connections")).not.toBeInTheDocument();
+    // The topbar brand is session chrome; logged-out pages render
     // bare (login/setup carry their own brand).
-    expect(screen.queryByRole("link", { name: "Castify" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Castify" }),
+    ).not.toBeInTheDocument();
   });
 
   describe("scan indicator", () => {
@@ -160,9 +176,7 @@ describe("AppLayout (Classical sidebar shell, D5/task 009)", () => {
     });
 
     it("does not render or fetch connections without a session", async () => {
-      const { fetchSpy } = renderLayout(() =>
-        jsonError(401, "unauthorized"),
-      );
+      const { fetchSpy } = renderLayout(() => jsonError(401, "unauthorized"));
 
       await waitFor(() => {
         expect(screen.getByTestId("page")).toBeInTheDocument();

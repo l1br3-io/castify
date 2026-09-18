@@ -88,7 +88,7 @@ test.describe("Browse page (e2e mock)", () => {
 
     // ── Poster grid ────────────────────────────────────────────────
     await expect(
-      page.getByRole("heading", { name: "All files" }),
+      page.getByRole("heading", { name: "All videos" }),
     ).toBeVisible();
     // Scope to the grid — the M9 library header also contains "4 videos".
     await expect(
@@ -114,13 +114,15 @@ test.describe("Browse page (e2e mock)", () => {
     await expect(page.getByText("vacation.mp4")).toHaveCount(0);
     await expect(page.getByText("screenshots.mp4")).toHaveCount(0);
     await expect(page.getByText("shared-doc.mp4")).toHaveCount(0);
-    // Rails + organizer are hidden during active search
+    // Rails + organizer are hidden during active search; the sidebar's
+    // folder tree persists (it is app chrome, not page content).
     await expect(
       page.getByRole("heading", { name: "Recently added" }),
     ).not.toBeVisible();
     await expect(
       page.getByRole("tree", { name: "Folders" }),
-    ).not.toBeVisible();
+    ).toBeVisible();
+    await expect(page.getByTestId("contents-full-path")).not.toBeVisible();
 
     // Clear search → browse layout restores
     await page.getByRole("button", { name: "Clear search" }).click();

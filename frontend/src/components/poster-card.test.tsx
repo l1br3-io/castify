@@ -65,7 +65,9 @@ describe("PosterCard", () => {
       container.querySelector('img[src="/api/videos/v1/thumbnail"]'),
     ).toBeNull();
     expect(
-      container.querySelector('img[src="/api/share/tok_abc/videos/v1/thumbnail"]'),
+      container.querySelector(
+        'img[src="/api/share/tok_abc/videos/v1/thumbnail"]',
+      ),
     ).not.toBeNull();
   });
 
@@ -132,8 +134,9 @@ describe("PosterCard", () => {
     const rating = screen.getByTestId("rating-slot");
     // Document order: name → meta line → rating row.
     const name = screen.getByText("cat.mp4");
-    expect(name.compareDocumentPosition(rating) &
-      Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      name.compareDocumentPosition(rating) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     // The row must sit above the stretched link (relative z-10) so the
     // stars stay clickable, and hug its content (w-fit) so the rest of
     // the strip still clicks through to the link.
@@ -177,7 +180,7 @@ describe("PosterCard", () => {
     // favorite stays clickable.
     const slotContainers = link.parentElement!.querySelectorAll(".z-10");
     expect(slotContainers.length).toBe(1);
-  });  // --- M3 T7: ephemeral queue state propagation ---
+  }); // --- M3 T7: ephemeral queue state propagation ---
 
   // Renders at /watch/:id with the location serialized so the test can
   // assert on `state.queue` after clicking a PosterCard link.
@@ -188,17 +191,20 @@ describe("PosterCard", () => {
     );
   }
 
-  it("hovers shift border + name underline only — no lift (identity pass 005)", () => {
+  it("hovers underline the name only — borderless card, no lift (design)", () => {
     renderWithProviders(<PosterCard video={VIDEO} href="/watch/v1" />);
     const card = screen.getByRole("article");
-    // Border-accent shift kept on both hover and focus.
-    expect(card).toHaveClass("hover:border-[var(--color-castify-accent)]/40");
-    expect(card).toHaveClass("focus-within:border-[var(--color-castify-accent)]/40");
+    // The design's cards are borderless — the thumbnail carries the
+    // hairline — so hover shifts nothing but the name underline.
+    expect(card.className).not.toContain("border");
     // Lift discipline: no translate on the card at all.
     expect(card.className).not.toContain("-translate-y");
     // The video name underlines instead.
     const name = screen.getByText("cat.mp4");
-    expect(name).toHaveClass("group-hover:underline", "group-focus-within:underline");
+    expect(name).toHaveClass(
+      "group-hover:underline",
+      "group-focus-within:underline",
+    );
   });
 
   it("passes `queue` via router state when provided (M3 T7)", () => {

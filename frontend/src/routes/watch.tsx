@@ -64,7 +64,11 @@ import { otherProviders } from "../lib/video";
 import { downloadUrl, subtitleTrackUrl } from "../api/videos";
 import { startConnect } from "../api/connections";
 import { useToast } from "../hooks/use-toast";
-import { PROVIDER_LABELS, type ProviderKey, type VideoDetailDto } from "../api/types";
+import {
+  PROVIDER_LABELS,
+  type ProviderKey,
+  type VideoDetailDto,
+} from "../api/types";
 
 /**
  * The watch page's chrome: theme-invariant colophon ground (`.dark-editorial`)
@@ -209,9 +213,7 @@ export function WatchPage() {
   }
 
   if (strategy === "transcode" || canPlay(video.mime_type)) {
-    return (
-      <VideoPlayer video={video} streamUrlQuery={streamUrlQuery} />
-    );
+    return <VideoPlayer video={video} streamUrlQuery={streamUrlQuery} />;
   }
 
   // stream-url hasn't resolved yet AND the mime type is unplayable — show
@@ -430,187 +432,187 @@ function VideoPlayer({
           ref={containerRef}
           className="relative w-full overflow-hidden rounded-[var(--radius-drawer)] bg-black"
         >
-        <video
-          preload="metadata"
-          poster={posterUrl}
-          src={src}
-          onError={handleVideoError}
-          onEnded={handleEndedEndOfQueue}
-          ref={videoRef}
-          className="block w-full"
-        >
-          {/**
-           * GOTCHA: ASS tracks must bypass the <track> element — native
-           * <track> strips ASS styling to plain text. ASS tracks are routed
-           * to the libass canvas overlay below instead; only non-ASS text
-           * tracks (SRT/VTT) are wired as <track> elements here.
-           */}
-          {video.subtitle_tracks
-            .filter((track) => !isAssFormat(track.format))
-            .map((track) => (
-              <track
-                key={track.id}
-                kind="subtitles"
-                src={subtitleTrackUrl(video.id, track.id)}
-                srcLang={track.language ?? undefined}
-                label={track.language ?? "Unknown"}
-              />
-            ))}
-        </video>
-        {assUrl && (
-          <canvas
-            ref={canvasRef}
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-10"
+          <video
+            preload="metadata"
+            poster={posterUrl}
+            src={src}
+            onError={handleVideoError}
+            onEnded={handleEndedEndOfQueue}
+            ref={videoRef}
+            className="block w-full"
+          >
+            {/**
+             * GOTCHA: ASS tracks must bypass the <track> element — native
+             * <track> strips ASS styling to plain text. ASS tracks are routed
+             * to the libass canvas overlay below instead; only non-ASS text
+             * tracks (SRT/VTT) are wired as <track> elements here.
+             */}
+            {video.subtitle_tracks
+              .filter((track) => !isAssFormat(track.format))
+              .map((track) => (
+                <track
+                  key={track.id}
+                  kind="subtitles"
+                  src={subtitleTrackUrl(video.id, track.id)}
+                  srcLang={track.language ?? undefined}
+                  label={track.language ?? "Unknown"}
+                />
+              ))}
+          </video>
+          {assUrl && (
+            <canvas
+              ref={canvasRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-10"
+            />
+          )}
+          {tracking.showResume && (
+            <div
+              role="status"
+              className="absolute left-3 top-3 z-20 flex items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)]/95 px-4 py-2.5 text-sm text-white shadow-lg backdrop-blur"
+            >
+              <span>
+                Resume from{" "}
+                <span className="font-semibold tabular-nums">
+                  {formatTime(tracking.resumePosition)}
+                </span>
+                ?
+              </span>
+              <button
+                type="button"
+                onClick={tracking.startFromBeginning}
+                className="rounded bg-white/10 px-2.5 py-1 text-xs font-medium transition hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                Start from beginning
+              </button>
+              <button
+                type="button"
+                onClick={tracking.dismissResume}
+                aria-label="Dismiss"
+                className="rounded p-1 text-white/60 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          {autoAdvance.counting && (
+            <div
+              role="status"
+              aria-label="Auto-advance countdown"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+            >
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-center text-white shadow-xl">
+                <p className="text-sm uppercase tracking-wide text-white/60">
+                  Up next in
+                </p>
+                <p className="text-4xl font-bold tabular-nums">
+                  {autoAdvance.secondsLeft}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={autoAdvance.playNextNow}
+                    className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                  >
+                    Play next now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={autoAdvance.cancelCountdown}
+                    className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {showEndOfQueue && (
+            <div
+              role="status"
+              aria-label="End of queue"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+            >
+              <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-center text-white shadow-xl">
+                <p className="text-lg font-semibold">End of queue</p>
+                <p className="text-sm text-white/60">
+                  You&apos;ve reached the end of the queue.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    onClick={() => {
+                      setShowEndOfQueue(false);
+                      navigate("/");
+                    }}
+                  >
+                    Back to library
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowEndOfQueue(false)}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {isStreamLoading && (
+            <div
+              role="status"
+              aria-label="Preparing video"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+            >
+              <div className="flex flex-col items-center gap-3 text-white">
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
+                <p className="text-sm text-white/80">Preparing your video…</p>
+              </div>
+            </div>
+          )}
+          {isHlsLoading && (
+            <div
+              role="status"
+              aria-label="Starting transcode stream"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
+            >
+              <div className="flex flex-col items-center gap-3 text-white">
+                <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
+                <p className="text-sm text-white/80">Transcoding…</p>
+              </div>
+            </div>
+          )}
+          <PlayerControls
+            videoRef={videoRef}
+            containerRef={containerRef}
+            subtitleTracks={video.subtitle_tracks}
+            videoId={video.id}
+            onActiveSubtitleChange={handleActiveSubtitleChange}
+            onPrev={queue.hasQueue ? handlePrev : undefined}
+            onNext={queue.hasQueue ? handleNext : undefined}
+            hasPrev={queue.hasPrev}
+            hasNext={queue.hasNext}
+            levels={isTranscode ? hlsStream.levels : undefined}
+            currentLevel={isTranscode ? hlsStream.currentLevel : undefined}
+            onLevelChange={
+              isTranscode
+                ? (level: number) => hlsStream.setCurrentLevel(level)
+                : undefined
+            }
+            isTranscode={isTranscode}
+            onConfirmBurnSubtitle={(trackId) => setBurnSubtitleId(trackId)}
+          />
+        </div>
+        <VideoInfo video={video} />
+        {queue.hasQueue && queue.currentIndex >= 0 && (
+          <UpNext
+            queue={queue.queue}
+            currentIndex={queue.currentIndex}
+            onSelect={(id) => {
+              tracking.saveNow();
+              queue.goToIndex(queue.queue.indexOf(id));
+            }}
           />
         )}
-        {tracking.showResume && (
-          <div
-            role="status"
-            className="absolute left-3 top-3 z-20 flex items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)]/95 px-4 py-2.5 text-sm text-white shadow-lg backdrop-blur"
-          >
-            <span>
-              Resume from{" "}
-              <span className="font-semibold tabular-nums">
-                {formatTime(tracking.resumePosition)}
-              </span>
-              ?
-            </span>
-            <button
-              type="button"
-              onClick={tracking.startFromBeginning}
-              className="rounded bg-white/10 px-2.5 py-1 text-xs font-medium transition hover:bg-white/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-            >
-              Start from beginning
-            </button>
-            <button
-              type="button"
-              onClick={tracking.dismissResume}
-              aria-label="Dismiss"
-              className="rounded p-1 text-white/60 transition hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-        {autoAdvance.counting && (
-          <div
-            role="status"
-            aria-label="Auto-advance countdown"
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-          >
-            <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-center text-white shadow-xl">
-              <p className="text-sm uppercase tracking-wide text-white/60">
-                Up next in
-              </p>
-              <p className="text-4xl font-bold tabular-nums">
-                {autoAdvance.secondsLeft}
-              </p>
-              <div className="mt-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={autoAdvance.playNextNow}
-                  className="rounded-md bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-                >
-                  Play next now
-                </button>
-                <button
-                  type="button"
-                  onClick={autoAdvance.cancelCountdown}
-                  className="rounded-md border border-white/15 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        {showEndOfQueue && (
-          <div
-            role="status"
-            aria-label="End of queue"
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-          >
-            <div className="flex w-full max-w-sm flex-col items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)] p-5 text-center text-white shadow-xl">
-              <p className="text-lg font-semibold">End of queue</p>
-              <p className="text-sm text-white/60">
-                You&apos;ve reached the end of the queue.
-              </p>
-              <div className="mt-2 flex gap-2">
-                <Button
-                  onClick={() => {
-                    setShowEndOfQueue(false);
-                    navigate("/");
-                  }}
-                >
-                  Back to library
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => setShowEndOfQueue(false)}
-                >
-                  Dismiss
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-        {isStreamLoading && (
-          <div
-            role="status"
-            aria-label="Preparing video"
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-          >
-            <div className="flex flex-col items-center gap-3 text-white">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
-              <p className="text-sm text-white/80">Preparing your video…</p>
-            </div>
-          </div>
-        )}
-        {isHlsLoading && (
-          <div
-            role="status"
-            aria-label="Starting transcode stream"
-            className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-4"
-          >
-            <div className="flex flex-col items-center gap-3 text-white">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
-              <p className="text-sm text-white/80">Transcoding…</p>
-            </div>
-          </div>
-        )}
-        <PlayerControls
-          videoRef={videoRef}
-          containerRef={containerRef}
-          subtitleTracks={video.subtitle_tracks}
-          videoId={video.id}
-          onActiveSubtitleChange={handleActiveSubtitleChange}
-          onPrev={queue.hasQueue ? handlePrev : undefined}
-          onNext={queue.hasQueue ? handleNext : undefined}
-          hasPrev={queue.hasPrev}
-          hasNext={queue.hasNext}
-          levels={isTranscode ? hlsStream.levels : undefined}
-          currentLevel={isTranscode ? hlsStream.currentLevel : undefined}
-          onLevelChange={
-            isTranscode
-              ? (level: number) => hlsStream.setCurrentLevel(level)
-              : undefined
-          }
-          isTranscode={isTranscode}
-          onConfirmBurnSubtitle={(trackId) => setBurnSubtitleId(trackId)}
-        />
-      </div>
-      <VideoInfo video={video} />
-      {queue.hasQueue && queue.currentIndex >= 0 && (
-        <UpNext
-          queue={queue.queue}
-          currentIndex={queue.currentIndex}
-          onSelect={(id) => {
-            tracking.saveNow();
-            queue.goToIndex(queue.queue.indexOf(id));
-          }}
-        />
-      )}
       </div>
     </WatchShell>
   );
@@ -718,7 +720,9 @@ function ReconnectProvider({
       window.location.href = auth_url;
     } catch (err) {
       setRedirecting(false);
-      toast.error(`Couldn't start the ${label} reconnect flow. ${describeError(err)}`);
+      toast.error(
+        `Couldn't start the ${label} reconnect flow. ${describeError(err)}`,
+      );
     }
   }
 
@@ -732,7 +736,7 @@ function ReconnectProvider({
           {isRedirecting ? "Redirecting…" : `Reconnect ${label}`}
         </Button>
         <Link to="/connections" className={buttonClasses("secondary")}>
-          Go to Sources
+          Go to Connections
         </Link>
       </ErrorState>
       <VideoInfo video={video} />
@@ -819,7 +823,11 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
       <div className="flex flex-wrap items-center gap-4 pt-1">
         <FavoriteToggle video={video} variant="hero" />
         <RatingStars video={video} variant="hero" />
-        <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setShareOpen(true)}
+        >
           Share
         </Button>
       </div>

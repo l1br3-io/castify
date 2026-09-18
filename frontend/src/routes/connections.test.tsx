@@ -59,7 +59,12 @@ const ALL_AVAILABLE = [
   { id: "google_drive", authMode: "oauth", configured: true },
   { id: "dropbox", authMode: "oauth", configured: true },
   { id: "onedrive", authMode: "oauth", configured: true },
-  { id: "s3", authMode: "credentials", configured: true, credentials: S3_SCHEMA },
+  {
+    id: "s3",
+    authMode: "credentials",
+    configured: true,
+    credentials: S3_SCHEMA,
+  },
 ];
 
 const NONE_AVAILABLE = [
@@ -78,8 +83,7 @@ function connectionsFetch(
     const method = init?.method ?? "GET";
     if (url === "/api/connections" && method === "GET")
       return jsonResponse(connections);
-    if (url === "/api/connections/available")
-      return jsonResponse(available);
+    if (url === "/api/connections/available") return jsonResponse(available);
     return jsonError(404, "unmocked");
   };
 }
@@ -168,13 +172,17 @@ describe("ConnectionsPage", () => {
     await screen.findByText("user@example.com");
     // Idle + count + last-scanned date = the "library ready" tell (FR-2.3);
     // no LED while nothing is scanning.
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText(/last scanned/i)).toBeInTheDocument();
+    expect(screen.getByText("Synced")).toBeInTheDocument();
+    expect(screen.getByText(/scanned/i)).toBeInTheDocument();
     expect(screen.queryByTestId("scan-led")).not.toBeInTheDocument();
   });
 
   it("pins the scan LED to scanning cards only", async () => {
-    const scanning = { ...GOOGLE_CONNECTED, scan_status: "scanning", video_count: 4 };
+    const scanning = {
+      ...GOOGLE_CONNECTED,
+      scan_status: "scanning",
+      video_count: 4,
+    };
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([scanning]),
@@ -185,7 +193,11 @@ describe("ConnectionsPage", () => {
   });
 
   it("presents scan errors with the danger tone, not the accent", async () => {
-    const errored = { ...GOOGLE_CONNECTED, scan_status: "error", last_scan_at: null };
+    const errored = {
+      ...GOOGLE_CONNECTED,
+      scan_status: "error",
+      last_scan_at: null,
+    };
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([errored]),
@@ -206,7 +218,9 @@ describe("ConnectionsPage", () => {
     // Four provider cards, none connected: the three OAuth providers get
     // brand sign-in buttons that state the action (task 010), S3 gets a
     // Connect button that reveals the credentials form instead.
-    expect(await screen.findByText("S3-Compatible Storage")).toBeInTheDocument();
+    expect(
+      await screen.findByText("S3-Compatible Storage"),
+    ).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
     expect(
       screen.getByRole("button", { name: "Connect Google Drive" }),
@@ -220,9 +234,7 @@ describe("ConnectionsPage", () => {
     // S3 has no brand guidelines — the standard primary, exact "Connect"
     // (string name matches the full accessible name only; e2e selectors
     // depend on this name — see s3-connect.spec.ts).
-    expect(
-      screen.getByRole("button", { name: "Connect" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
   });
 
   it("pairs every provider card with its mark — identity is never color alone", async () => {
@@ -237,9 +249,7 @@ describe("ConnectionsPage", () => {
       "OneDrive",
       "S3-Compatible Storage",
     ]) {
-      const card = (
-        await screen.findByText(label)
-      ).closest("article");
+      const card = (await screen.findByText(label)).closest("article");
       expect(card).not.toBeNull();
       expect(
         within(card as HTMLElement).getAllByTestId("provider-mark").length,
@@ -262,10 +272,10 @@ describe("ConnectionsPage", () => {
     // …Google and Microsoft guidelines are the light surface with the
     // official multicolor mark and dark ink label.
     const google = screen.getByRole("button", { name: "Connect Google Drive" });
-    expect(google.className).toContain("--color-castify-neutral-100");
+    expect(google.className).toContain("--color-castify-surface");
     expect(within(google).getByTestId("brand-mark")).toBeInTheDocument();
     const onedrive = screen.getByRole("button", { name: "Connect OneDrive" });
-    expect(onedrive.className).toContain("--color-castify-neutral-100");
+    expect(onedrive.className).toContain("--color-castify-surface");
     expect(within(onedrive).getByTestId("brand-mark")).toBeInTheDocument();
   });
 
@@ -352,9 +362,10 @@ describe("ConnectionsPage", () => {
     expect(accessKey).toHaveAttribute("type", "password");
 
     // Revealing one secret leaves the other masked.
-    expect(
-      within(card).getByLabelText("Secret access key"),
-    ).toHaveAttribute("type", "password");
+    expect(within(card).getByLabelText("Secret access key")).toHaveAttribute(
+      "type",
+      "password",
+    );
   });
 
   it("submits the credentials form and flips the card to connected", async () => {
@@ -402,7 +413,9 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("Scanning")).toBeInTheDocument();
     // Secrets never render back: the form (and its inputs) is gone.
     expect(screen.queryByLabelText("Access key ID")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Secret access key")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Secret access key"),
+    ).not.toBeInTheDocument();
   });
 
   it("invalidates the browse caches on a successful credentials connect", async () => {
@@ -467,14 +480,14 @@ describe("ConnectionsPage", () => {
 
     const card = await openS3Form();
     fillCredentials(card);
-    fireEvent.click(
-      within(card).getByRole("button", { name: /^connect$/i }),
-    );
+    fireEvent.click(within(card).getByRole("button", { name: /^connect$/i }));
 
     // The backend's actionable message surfaces inline on the card,
     // framed by what failed…
     expect(
-      await within(card).findByText(/Verification failed: .*rejected these credentials/),
+      await within(card).findByText(
+        /Verification failed: .*rejected these credentials/,
+      ),
     ).toBeInTheDocument();
     // …the form stays available for correction, and no connection row
     // appeared (the card is still in its not-connected state).
@@ -537,7 +550,11 @@ describe("ConnectionsPage", () => {
   });
 
   it("shows a scanning badge and found-videos detail while scanning", async () => {
-    const scanning = { ...GOOGLE_CONNECTED, scan_status: "scanning", video_count: 4 };
+    const scanning = {
+      ...GOOGLE_CONNECTED,
+      scan_status: "scanning",
+      video_count: 4,
+    };
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([scanning]),
@@ -678,9 +695,7 @@ describe("ConnectionsPage", () => {
       fetchImplementation: connectionsFetch([]),
     });
 
-    expect(
-      await screen.findByText(/Connection failed/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Connection failed/)).toBeInTheDocument();
   });
 
   it("surfaces a specific message on the ?error=account_id_missing callback", async () => {
@@ -710,7 +725,11 @@ describe("ConnectionsPage", () => {
   });
 
   it("marks the Rescan button unavailable while scanning, with the reason on focus", async () => {
-    const scanning = { ...GOOGLE_CONNECTED, scan_status: "scanning", video_count: 4 };
+    const scanning = {
+      ...GOOGLE_CONNECTED,
+      scan_status: "scanning",
+      video_count: 4,
+    };
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([scanning]),
@@ -774,9 +793,7 @@ describe("ConnectionsPage", () => {
     await screen.findByText("user@example.com");
     fireEvent.click(screen.getByRole("button", { name: /rescan/i }));
 
-    expect(
-      await screen.findByText(/already in progress/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/already in progress/i)).toBeInTheDocument();
   });
 
   // ── Cache invalidation after connection state changes ─────────────────
@@ -813,9 +830,9 @@ describe("ConnectionsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
 
     await waitFor(() => {
-      expect(
-        invalidateSpy,
-      ).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["videos"] }));
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: ["videos"] }),
+      );
     });
 
     confirmSpy.mockRestore();
@@ -856,23 +873,20 @@ describe("ConnectionsPage", () => {
   });
 
   it("invalidates cached stream-url queries on rescan", async () => {
-    const { queryClient, fetchSpy } = renderWithProviders(
-      <ConnectionsPage />,
-      {
-        initialEntries: ["/connections"],
-        fetchImplementation: (input, init) => {
-          const url = String(input);
-          const method = init?.method ?? "GET";
-          if (url === "/api/connections" && method === "GET")
-            return jsonResponse([GOOGLE_CONNECTED]);
-          if (url === "/api/connections/available")
-            return jsonResponse(ALL_AVAILABLE);
-          if (url === "/api/connections/c1/scan" && method === "POST")
-            return new Response(null, { status: 202 });
-          return jsonError(404, "unmocked");
-        },
+    const { queryClient, fetchSpy } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1/scan" && method === "POST")
+          return new Response(null, { status: 202 });
+        return jsonError(404, "unmocked");
       },
-    );
+    });
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     await screen.findByText("user@example.com");
@@ -893,23 +907,20 @@ describe("ConnectionsPage", () => {
   });
 
   it("invalidates the folder tree and contents caches on rescan", async () => {
-    const { queryClient } = renderWithProviders(
-      <ConnectionsPage />,
-      {
-        initialEntries: ["/connections"],
-        fetchImplementation: (input, init) => {
-          const url = String(input);
-          const method = init?.method ?? "GET";
-          if (url === "/api/connections" && method === "GET")
-            return jsonResponse([GOOGLE_CONNECTED]);
-          if (url === "/api/connections/available")
-            return jsonResponse(ALL_AVAILABLE);
-          if (url === "/api/connections/c1/scan" && method === "POST")
-            return new Response(null, { status: 202 });
-          return jsonError(404, "unmocked");
-        },
+    const { queryClient } = renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        if (url === "/api/connections" && method === "GET")
+          return jsonResponse([GOOGLE_CONNECTED]);
+        if (url === "/api/connections/available")
+          return jsonResponse(ALL_AVAILABLE);
+        if (url === "/api/connections/c1/scan" && method === "POST")
+          return new Response(null, { status: 202 });
+        return jsonError(404, "unmocked");
       },
-    );
+    });
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     await screen.findByText("user@example.com");

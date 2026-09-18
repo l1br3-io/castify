@@ -38,15 +38,16 @@ test.describe("Auth lifecycle (cold boot)", () => {
       page.getByText("Connect your first cloud"),
     ).toBeVisible();
 
-    // Header reflects the authenticated session. Use exact match on the
-    // display name — the wrapping span also contains it as a substring.
-    await expect(page.getByText(/Signed in as/)).toBeVisible();
+    // Header reflects the authenticated session: the avatar shows the
+    // display name; the account menu carries the full identity + sign-out.
     await expect(
       page.getByText(DISPLAY_NAME, { exact: true }),
     ).toBeVisible();
+    await page.getByRole("button", { name: "Account" }).click();
+    await expect(page.getByText(/Signed in as/)).toBeVisible();
 
     // ── 4. Logout ───────────────────────────────────────────────────
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
     await expect(page).toHaveURL(/\/login$/);
 
     // ── 5. Login again with the same password ───────────────────────
@@ -58,9 +59,11 @@ test.describe("Auth lifecycle (cold boot)", () => {
 
     // ── 6. Authenticated once more ──────────────────────────────────
     await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByText(/Signed in as/)).toBeVisible();
     await expect(
       page.getByText(DISPLAY_NAME, { exact: true }),
     ).toBeVisible();
+    // Account identity lives behind the avatar menu (design topbar).
+    await page.getByRole("button", { name: "Account" }).click();
+    await expect(page.getByText(/Signed in as/)).toBeVisible();
   });
 });

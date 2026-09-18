@@ -39,7 +39,9 @@ function flattenVisible(
   for (const node of nodes) {
     out.push({ node, depth, parentPath });
     if (node.children.length > 0 && expanded.has(node.path)) {
-      out.push(...flattenVisible(node.children, depth + 1, node.path, expanded));
+      out.push(
+        ...flattenVisible(node.children, depth + 1, node.path, expanded),
+      );
     }
   }
   return out;
@@ -114,7 +116,10 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
         event.preventDefault();
         const current = items[currentIndex];
         if (!current) return;
-        if (current.node.children.length > 0 && !expanded.has(current.node.path)) {
+        if (
+          current.node.children.length > 0 &&
+          !expanded.has(current.node.path)
+        ) {
           toggle(current.node.path);
         } else if (current.node.children.length > 0) {
           focusPath(items[currentIndex + 1]?.node.path);
@@ -170,7 +175,11 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
           .join(" · ");
 
         return (
-          <li role="treeitem" key={node.path || "(root)"} aria-expanded={hasChildren ? isExpanded : undefined}>
+          <li
+            role="treeitem"
+            key={node.path || "(root)"}
+            aria-expanded={hasChildren ? isExpanded : undefined}
+          >
             <div
               className="flex items-center gap-1"
               style={{ paddingLeft: `${depth * 1.0}rem` }}
@@ -180,8 +189,10 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
                   type="button"
                   onClick={() => toggle(node.path)}
                   aria-expanded={isExpanded}
-                  aria-label={isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
-                  className="h-5 w-5 flex-shrink-0 rounded text-[var(--color-castify-muted)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+                  aria-label={
+                    isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`
+                  }
+                  className="h-5 w-5 flex-shrink-0 rounded text-[var(--color-castify-muted)] transition hover:bg-[var(--color-castify-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
                 >
                   {isExpanded ? "▾" : "▸"}
                 </button>
@@ -193,10 +204,10 @@ export function FolderTree({ nodes, selectedPath, onSelect }: FolderTreeProps) {
                 data-tree-path={node.path}
                 onClick={() => onSelect(node.path)}
                 aria-current={isSelected ? "true" : undefined}
-                className={`flex min-w-0 flex-1 items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-sm transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+                className={`flex min-w-0 flex-1 items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-[13px] transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] ${
                   isSelected
-                    ? "bg-[var(--color-castify-accent-subtle)] font-semibold text-[var(--color-castify-accent)] shadow-[inset_3px_0_0_var(--color-castify-accent)]"
-                    : "hover:bg-[var(--color-castify-accent-subtle)]"
+                    ? "bg-[var(--color-castify-surface-raised)] font-semibold text-[var(--color-castify-text)] shadow-[inset_2px_0_0_var(--color-castify-accent)]"
+                    : "text-[var(--color-castify-muted)] hover:bg-[var(--color-castify-hover)] hover:text-[var(--color-castify-text)]"
                 }`}
               >
                 <span className="truncate">{node.name}</span>
