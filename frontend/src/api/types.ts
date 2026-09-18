@@ -350,3 +350,47 @@ export interface StreamUrlDto {
   strategy: "direct" | "proxy" | "cached" | "transcode";
   expires_at: string | null;
 }
+
+// ── Library collections (docs/specs/library-collections) ────────────────
+//
+// Shapes mirror `crates/api/src/routes/collections.rs` DTOs. `kind` maps the
+// backend's `CollectionKind`: show/movie/time arrive via suggestion
+// acceptance, manual via explicit creation.
+
+export type CollectionKind = "show" | "movie" | "time" | "manual";
+
+// Bare collection row (rename/accept responses).
+export interface CollectionMetaDto {
+  id: string;
+  name: string;
+  kind: CollectionKind;
+  created_at: string;
+}
+
+// `GET /api/collections` row: meta + rail-card fields.
+export interface CollectionDto extends CollectionMetaDto {
+  member_count: number;
+  // First few members for thumbnails (bounded by the backend).
+  preview: VideoSummaryDto[];
+}
+
+// `GET /api/collections/{id}`: the full ordered member list.
+export interface CollectionDetailDto extends CollectionMetaDto {
+  members: VideoSummaryDto[];
+}
+
+// `POST …/suggestions/{id}/accept` response.
+export interface AcceptedCollectionDto extends CollectionMetaDto {
+  member_count: number;
+}
+
+// `GET /api/collections/suggestions` row (spec F2). `members` is a bounded
+// preview in curation order; `member_count` is the full group size.
+export interface CollectionSuggestionDto {
+  id: string;
+  kind: CollectionKind;
+  title: string;
+  signature: string;
+  member_count: number;
+  members: VideoSummaryDto[];
+}
