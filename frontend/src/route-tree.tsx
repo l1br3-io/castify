@@ -13,6 +13,7 @@
 
 import type { RouteObject } from "react-router-dom";
 import { AppLayout } from "./layouts/app-layout";
+import { CollectionDetailPage } from "./components/collections/collection-detail";
 import { ConnectionsPage } from "./routes/connections";
 import { HomePage } from "./routes/home";
 import { LoginPage } from "./routes/login";
@@ -79,6 +80,14 @@ export const routeTree: RouteObject[] = [
         // the page owns its own layout width (wide grid).
         path: "settings/shares/:id",
         element: <ShareManagePage />,
+        loader: requireSessionLoader,
+      },
+      {
+        // Collection detail (library-collections task 008): the ordered
+        // member grid for one collection, inside the app shell like the
+        // other library surfaces.
+        path: "collections/:id",
+        element: <CollectionDetailPage />,
         loader: requireSessionLoader,
       },
       { path: "setup", element: <SetupPage />, loader: setupLoader },

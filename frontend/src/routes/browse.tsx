@@ -51,6 +51,7 @@ import { useConnections } from "../hooks/use-connections";
 import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
+import { CollectionsRail } from "../components/collections/collections-rail";
 import { FolderOrganizer } from "../components/folder-organizer";
 import { ShareDialog } from "../components/share-dialog";
 import { describeError } from "../lib/format";
@@ -212,6 +213,8 @@ export function BrowsePage() {
 
             {/* Rails */}
             <div className="space-y-6">
+              <CollectionsRail />
+
               <Shelf
                 title="Recently added"
                 videos={recentlyAdded.data.videos}
