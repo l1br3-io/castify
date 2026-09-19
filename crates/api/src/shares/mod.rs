@@ -34,8 +34,8 @@ pub mod status;
 pub mod token;
 
 pub use repository::{
-    FolderInvalid, FolderWriteError, NewShare, ShareFolderRow, ShareItemRow, ShareRepository,
-    ShareRow,
+    FolderInvalid, FolderWriteError, NewShare, RemovedItem, ShareFolderRow, ShareItemRow,
+    ShareRepository, ShareRow,
 };
 
 #[derive(Debug, thiserror::Error)]
