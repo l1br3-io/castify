@@ -54,10 +54,11 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use castify_auth::password::verify_password;
-use castify_catalog::{SubtitleTrack, VideoSummary};
+use castify_catalog::SubtitleTrack;
 
 use crate::cookies::build_share_unlock_cookie;
 use crate::error::{ApiError, ApiResult};
+use crate::routes::shares::{share_items_payload, ShareItemsResponse};
 use crate::routes::videos::{
     serve_cached_stream, serve_stream_url, serve_subtitle_list, serve_subtitle_track,
     serve_thumbnail, serve_transcode_master, serve_transcode_playlist, serve_transcode_segment,
@@ -111,28 +112,26 @@ pub async fn resolve(
     }))
 }
 
-/// `GET /api/share/{token}/items` — member videos in the owner's curation
-/// order (`share_items.position`).
+/// `GET /api/share/{token}/items` — the share's member videos plus its
+/// folder tree, in one payload.
 ///
-/// Reuses the owner list's [`VideoSummary`] shape so the SPA renders
-/// recipients' rows with the same components, but with neutral
-/// personalization: the catalog's by-ids read has no owner context, so the
-/// owner's favorites/ratings/progress cannot leak. Member videos whose
-/// connection has since been disconnected drop out of the list rather than
-/// erroring.
+/// Reuses the owner list's [`VideoSummary`] shape (flattened, plus
+/// `folder_id`) so the SPA renders recipients' rows with the same
+/// components, but with neutral personalization: the catalog's by-ids
+/// read has no owner context, so the owner's favorites/ratings/progress
+/// cannot leak. Member videos whose connection has since been
+/// disconnected drop out of the list rather than erroring. The whole
+/// tree ships in this one response — descending folders is client state
+/// (`?folder=`), so the recipient request budget per page view is
+/// unchanged (resolve + unlock + one items fetch, spec criterion 1) and
+/// no folder id ever appears in a recipient request path.
 pub async fn items(
     State(state): State<AppState>,
     jar: CookieJar,
     Path(token): Path<String>,
-) -> ApiResult<Json<Vec<VideoSummary>>> {
+) -> ApiResult<Json<ShareItemsResponse>> {
     let row = require_accessible_share(&state, &jar, &token).await?;
-    let share_items = state.share_repository().list_items(&row.id).await?;
-    let video_ids: Vec<String> = share_items.iter().map(|i| i.video_id.clone()).collect();
-    let summaries = state
-        .catalog_repository()
-        .fetch_video_summaries_by_ids(&video_ids)
-        .await?;
-    Ok(Json(summaries))
+    Ok(Json(share_items_payload(&state, &row.id).await?))
 }
 
 /// `POST /api/share/{token}/unlock` request body.

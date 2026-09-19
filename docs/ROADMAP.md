@@ -91,3 +91,4 @@ Revisited once the core hub is shipped and adopted:
 
 - **Media intelligence** — memories and stories, face and place search, smart organization and cleanup.
 - **Platform & ecosystem** — cross-platform mobile, desktop, and CLI apps, TV apps, casting, watch parties, multi-user household profiles, audio/music support.
+- **Library folders** — Google Drive-style folders the owner creates inside Castify to organize the whole library, layered on the auto-detected cloud-provider folders (new files land at the top level until filed). Reuses the share-folders components; see `docs/specs/share-folders/`.

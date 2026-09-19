@@ -96,7 +96,8 @@ describe("CollectionsRail", () => {
       { fetchImplementation: () => jsonResponse({ message: "boom" }, 500) },
     );
 
-    await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByText("Collections")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Collections")).not.toBeInTheDocument(),
+    );
   });
 });

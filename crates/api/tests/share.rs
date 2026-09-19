@@ -337,7 +337,7 @@ async fn items_returns_member_metadata_in_curation_order_with_neutral_personaliz
     let (status, body) = get(app, &format!("/api/share/{}/items", share.token), None).await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
 
-    let items = body.as_array().expect("items is an array");
+    let items = body["items"].as_array().expect("items is an array");
     assert_eq!(items.len(), 3);
     assert_eq!(items[0]["id"], curated[0]);
     assert_eq!(items[1]["id"], curated[1]);
@@ -479,7 +479,7 @@ async fn unlock_cookie_opens_items_and_flips_resolve_locked() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
-    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1625,7 +1625,7 @@ async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
-    let ids: Vec<&str> = body
+    let ids: Vec<&str> = body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1667,7 +1667,7 @@ async fn removing_an_item_flips_recipient_access_from_allow_to_deny() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
-    let ids: Vec<&str> = body
+    let ids: Vec<&str> = body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1729,7 +1729,7 @@ async fn recipient_items_reflect_an_owner_append_immediately() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
-    let ids: Vec<&str> = body
+    let ids: Vec<&str> = body["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -1745,4 +1745,106 @@ async fn recipient_items_reflect_an_owner_append_immediately() {
     let (status, body) = get(app, &format!("/api/share/{}", share.token), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["item_count"], 4);
+}
+
+// ---------------- folder tree payload (share-folders task 004)
+
+#[tokio::test]
+async fn recipient_items_carry_the_folder_tree() {
+    let (app, state, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4", "d.mp4"]).await;
+    let share = seed_share(&state, None, None, &videos).await;
+
+    // Owner-side organization straight through the repository: Trip at
+    // root, Night nested under it; b,c in Trip; d in Night; a at root.
+    let owner = owner_uuid(state.pool()).await;
+    let repo = ShareRepository::new(state.pool().clone());
+    let trip = repo
+        .create_folder(&owner.to_string(), &share.id, None, "Trip")
+        .await
+        .unwrap()
+        .unwrap();
+    let night = repo
+        .create_folder(&owner.to_string(), &share.id, Some(&trip.id), "Night")
+        .await
+        .unwrap()
+        .unwrap();
+    for (vid, folder) in [(&videos[1], Some(&trip.id)), (&videos[2], Some(&trip.id)), (&videos[3], Some(&night.id))] {
+        repo.move_item(&owner.to_string(), &share.id, vid, folder.map(|s| s.as_str()))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    let (status, body) = get(app, &format!("/api/share/{}/items", share.token), None).await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+
+    // Folders arrive as the flat list ordered (parent_id, position) —
+    // roots first, then each nested sibling group.
+    let folders = body["folders"].as_array().expect("folders is an array");
+    assert_eq!(folders.len(), 2);
+    assert_eq!(folders[0]["name"], "Trip");
+    assert_eq!(folders[0]["parent_id"], Value::Null);
+    assert_eq!(folders[0]["position"], 0);
+    assert_eq!(folders[1]["name"], "Night");
+    assert_eq!(folders[1]["parent_id"], trip.id);
+    assert_eq!(folders[1]["position"], 0);
+
+    // Items: root items first in position order, then each folder's in
+    // position order — the documented full order; per-scope relative
+    // order is what the client rebuilds the tree from.
+    let items = body["items"].as_array().expect("items is an array");
+    let ids: Vec<&str> = items.iter().map(|v| v["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec![videos[0].as_str(), videos[1].as_str(), videos[2].as_str(), videos[3].as_str()]);
+    let folder_ids: Vec<&str> = items
+        .iter()
+        .map(|v| v["folder_id"].as_str().unwrap_or("ROOT"))
+        .collect();
+    assert_eq!(
+        folder_ids,
+        vec!["ROOT", trip.id.as_str(), trip.id.as_str(), night.id.as_str()],
+        "folder placement travels per item; root is null"
+    );
+}
+
+#[tokio::test]
+async fn member_video_inside_a_folder_still_streams() {
+    let (app, state, _guard) = boot_with(|cfg| cfg.video_cache.enabled = true).await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let cached_bytes: &[u8] = b"cached-video-bytes";
+    state
+        .video_cache()
+        .expect("cache enabled")
+        .put_bytes(&videos[0], cached_bytes)
+        .await
+        .unwrap();
+    state
+        .catalog_repository()
+        .upsert_video_cache_entry(&videos[0], "c1", "a.mp4", cached_bytes.len() as u64)
+        .await
+        .unwrap();
+    let share = seed_share(&state, None, None, &videos).await;
+
+    let owner = owner_uuid(state.pool()).await;
+    let repo = ShareRepository::new(state.pool().clone());
+    let folder = repo
+        .create_folder(&owner.to_string(), &share.id, None, "Buried")
+        .await
+        .unwrap()
+        .unwrap();
+    repo.move_item(&owner.to_string(), &share.id, &videos[0], Some(&folder.id))
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Authorization is membership-scoped only — folder placement never
+    // enters the gate. One positive is the proof the tree didn't leak
+    // into the mirrors.
+    let (status, body) = get(
+        app,
+        &mirror_uri(&share.token, &videos[0], "stream-url"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
 }

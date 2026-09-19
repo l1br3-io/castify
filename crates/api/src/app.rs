@@ -190,6 +190,18 @@ pub fn build_app(state: AppState) -> Router {
                 .put(shares::replace_items)
                 .post(shares::append_items),
         )
+        .route(
+            "/api/shares/{id}/items/{video_id}",
+            axum::routing::patch(shares::move_item).delete(shares::remove_item),
+        )
+        .route(
+            "/api/shares/{id}/folders",
+            axum::routing::post(shares::create_folder),
+        )
+        .route(
+            "/api/shares/{id}/folders/{folder_id}",
+            axum::routing::patch(shares::update_folder).delete(shares::delete_folder),
+        )
         .route("/api/share/{token}", axum::routing::get(share::resolve))
         .route("/api/share/{token}/items", axum::routing::get(share::items))
         .route(

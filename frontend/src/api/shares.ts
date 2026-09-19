@@ -17,7 +17,7 @@
 // branches on these statuses; see `share.tsx`.
 
 import { apiFetch } from "./client";
-import type { VideoSummaryDto } from "./types";
+import type { ShareItemsDto, VideoSummaryDto } from "./types";
 
 // ---------------------------------------------------------------------------
 // Owner client — `POST/GET /api/shares`, `DELETE /api/shares/{id}`,
@@ -141,11 +141,15 @@ export function appendToShare(shareId: string, videoIds: string[]): Promise<void
  * stores only a hash), so the owner reads members by share id instead.
  * Unlike the PUT it also serves revoked/expired shares — read-only history
  * for a dialog that may outlive the share's life.
+ *
+ * The server now wraps the payload (`{ folders, items }`, share-folders
+ * task 004); `unwrapItems` bridges both shapes until the manage/browse
+ * pages migrate onto the tree (tasks 005/006).
  */
 export function fetchShareItemsOwned(shareId: string): Promise<VideoSummaryDto[]> {
-  return apiFetch<VideoSummaryDto[]>(
+  return apiFetch<ShareItemsDto | VideoSummaryDto[]>(
     `/api/shares/${encodeURIComponent(shareId)}/items`,
-  );
+  ).then(unwrapItems);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,11 +183,27 @@ export function resolveShare(token: string): Promise<ShareResolveDto> {
  * order, in the same `VideoSummary` shape the owner catalog uses (with
  * neutral personalization — the owner's favorites/ratings/progress never
  * leak). 401 while locked; unlock first.
+ *
+ * The server now wraps the payload (`{ folders, items }`, share-folders
+ * task 004); `unwrapItems` bridges both shapes until the landing page
+ * migrates onto the tree (task 005).
  */
 export function fetchShareItems(token: string): Promise<VideoSummaryDto[]> {
-  return apiFetch<VideoSummaryDto[]>(
+  return apiFetch<ShareItemsDto | VideoSummaryDto[]>(
     `/api/share/${encodeURIComponent(token)}/items`,
-  );
+  ).then(unwrapItems);
+}
+
+/**
+ * Temporary bridge over the items-read shape change (share-folders task
+ * 004): the server answers `{ folders, items }`, while pre-migration
+ * fixtures still stub the legacy bare array. Deleted when the last
+ * consumer migrates onto the tree payload.
+ */
+function unwrapItems(
+  payload: ShareItemsDto | VideoSummaryDto[],
+): VideoSummaryDto[] {
+  return Array.isArray(payload) ? payload : payload.items;
 }
 
 /**
