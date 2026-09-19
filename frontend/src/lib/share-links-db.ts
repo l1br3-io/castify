@@ -9,6 +9,13 @@
 // lives here, per-device, and shares created on another browser simply have
 // no local copy — the management list shows status only for those rows.
 //
+// The optional `shortUrl` field caches the minted spoo.me alias next to the
+// canonical link (docs/specs/short-links): same decision-rule #2 rationale
+// — the alias is per-device sugar for a link this device already holds —
+// plus it keeps repeat clicks from re-hitting the shortener's ~5/30s rate
+// limit. Records are schemaless, so the added field needs no DB_VERSION
+// bump; entries without one re-mint on next click.
+//
 // Modeled on `player-db.ts`: all functions are async, failures (quota,
 // corruption, missing IndexedDB in jsdom/private mode) degrade to
 // null/empty rather than surfacing in the UI.
@@ -22,6 +29,9 @@ export interface ShareLinkEntry {
   /** Relative share path (`/share/{token}`); absolutize at copy time. */
   url: string;
   savedAt: number;
+  /** Cached short alias (https spoo.me URL), minted on explicit click.
+   * Absent = not yet minted on this device (or minting failed). */
+  shortUrl?: string;
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -100,5 +110,47 @@ export async function deleteShareLink(shareId: string): Promise<void> {
     );
   } catch {
     // non-fatal — a stale entry renders as a dead link at worst
+  }
+}
+
+/**
+ * Cached short alias for `shareId`, or `null` when not yet minted on this
+ * device (or IndexedDB is unavailable). Never throws.
+ */
+export async function getShortLink(shareId: string): Promise<string | null> {
+  try {
+    const db = await openDB();
+    const entry = await promisify<ShareLinkEntry | undefined>(
+      db.transaction(LINKS_STORE, "readonly").objectStore(LINKS_STORE).get(shareId),
+    );
+    return entry?.shortUrl ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remember the minted alias for a share. Read-modify-write so the
+ * canonical `url`/`savedAt` survive; a share with no canonical entry on
+ * this device (nothing to alias onto) is a no-op. Never throws — a lost
+ * write just means the next click mints again.
+ */
+export async function saveShortLink(
+  shareId: string,
+  shortUrl: string,
+): Promise<void> {
+  try {
+    const db = await openDB();
+    const store = db.transaction(LINKS_STORE, "readwrite").objectStore(LINKS_STORE);
+    const entry = await promisify<ShareLinkEntry | undefined>(store.get(shareId));
+    if (!entry) return;
+    await promisify(
+      db
+        .transaction(LINKS_STORE, "readwrite")
+        .objectStore(LINKS_STORE)
+        .put({ ...entry, shortUrl } satisfies ShareLinkEntry),
+    );
+  } catch {
+    // non-fatal — see above
   }
 }
