@@ -4,7 +4,7 @@
 // the staging regeneration timestamp.
 
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { SuggestionPanel } from "./suggestion-panel";
 import { CollectionsRail } from "./collections-rail";
@@ -117,7 +117,9 @@ function renderPanel(
 describe("SuggestionPanel", () => {
   it("renders nothing when there are no suggestions", async () => {
     renderPanel(panelFetch([]));
-    await new Promise((r) => setTimeout(r, 20));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(screen.queryByRole("region", { name: /review/i })).not.toBeInTheDocument();
   });
 
@@ -276,7 +278,9 @@ describe("SuggestionPanel", () => {
     renderPanel(
       panelFetch([suggestion("s1", "Breaking Bad", 3, "2026-09-19T00:00:00Z")]),
     );
-    await new Promise((r) => setTimeout(r, 20));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(
       screen.queryByRole("region", { name: /review suggestions/i }),
     ).not.toBeInTheDocument();

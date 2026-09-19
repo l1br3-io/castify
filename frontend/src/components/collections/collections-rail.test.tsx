@@ -4,7 +4,7 @@
 // renders nothing so the browse layout stays quiet.
 
 import { describe, expect, it } from "vitest";
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { CollectionsRail } from "./collections-rail";
@@ -32,8 +32,10 @@ describe("CollectionsRail", () => {
       { fetchImplementation: () => jsonResponse([]) },
     );
 
-    // Give the query a tick to resolve — the rail must stay absent.
-    await new Promise((r) => setTimeout(r, 20));
+    // Flush the query's settle inside act — the rail must stay absent.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(screen.queryByText("Collections")).not.toBeInTheDocument();
   });
 
@@ -94,7 +96,9 @@ describe("CollectionsRail", () => {
       { fetchImplementation: () => jsonResponse({ message: "boom" }, 500) },
     );
 
-    await new Promise((r) => setTimeout(r, 20));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(screen.queryByText("Collections")).not.toBeInTheDocument();
   });
 });
