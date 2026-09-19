@@ -209,13 +209,15 @@ test.describe("library collections (MinIO, task 011)", () => {
       expect(show, `show suggestion staged: ${JSON.stringify(suggestions)}`)
         .toMatchObject({ kind: "show", title: "Breaking Bad", member_count: 2 });
 
-      // UI: the review panel appears; the flat grid and the organizer
+      // UI: the review banner appears; the flat grid and the organizer
       // are untouched alongside it (spec: existing surfaces stay).
       await page.goto("/");
       await expect(
         page.getByRole("region", { name: /review suggestions/i }),
       ).toBeVisible();
-      await expect(page.getByText("Breaking Bad").first()).toBeVisible();
+      await expect(
+        page.getByText("1 suggested collection ready to review."),
+      ).toBeVisible();
       await expect(
         page.getByRole("heading", { name: "All videos" }),
       ).toBeVisible();
@@ -229,10 +231,18 @@ test.describe("library collections (MinIO, task 011)", () => {
         page.getByRole("heading", { name: /^collections$/i }),
       ).toHaveCount(0);
 
-      // Accept through the UI.
-      await page
-        .getByRole("button", { name: /accept breaking bad/i })
+      // The group cards live behind the Review button's modal (current
+      // panel design): accept Breaking Bad through the dialog.
+      await page.getByRole("button", { name: "Review", exact: true }).click();
+      const reviewDialog = page.getByRole("dialog", {
+        name: "Review suggestions",
+      });
+      await expect(reviewDialog).toBeVisible();
+      await expect(reviewDialog.getByText("Breaking Bad")).toBeVisible();
+      await reviewDialog
+        .getByRole("button", { name: "Accept Breaking Bad" })
         .click();
+      await reviewDialog.getByRole("button", { name: "Done" }).click();
       await expect(
         page.getByRole("region", { name: /review suggestions/i }),
       ).toHaveCount(0);

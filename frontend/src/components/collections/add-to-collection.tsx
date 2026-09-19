@@ -31,6 +31,20 @@ const DARK_TRIGGER_CLASS =
   "hover:text-[var(--color-castify-text)] focus:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-[var(--color-focus)]";
 
+// Hero variant rides the watch page's personalization row next to the
+// Share button — a labeled trigger in the same secondary family
+// (Button secondary/sm: border + px-3 py-1.5 text-xs). Content-sized, so
+// it grows with the label and the wrapping row keeps working at phone
+// widths. (Regression: it used to inherit the Menu's fixed h-7 w-7
+// kebab square, which the text label overflowed.)
+const HERO_TRIGGER_CLASS =
+  "inline-flex items-center rounded-[var(--radius-button)] " +
+  "border border-[var(--color-castify-rule)] px-3 py-1.5 text-xs " +
+  "font-semibold text-[var(--color-castify-text)] transition " +
+  "hover:bg-[var(--color-castify-hover)] active:bg-[var(--color-castify-press)] " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] " +
+  "focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-surface)]";
+
 type Props = {
   video: Pick<VideoSummaryDto, "id" | "name">;
   variant?: "card" | "hero";
@@ -84,7 +98,9 @@ export function AddToCollectionMenu({ video, variant = "card" }: Props) {
     <div onClickCapture={() => setOpened(true)}>
       <Menu
         label={`Add ${video.name} to collection`}
-        triggerClassName={variant === "card" ? DARK_TRIGGER_CLASS : undefined}
+        triggerClassName={
+          variant === "card" ? DARK_TRIGGER_CLASS : HERO_TRIGGER_CLASS
+        }
         trigger={
           variant === "hero" ? (
             // Responsive label: the full phrase on ≥sm, a compact

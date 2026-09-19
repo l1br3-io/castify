@@ -192,17 +192,58 @@ describe("ConnectionsPage", () => {
     ).toHaveLength(4);
   });
 
-  it("keeps a connect card for a configured provider with connections (add another source)", async () => {
+  it("offers add-another as a distinct dashed action, not a duplicate entry", async () => {
     renderWithProviders(<ConnectionsPage />, {
       initialEntries: ["/connections"],
       fetchImplementation: connectionsFetch([GOOGLE_CONNECTED]),
     });
 
     expect(await screen.findByText("user@example.com")).toBeInTheDocument();
-    expect(screen.getByText("Add another source")).toBeInTheDocument();
+    // The add-another card titles the ACTION; only the connected card
+    // carries the provider name as its title, so the pair can't read as
+    // duplicate connections.
+    expect(screen.getByText("Add another account")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Connect Google Drive" }),
     ).toBeInTheDocument();
+    const connectedTitles = screen
+      .getAllByRole("heading", { level: 3 })
+      .filter((h) => h.textContent === "Google Drive");
+    expect(connectedTitles).toHaveLength(1);
+    // Dashed chrome distinguishes the action card at a glance.
+    const addAnother = screen
+      .getByText("Add another account")
+      .closest("article");
+    expect(addAnother?.className).toContain("border-dashed");
+    // The two sections make the mine-vs-addable split explicit.
+    expect(
+      screen.getByRole("heading", { name: "Your connections" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Add a connection" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows unconfigured providers as disabled cards with a config hint", async () => {
+    // Only Google is configured on the server: Dropbox and OneDrive stay
+    // visible (discoverable) but carry no connect action.
+    const partiallyConfigured = ALL_AVAILABLE.map((entry) =>
+      ["dropbox", "onedrive"].includes(entry.id)
+        ? { ...entry, configured: false }
+        : entry,
+    );
+    renderWithProviders(<ConnectionsPage />, {
+      initialEntries: ["/connections"],
+      fetchImplementation: connectionsFetch([], partiallyConfigured),
+    });
+
+    expect(await screen.findByText("Dropbox")).toBeInTheDocument();
+    expect(screen.getByText("OneDrive")).toBeInTheDocument();
+    expect(screen.getAllByText("Not configured")).toHaveLength(2);
+    expect(
+      screen.queryByRole("button", { name: "Connect Dropbox" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/docs\/config\.md/)).toHaveLength(2);
   });
 
   it("tells the user the library is ready once a scan has settled", async () => {
@@ -263,7 +304,7 @@ describe("ConnectionsPage", () => {
     expect(
       await screen.findByText("S3-Compatible Storage"),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(4);
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(4);
     expect(
       screen.getByRole("button", { name: "Connect Google Drive" }),
     ).toBeInTheDocument();
