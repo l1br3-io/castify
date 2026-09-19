@@ -341,6 +341,16 @@ test.describe("Sharing (docs/specs/sharing task 013)", () => {
       await expect(
         page.getByRole("link", { name: "Play vacation.mp4" }),
       ).toBeVisible();
+
+      // Degenerate flat share (share-folders criterion 2): no folder
+      // affordances at all — the tree payload's empty `folders` list
+      // renders exactly the pre-folders grid.
+      await expect(
+        page.getByRole("link", { name: /Open folder/ }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("navigation", { name: "Folders" }),
+      ).toHaveCount(0);
     } finally {
       await context.close();
     }

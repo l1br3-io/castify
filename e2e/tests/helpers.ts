@@ -557,11 +557,26 @@ export async function unlockShare(
   expect(res.status()).toBe(204);
 }
 
-/** `GET /api/share/{token}/items` — member summaries in curation order. */
+export interface ShareFolder {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+}
+
+/** The one-shot tree payload both items reads serve (share-folders):
+ * flat folder list + member summaries carrying their placement. */
+export interface ShareItemsResponse {
+  folders: ShareFolder[];
+  items: (VideoSummary & { folder_id: string | null })[];
+}
+
+/** `GET /api/share/{token}/items` — the whole folder tree plus member
+ * summaries (with `folder_id`) in one payload. */
 export async function getShareItems(
   page: Page,
   token: string,
-): Promise<VideoSummary[]> {
+): Promise<ShareItemsResponse> {
   const res = await page.request.get(
     `/api/share/${encodeURIComponent(token)}/items`,
   );
