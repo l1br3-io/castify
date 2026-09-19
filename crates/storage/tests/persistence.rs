@@ -1212,10 +1212,10 @@ async fn migration_0014_scan_state_pruned_counts_round_trip() {
 }
 
 // ---- Migration 0015: Library collections ----
+// ---- Migration 0016: Suggestion staging tables dropped (purge-collection-suggestions) ----
 
-/// Every 0015 table accepts its intended shape: collections (all four
-/// kinds incl. `manual`), membership, suggestion staging groups + items,
-/// and signature-keyed dismissals.
+/// The persistent collections tables accept their intended shapes:
+/// collections (all four kinds incl. `manual`) and membership.
 #[tokio::test]
 async fn migration_0015_collections_tables_accept_rows() {
     let (_guard, path) = fresh_db().await;
@@ -1243,39 +1243,11 @@ async fn migration_0015_collections_tables_accept_rows() {
     .execute(&pool)
     .await
     .unwrap();
-
-    sqlx::query(
-        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
-         member_count, created_at) \
-         VALUES ('sug-1', 'conn-x', 'show', 'Breaking Bad', 'show:breakingbad', 3, \
-         '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        "INSERT INTO collection_suggestion_items (suggestion_id, video_id, position) \
-         VALUES ('sug-1', 'vid-x', 0)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
-         VALUES ('conn-x', 'show:breakingbad', '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
 }
 
-/// `collections.kind` accepts exactly the four designed kinds; the
-/// suggestion staging CHECK excludes `manual` (the cascade never
-/// proposes it, so the DB must not accept it either).
+/// `collections.kind` accepts exactly the four designed kinds.
 #[tokio::test]
-async fn migration_0015_kind_checks_reject_unknown_and_manual_suggestions() {
+async fn migration_0015_kind_check_rejects_unknown_kind() {
     let (_guard, path) = fresh_db().await;
     let pool = connect(&path).await.unwrap();
     run_migrations(&pool).await.unwrap();
@@ -1288,18 +1260,6 @@ async fn migration_0015_kind_checks_reject_unknown_and_manual_suggestions() {
     .execute(&pool)
     .await;
     assert!(bad_collection.is_err(), "kind = 'playlist' must be rejected");
-
-    let manual_suggestion = sqlx::query(
-        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
-         member_count, created_at) \
-         VALUES ('sug-bad', 'conn-x', 'manual', 'X', 'manual:x', 1, '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await;
-    assert!(
-        manual_suggestion.is_err(),
-        "suggestion kind = 'manual' must be rejected"
-    );
 }
 
 /// Membership is a set relation: the same video twice in one collection
@@ -1338,7 +1298,7 @@ async fn migration_0015_duplicate_collection_item_rejected() {
 /// Durability mirror of the share_items pattern: deleting a video or a
 /// collection cascades membership away rather than orphaning rows.
 #[tokio::test]
-async fn migration_0015_cascades_remove_membership_and_suggestion_items() {
+async fn migration_0015_cascades_remove_membership() {
     let (_guard, path) = fresh_db().await;
     let pool = connect(&path).await.unwrap();
     run_migrations(&pool).await.unwrap();
@@ -1359,23 +1319,7 @@ async fn migration_0015_cascades_remove_membership_and_suggestion_items() {
     .await
     .unwrap();
 
-    sqlx::query(
-        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
-         member_count, created_at) \
-         VALUES ('sug-1', 'conn-x', 'show', 'Buffy', 'show:buffy', 1, '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO collection_suggestion_items (suggestion_id, video_id, position) \
-         VALUES ('sug-1', 'vid-x', 0)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // Video delete clears both membership and staged suggestion items.
+    // Video delete clears membership.
     sqlx::query("DELETE FROM videos WHERE id = 'vid-x'")
         .execute(&pool)
         .await
@@ -1385,11 +1329,6 @@ async fn migration_0015_cascades_remove_membership_and_suggestion_items() {
         .await
         .unwrap();
     assert_eq!(items, 0, "membership should cascade with the video");
-    let sug_items: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM collection_suggestion_items")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(sug_items, 0, "suggestion items should cascade with the video");
 
     // Collection delete clears membership (fresh membership row).
     sqlx::query(
@@ -1419,51 +1358,58 @@ async fn migration_0015_cascades_remove_membership_and_suggestion_items() {
     assert_eq!(remaining, 0, "membership should cascade with the collection");
 }
 
-/// Regeneration identity: one suggestion group per
-/// (connection_id, signature), and one dismissal per the same key —
-/// the staging rewrite relies on both to stay deduplicated.
+/// The purge: after migrating through 0016 the three suggestion staging
+/// tables are gone, while a pre-purge accepted collection (legacy kind
+/// `show`) and its membership still read back — the survival guarantee
+/// for user-created state (effort purge-collection-suggestions).
 #[tokio::test]
-async fn migration_0015_suggestion_and_dismissal_unique_keys() {
+async fn migration_0016_drops_staging_tables_and_keeps_accepted_collections() {
     let (_guard, path) = fresh_db().await;
     let pool = connect(&path).await.unwrap();
     run_migrations(&pool).await.unwrap();
     seed_owner_connection_video(&pool).await;
 
-    sqlx::query(
-        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
-         member_count, created_at) \
-         VALUES ('sug-1', 'conn-x', 'show', 'Buffy', 'show:buffy', 2, '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let dup_suggestion = sqlx::query(
-        "INSERT INTO collection_suggestions (id, connection_id, kind, title, signature, \
-         member_count, created_at) \
-         VALUES ('sug-2', 'conn-x', 'show', 'Buffy', 'show:buffy', 3, '2026-09-19T00:00:00Z')",
-    )
-    .execute(&pool)
-    .await;
-    assert!(
-        dup_suggestion.is_err(),
-        "duplicate connection+signature suggestion must reject"
-    );
+    for table in [
+        "collection_suggestions",
+        "collection_suggestion_items",
+        "collection_suggestion_dismissals",
+    ] {
+        let probe = sqlx::query(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await;
+        assert!(probe.is_err(), "table {table} should not exist post-0016");
+    }
 
+    // Pre-purge accepted collections (kind show/movie/time) survive with
+    // full membership.
     sqlx::query(
-        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
-         VALUES ('conn-x', 'show:buffy', '2026-09-19T00:00:00Z')",
+        "INSERT INTO collections (id, name, kind, created_at) \
+         VALUES ('col-legacy', 'Breaking Bad', 'show', '2026-09-19T00:00:00Z')",
     )
     .execute(&pool)
     .await
     .unwrap();
-    let dup_dismissal = sqlx::query(
-        "INSERT INTO collection_suggestion_dismissals (connection_id, signature, dismissed_at) \
-         VALUES ('conn-x', 'show:buffy', '2026-09-19T01:00:00Z')",
+    sqlx::query(
+        "INSERT INTO collection_items (collection_id, video_id, position) \
+         VALUES ('col-legacy', 'vid-x', 0)",
     )
     .execute(&pool)
-    .await;
-    assert!(
-        dup_dismissal.is_err(),
-        "duplicate connection+signature dismissal must reject"
-    );
+    .await
+    .unwrap();
+
+    let (name, kind): (String, String) = sqlx::query_as(
+        "SELECT name, kind FROM collections WHERE id = 'col-legacy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(name, "Breaking Bad");
+    assert_eq!(kind, "show");
+
+    let members: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM collection_items WHERE collection_id = 'col-legacy'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(members, 1, "accepted collection membership reads back");
 }
