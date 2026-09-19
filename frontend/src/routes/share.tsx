@@ -42,13 +42,23 @@
 // after a successful unlock carries it automatically. If the cookie lapses
 // between resolve and items (24h rolling window edge), items answers 401
 // and the page falls back to the gate — unlock again and items refetch.
+//
+// Whole-share search (share-search-ux task 003) overlays the folder
+// browse: `?q=` and `?folder=` coexist, a non-empty `q` renders flat
+// results across every folder (folder-path labeled), and clearing it
+// lands back on the folder the recipient was in. Search is pure
+// client-side filtering over the one items payload — the debounced
+// input → URL write is the TopbarSearch pattern, and no search state
+// ever costs a request.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { PosterCard } from "../components/poster-card";
+import { SearchBar } from "../components/search-bar";
 import { ShareFolderTile } from "../components/share-folder-tile";
+import { ShareResultPathLabel, ShareSearchResults } from "../components/share-search-results";
 import { EmptyState } from "../components/ui/empty-state";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import { ErrorState } from "../components/ui/error-state";
@@ -56,7 +66,8 @@ import { Skeleton } from "../components/ui/skeleton";
 import { fetchShareItems, resolveShare, unlockShare, type ShareResolveDto } from "../api/shares";
 import type { ShareItemsDto } from "../api/types";
 import { ApiError } from "../api/client";
-import { buildShareTree } from "../lib/share-tree";
+import { buildShareTree, searchTree } from "../lib/share-tree";
+import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { describeError } from "../lib/format";
 import { SharedChrome } from "../components/shared-chrome";
 import { Button } from "../components/ui/button";
@@ -169,9 +180,12 @@ export function SharePage() {
 // Folder browse (share-folders task 005)
 // ---------------------------------------------------------------------------
 
-// The unlocked grid: folders first, then the level's videos. All state is
-// the `?folder=` URL param — one fetch already brought the whole tree, so
-// this component renders levels without touching the network.
+// The unlocked surface: a search field spanning the whole share, plus
+// either the folder browse (`?folder=`) or the flat results view (`?q=`).
+// All state lives in the URL — one fetch already brought the whole tree,
+// so search and every level hop render without touching the network.
+const SEARCH_DEBOUNCE_MS = 300;
+
 function ShareBrowse({
   title,
   token,
@@ -181,11 +195,52 @@ function ShareBrowse({
   token: string;
   payload: ShareItemsDto;
 }) {
-  const [searchParams] = useSearchParams();
-  // Built once per payload identity — the indexes serve every level hop.
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Built once per payload identity — the indexes serve every level hop
+  // and every keystroke's search.
   const tree = useMemo(() => buildShareTree(payload), [payload]);
   // Stale ids (owner deleted the folder) fall back to root, silently.
   const folderId = tree.resolveFolderId(searchParams.get("folder"));
+  const query = (searchParams.get("q") ?? "").trim();
+  const isSearching = query !== "";
+  const results = useMemo(
+    () => (isSearching ? searchTree(tree, query) : null),
+    [tree, query, isSearching],
+  );
+
+  // TopbarSearch pattern: raw input is local and instant, the debounced
+  // value writes the URL (`replace`, so back/forward isn't noisy), and
+  // the URL keeps `folder` alive alongside `q` — clearing the query
+  // returns the recipient to the folder they were in.
+  const [raw, setRaw] = useState(query);
+  const debounced = useDebouncedValue(raw, SEARCH_DEBOUNCE_MS);
+
+  useEffect(() => {
+    const current = searchParams.get("q") ?? "";
+    if (debounced === current) return;
+    const params = new URLSearchParams(searchParams);
+    if (debounced === "") params.delete("q");
+    else params.set("q", debounced);
+    setSearchParams(params, { replace: true });
+    // Deps are deliberately `[debounced]` alone (TopbarSearch pattern):
+    // the write must fire only for a settled input change, never for a
+    // URL mutation from elsewhere (folder tiles, clear action, back/
+    // forward) — otherwise the stale debounced value would restore `q`
+    // right after the navigation dropped it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
+
+  // URL → input: deep links, back/forward, and clears stay in sync.
+  useEffect(() => {
+    setRaw(searchParams.get("q") ?? "");
+  }, [searchParams]);
+
+  function handleClearSearch(): void {
+    setRaw("");
+    const params = new URLSearchParams(searchParams);
+    params.delete("q");
+    setSearchParams(params, { replace: true });
+  }
 
   const basePath = `/share/${encodeURIComponent(token)}`;
   const levelFolders = tree.childFolders(folderId);
@@ -197,68 +252,105 @@ function ShareBrowse({
   return (
     <SharedChrome>
       <div className="mx-auto max-w-7xl space-y-4">
-      <div>
-        <h1 className="text-2xl">{title}</h1>
-        <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
-          {totalItems} {totalItems === 1 ? "video" : "videos"} shared with you
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+        <div>
+          <h1 className="text-2xl">{title}</h1>
+          <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
+            {totalItems} {totalItems === 1 ? "video" : "videos"} shared with you
+          </p>
+        </div>
+        <div className="w-full max-w-sm">
+          <SearchBar
+            value={raw}
+            onChange={setRaw}
+            label="Search this share"
+            placeholder="Find a video…"
+          />
+        </div>
       </div>
-      {crumbs.length > 0 && (
-        <nav aria-label="Folders">
-          <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
-            <li>
-              <Link
-                to={{ pathname: basePath, search: "" }}
-                className="hover:text-[var(--color-castify-accent)] hover:underline"
-              >
-                {title}
-              </Link>
-            </li>
-            {crumbs.map((crumb, index) => (
-              <li key={crumb.id} className="flex items-center gap-1.5">
-                <span aria-hidden>/</span>
-                {index === crumbs.length - 1 ? (
-                  <span aria-current="page" className="text-[var(--color-castify-foreground)]">
-                    {crumb.name}
-                  </span>
-                ) : (
+      {results !== null ? (
+        <ShareSearchResults query={query} results={results} onClear={handleClearSearch}>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            {results.folders.map((folder) => (
+              <ShareFolderTile
+                key={folder.id}
+                folder={folder}
+                to={basePath}
+                count={tree.childCount(folder.id)}
+              />
+            ))}
+            {results.videos.map((video) => (
+              <div key={video.id} className="flex flex-col gap-2">
+                <PosterCard
+                  video={video}
+                  href={`${basePath}/watch/${encodeURIComponent(video.id)}`}
+                  scope={{ kind: "share", token }}
+                />
+                <ShareResultPathLabel path={video.folderPath} rootLabel={title} />
+              </div>
+            ))}
+          </div>
+        </ShareSearchResults>
+      ) : (
+        <>
+          {crumbs.length > 0 && (
+            <nav aria-label="Folders">
+              <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
+                <li>
                   <Link
-                    to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                    to={{ pathname: basePath, search: "" }}
                     className="hover:text-[var(--color-castify-accent)] hover:underline"
                   >
-                    {crumb.name}
+                    {title}
                   </Link>
-                )}
-              </li>
-            ))}
-          </ol>
-        </nav>
-      )}
-      {levelIsEmpty ? (
-        totalItems === 0 ? (
-          <EmptyState title="Nothing in this share." body="Whoever shared it hasn't added any videos." />
-        ) : (
-          <EmptyState title="This folder is empty." body="Nothing was placed in this folder." />
-        )
-      ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {levelFolders.map((folder) => (
-            <ShareFolderTile
-              key={folder.id}
-              folder={folder}
-              to={basePath}
-              count={tree.childCount(folder.id)}
-            />
-          ))}
-          {levelItems.map((video) => (
-            <PosterCard
-              key={video.id}
-              video={video}
-              href={`${basePath}/watch/${encodeURIComponent(video.id)}`}
-              scope={{ kind: "share", token }}
-            />
-          ))}
-        </div>
+                </li>
+                {crumbs.map((crumb, index) => (
+                  <li key={crumb.id} className="flex items-center gap-1.5">
+                    <span aria-hidden>/</span>
+                    {index === crumbs.length - 1 ? (
+                      <span aria-current="page" className="text-[var(--color-castify-foreground)]">
+                        {crumb.name}
+                      </span>
+                    ) : (
+                      <Link
+                        to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                        className="hover:text-[var(--color-castify-accent)] hover:underline"
+                      >
+                        {crumb.name}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </nav>
+          )}
+          {levelIsEmpty ? (
+            totalItems === 0 ? (
+              <EmptyState title="Nothing in this share." body="Whoever shared it hasn't added any videos." />
+            ) : (
+              <EmptyState title="This folder is empty." body="Nothing was placed in this folder." />
+            )
+          ) : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {levelFolders.map((folder) => (
+                <ShareFolderTile
+                  key={folder.id}
+                  folder={folder}
+                  to={basePath}
+                  count={tree.childCount(folder.id)}
+                />
+              ))}
+              {levelItems.map((video) => (
+                <PosterCard
+                  key={video.id}
+                  video={video}
+                  href={`${basePath}/watch/${encodeURIComponent(video.id)}`}
+                  scope={{ kind: "share", token }}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
     </SharedChrome>
