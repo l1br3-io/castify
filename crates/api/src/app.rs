@@ -109,18 +109,6 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::get(folders::contents),
         )
         .route(
-            "/api/collections/suggestions",
-            axum::routing::get(collections::list_suggestions),
-        )
-        .route(
-            "/api/collections/suggestions/{id}/accept",
-            axum::routing::post(collections::accept_suggestion),
-        )
-        .route(
-            "/api/collections/suggestions/{id}/dismiss",
-            axum::routing::post(collections::dismiss_suggestion),
-        )
-        .route(
             "/api/collections",
             axum::routing::get(collections::list_collections).post(collections::create_collection),
         )
