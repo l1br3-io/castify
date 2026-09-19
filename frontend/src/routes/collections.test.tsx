@@ -293,4 +293,159 @@ describe("CollectionsPage", () => {
     expect(chipRow!.className).toContain("flex-wrap");
     expect(container.querySelector(".grid")).not.toBeNull();
   });
+
+  // --- task 004: rename from the grid ---
+
+  function patchUrls(fetchSpy: { mock: { calls: unknown[][] } }): string[] {
+    return fetchSpy.mock.calls
+      .filter(([url, init]) => String(url) === "/api/collections/c1" && (init as RequestInit | undefined)?.method === "PATCH")
+      .map(([url]) => String(url));
+  }
+
+  function collectionApi(
+    list: CollectionDto[],
+    patchStatus: number = 200,
+  ) {
+    // Stateful like the real backend: a successful PATCH persists, so
+    // the post-settle invalidation refetch returns the renamed row (the
+    // optimistic patch must not flicker back).
+    let current = list;
+    return (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/collections") return jsonResponse(current);
+      if (url === "/api/collections/c1" && method === "PATCH") {
+        if (patchStatus === 200) {
+          current = current.map((c) =>
+            c.id === "c1" ? { ...c, name: "Better Call Saul" } : c,
+          );
+          return jsonResponse({
+            id: "c1",
+            name: "Better Call Saul",
+            kind: "show",
+            created_at: "2026-09-01T00:00:00Z",
+          });
+        }
+        return jsonError(500, "boom");
+      }
+      return jsonError(404, "unmocked");
+    };
+  }
+
+  async function openRenameDialog(): Promise<void> {
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Actions for Breaking Bad" }),
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    await screen.findByRole("dialog", { name: "Rename collection" });
+  }
+
+  it("kebab opens a menu with Rename; the card link still works", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionApi([collection()]),
+    });
+
+    await screen.findByText("Breaking Bad");
+    // The card link coexists with the closed menu.
+    expect(
+      screen.getByRole("link", { name: "Open collection Breaking Bad" }),
+    ).toHaveAttribute("href", "/collections/c1");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Actions for Breaking Bad" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Rename" }),
+    ).toBeInTheDocument();
+  });
+
+  it("rename dialog prefills and skips the PATCH for empty or unchanged names", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionApi([collection()]),
+    });
+
+    await openRenameDialog();
+    const input = screen.getByLabelText("Collection name");
+    expect(input).toHaveValue("Breaking Bad");
+
+    // Unchanged name — Save treats it as a cancel.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Rename collection" }),
+    ).not.toBeInTheDocument();
+    expect(patchUrls(fetchSpy)).toHaveLength(0);
+
+    // Empty name — same.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Actions for Breaking Bad" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input2 = await screen.findByLabelText("Collection name");
+    fireEvent.change(input2, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(patchUrls(fetchSpy)).toHaveLength(0);
+  });
+
+  it("renames the card in place optimistically on save (Enter submits)", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionApi([collection()]),
+    });
+
+    await openRenameDialog();
+    fireEvent.change(screen.getByLabelText("Collection name"), {
+      target: { value: "Better Call Saul" },
+    });
+    fireEvent.keyDown(screen.getByLabelText("Collection name"), {
+      key: "Enter",
+    });
+
+    // Optimistic: the card shows the new name immediately.
+    expect(await screen.findByText("Better Call Saul")).toBeInTheDocument();
+    expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument();
+    expect(patchUrls(fetchSpy)).toHaveLength(1);
+  });
+
+  it("rolls the card back and toasts when the rename fails", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionApi([collection()], 500),
+    });
+
+    await openRenameDialog();
+    fireEvent.change(screen.getByLabelText("Collection name"), {
+      target: { value: "Better Call Saul" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Rolled back to the original name, error toast announced.
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+    });
+    expect(await screen.findByText("Breaking Bad")).toBeInTheDocument();
+    expect(screen.queryByText("Better Call Saul")).not.toBeInTheDocument();
+  });
+
+  it("Escape closes the dialog and restores focus to the kebab", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionApi([collection()]),
+    });
+
+    const kebab = await screen.findByRole("button", {
+      name: "Actions for Breaking Bad",
+    });
+    fireEvent.click(kebab);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await screen.findByRole("dialog", { name: "Rename collection" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("dialog", { name: "Rename collection" }),
+    ).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(kebab);
+  });
 });

@@ -25,11 +25,15 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { CollectionDto, CollectionKind } from "../api/types";
-import { useCollections } from "../hooks/use-collections";
+import { useCollections, useRenameCollection } from "../hooks/use-collections";
+import { useToast } from "../hooks/use-toast";
 import { CollectionCard } from "../components/collections/collection-card";
+import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
+import { Menu, MenuItem } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
+import { buttonClasses } from "../components/ui/button-classes";
 
 // ---------------------------------------------------------------------------
 // Kind filter — URL-backed single select (`?kind=`)
@@ -239,10 +243,117 @@ export function CollectionsPage() {
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
           {visible.map((collection) => (
-            <CollectionCard key={collection.id} collection={collection} />
+            <CollectionCard
+              key={collection.id}
+              collection={collection}
+              menuSlot={<CollectionCardMenu collection={collection} />}
+            />
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Card menu + rename dialog (task 004)
+// ---------------------------------------------------------------------------
+
+// Kebab chip styling — the same quiet dark chip add-to-collection's card
+// variant rides on PosterCard, so both meta-row menus read as one family.
+const KEBAB_TRIGGER_CLASS =
+  "flex h-7 w-7 items-center justify-center rounded-[var(--radius-button)] " +
+  "text-[var(--color-castify-muted)] transition hover:bg-[var(--color-castify-accent-subtle)] " +
+  "hover:text-[var(--color-castify-text)] focus:outline-none focus-visible:ring-2 " +
+  "focus-visible:ring-[var(--color-focus)]";
+
+/** Kebab menu riding the card's menuSlot. Rename first; Delete joins in
+ *  task 005. */
+function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
+  const [renaming, setRenaming] = useState(false);
+
+  return (
+    <>
+      <Menu
+        label={`Actions for ${collection.name}`}
+        triggerClassName={KEBAB_TRIGGER_CLASS}
+      >
+        <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>
+      </Menu>
+      {renaming && (
+        <RenameCollectionDialog
+          collection={collection}
+          onClose={() => setRenaming(false)}
+        />
+      )}
+    </>
+  );
+}
+
+/** Rename dialog — prefilled single field; the same Rename/Save/Cancel
+ *  vocabulary as the detail page's inline rename. Enter submits,
+ *  Escape/Cancel aborts (the Dialog primitive's contract). */
+function RenameCollectionDialog({
+  collection,
+  onClose,
+}: {
+  collection: CollectionDto;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState(collection.name);
+  const rename = useRenameCollection();
+  const toast = useToast();
+
+  function submit(): void {
+    const trimmed = draft.trim();
+    // Empty or unchanged names are a cancel, not a PATCH.
+    if (trimmed === "" || trimmed === collection.name) {
+      onClose();
+      return;
+    }
+    rename.mutate(
+      { id: collection.id, name: trimmed },
+      {
+        onError: () =>
+          toast.error(
+            `Couldn't rename "${collection.name}". Please try again.`,
+          ),
+        onSettled: onClose,
+      },
+    );
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="Rename collection"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className={buttonClasses("ghost")}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={rename.isPending}
+            className={buttonClasses("primary")}
+          >
+            {rename.isPending ? "Saving…" : "Save"}
+          </button>
+        </>
+      }
+    >
+      <input
+        aria-label="Collection name"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+        className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)]"
+      />
+    </Dialog>
   );
 }
