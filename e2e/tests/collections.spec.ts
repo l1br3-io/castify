@@ -1,17 +1,12 @@
-// E2e: library collections — the full user path (library-collections
-// task 011).
+// E2e: collections sharing (share-collections task 003).
 //
-// Against real MinIO: connect → upload classifiable objects (reusing
-// fixture bytes — the classifier reads names/paths, not content) →
-// rescan → suggestion panel in browse → accept → collection in the
-// rail → detail renders. A second test dismisses a group, rescans, and
-// proves the signature suppression holds.
-//
-// The "share a collection" describe (share-collections task 003) rides
-// the same fixture: a three-episode show collection is shared from the
-// detail header and from the grid kebab, and a recipient context must
-// see exactly the collection's members in curation order — including
-// after the source collection is deleted (snapshot semantics).
+// Against real MinIO: connect → upload episode objects (reusing
+// fixture bytes — content is irrelevant to cataloging) → rescan →
+// build a three-episode show collection through the manual API →
+// share it from the detail header and from the grid kebab → a
+// recipient context must see exactly the collection's members in
+// curation order — including after the source collection is deleted
+// (snapshot semantics).
 //
 // All tests restore the bucket + disconnect in `finally` — the suite
 // is serial (one worker) and later specs expect the seeded state.
@@ -159,20 +154,6 @@ async function cleanupConnection(
   await disconnect(page, connId, csrf).catch(() => {});
 }
 
-type Suggestion = {
-  id: string;
-  kind: string;
-  title: string;
-  signature: string;
-  member_count: number;
-};
-
-async function getSuggestions(page: Page): Promise<Suggestion[]> {
-  const res = await page.request.get("/api/collections/suggestions");
-  expect(res.ok()).toBeTruthy();
-  return (await res.json()) as Suggestion[];
-}
-
 async function rescanAndAwait(
   page: Page,
   connectionId: string,
@@ -197,159 +178,14 @@ async function rescanAndAwait(
   await waitForScanComplete(page, connectionId);
 }
 
-test.describe("library collections (MinIO, task 011)", () => {
-  test.setTimeout(180_000);
-
-  test("scan → suggestions → accept → collection in browse rail → detail", async ({
-    page,
-  }) => {
-    await ensureAuthenticated(page);
-    await waitMinioLive(page);
-
-    let connId = "";
-    const csrf = await getCsrfToken(page);
-    const uploadedKeys = [
-      "TV/Breaking.Bad.S01E01.mkv",
-      "TV/Breaking.Bad.S01E02.mkv",
-    ];
-    try {
-      connId = await connectS3AndScan(page);
-      for (const key of uploadedKeys) {
-        await putObject(page, csrf, connId, key);
-      }
-      await rescanAndAwait(page, connId, csrf);
-
-      // Staging: one show group for the two episodes.
-      const suggestions = await getSuggestions(page);
-      const show = suggestions.find((s) => s.signature === "show:breakingbad");
-      expect(show, `show suggestion staged: ${JSON.stringify(suggestions)}`)
-        .toMatchObject({ kind: "show", title: "Breaking Bad", member_count: 2 });
-
-      // UI: the review banner appears; the flat grid and the organizer
-      // are untouched alongside it (spec: existing surfaces stay).
-      await page.goto("/");
-      await expect(
-        page.getByRole("region", { name: /review suggestions/i }),
-      ).toBeVisible();
-      await expect(
-        page.getByText("1 suggested collection ready to review."),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("heading", { name: "All videos" }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("region", { name: "Folder organizer" }),
-      ).toBeVisible();
-
-      // Nothing entered browse as a collection before acceptance — no
-      // Collections rail yet.
-      await expect(
-        page.getByRole("heading", { name: /^collections$/i }),
-      ).toHaveCount(0);
-
-      // The group cards live behind the Review button's modal (current
-      // panel design): accept Breaking Bad through the dialog.
-      await page.getByRole("button", { name: "Review", exact: true }).click();
-      const reviewDialog = page.getByRole("dialog", {
-        name: "Review suggestions",
-      });
-      await expect(reviewDialog).toBeVisible();
-      await expect(reviewDialog.getByText("Breaking Bad")).toBeVisible();
-      await reviewDialog
-        .getByRole("button", { name: "Accept Breaking Bad" })
-        .click();
-      await reviewDialog.getByRole("button", { name: "Done" }).click();
-      await expect(
-        page.getByRole("region", { name: /review suggestions/i }),
-      ).toHaveCount(0);
-
-      // The rail appears with the accepted collection.
-      const railCard = page.getByRole("link", { name: /breaking bad/i });
-      await expect(railCard).toBeVisible();
-      await expect(railCard).toContainText(/2 videos/);
-
-      // Detail view: ordered members + play-all into the watch queue.
-      await railCard.click();
-      await expect(
-        page.getByRole("heading", { name: /breaking bad/i }),
-      ).toBeVisible();
-      await expect(page.getByText("Series · 2 videos")).toBeVisible();
-      const playAll = page.getByRole("link", { name: /play all/i });
-      await expect(playAll).toHaveAttribute("href", /\/watch\//);
-    } finally {
-      // Delete the collections this test created, then hard-prune the
-      // uploaded rows (see cleanupConnection for why disconnect alone
-      // would leak them into later specs).
-      const cleanupCsrf = await getCsrfToken(page).catch(() => null);
-      if (connId && cleanupCsrf) {
-        const list = await page.request
-          .get("/api/collections", {
-            headers: await authHeaders(page, cleanupCsrf),
-          })
-          .catch(() => null);
-        if (list?.ok()) {
-          const collections = (await list.json()) as { id: string }[];
-          for (const c of collections) {
-            await page.request
-              .delete(`/api/collections/${c.id}`, {
-                headers: await authHeaders(page, cleanupCsrf),
-              })
-              .catch(() => {});
-          }
-        }
-      }
-      await cleanupConnection(page, connId, uploadedKeys);
-    }
-  });
-
-  test("dismiss suppresses the group across rescans", async ({ page }) => {
-    await ensureAuthenticated(page);
-    await waitMinioLive(page);
-
-    let connId = "";
-    const csrf = await getCsrfToken(page);
-    const uploadedKeys = ["Movies/The.Matrix.(1999).mkv"];
-    try {
-      connId = await connectS3AndScan(page);
-      await putObject(page, csrf, connId, uploadedKeys[0]);
-      await rescanAndAwait(page, connId, csrf);
-
-      const staged = await getSuggestions(page);
-      const movie = staged.find((s) => s.signature === "movie:thematrix1999");
-      expect(movie, `movie suggestion staged: ${JSON.stringify(staged)}`)
-        .toMatchObject({ kind: "movie", title: "The Matrix (1999)" });
-
-      // Dismiss through the API (the UI path is covered in vitest).
-      const res = await page.request.post(
-        `/api/collections/suggestions/${movie.id}/dismiss`,
-        { headers: await authHeaders(page, csrf) },
-      );
-      expect(res.status()).toBe(204);
-      expect(
-        (await getSuggestions(page)).filter((s) => s.id === movie.id),
-      ).toHaveLength(0);
-
-      // Rescan regenerates staging — the dismissed signature must not
-      // resurrect.
-      await rescanAndAwait(page, connId, csrf);
-      const after = await getSuggestions(page);
-      expect(
-        after.filter((s) => s.signature === "movie:thematrix1999"),
-      ).toHaveLength(0);
-    } finally {
-      await cleanupConnection(page, connId, uploadedKeys);
-    }
-  });
-});
-
 test.describe("share a collection (share-collections task 003)", () => {
   test.setTimeout(180_000);
 
   const SHOW_TITLE = "Better Things";
   const SHARE_TITLE = "Collection share e2e";
-  // .mp4 keys (not .mkv): the staged bytes are H.264 mp4, and the name
-  // drives both classification and stream strategy — mp4 keeps the
-  // recipient playback assertion on the direct, natively-playable path.
+  // .mp4 keys (not .mkv): the uploaded bytes are H.264 mp4, which
+  // keeps the recipient playback assertion on the direct,
+  // natively-playable stream path.
   const EPISODE_KEYS = [
     "TV/Better.Things.S01E01.mp4",
     "TV/Better.Things.S01E02.mp4",
@@ -373,21 +209,35 @@ test.describe("share a collection (share-collections task 003)", () => {
       }
       await rescanAndAwait(page, connId, csrf);
 
-      // Accept the three-episode show group through the API (the UI
-      // accept path is covered above and in vitest).
-      const staged = await getSuggestions(page);
-      const show = staged.find(
-        (s) => s.signature === "show:betterthings",
+      // Build the three-episode show collection through the manual
+      // API: create, then add the episodes in episode order (the key
+      // basenames sort E01 → E03).
+      const createRes = await page.request.post("/api/collections", {
+        headers: await authHeaders(page, csrf),
+        data: { name: SHOW_TITLE },
+      });
+      expect(createRes.ok()).toBeTruthy();
+      const created = (await createRes.json()) as { id: string };
+      collectionId = created.id;
+
+      const videosRes = await page.request.get("/api/videos?limit=100");
+      expect(videosRes.ok()).toBeTruthy();
+      const videos = (await videosRes.json()) as {
+        videos: { id: string; name: string }[];
+      };
+      const episodes = videos.videos
+        .filter((v) => v.name.startsWith("Better.Things.S01E"))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      expect(episodes, "all three episodes cataloged").toHaveLength(3);
+
+      const putRes = await page.request.put(
+        `/api/collections/${collectionId}/items`,
+        {
+          headers: await authHeaders(page, csrf),
+          data: { video_ids: episodes.map((v) => v.id) },
+        },
       );
-      expect(show, `show suggestion staged: ${JSON.stringify(staged)}`)
-        .toMatchObject({ kind: "show", title: SHOW_TITLE, member_count: 3 });
-      const acceptRes = await page.request.post(
-        `/api/collections/suggestions/${show!.id}/accept`,
-        { headers: await authHeaders(page, csrf) },
-      );
-      expect(acceptRes.ok()).toBeTruthy();
-      const accepted = (await acceptRes.json()) as { id: string };
-      collectionId = accepted.id;
+      expect(putRes.status()).toBe(204);
 
       // Curation order is whatever the detail API returns — the
       // recipient assertions compare against it, not a guess.
