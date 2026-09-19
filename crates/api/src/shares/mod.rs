@@ -33,7 +33,10 @@ pub mod repository;
 pub mod status;
 pub mod token;
 
-pub use repository::{NewShare, ShareItemRow, ShareRepository, ShareRow};
+pub use repository::{
+    FolderInvalid, FolderWriteError, NewShare, ShareFolderRow, ShareItemRow, ShareRepository,
+    ShareRow,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
