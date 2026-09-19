@@ -52,4 +52,21 @@ describe("SearchBar", () => {
     expect(ref.current).toBeInstanceOf(HTMLInputElement);
     expect(ref.current).toBe(screen.getByLabelText("Search videos"));
   });
+
+  it("defaults label and placeholder to the library strings", () => {
+    renderWithProviders(<SearchBar value="" onChange={() => {}} />);
+
+    expect(screen.getByLabelText("Search videos")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search your library — titles, folders, subtitles…")).toBeInTheDocument();
+  });
+
+  it("flows custom label and placeholder to the input", () => {
+    renderWithProviders(
+      <SearchBar value="" onChange={() => {}} label="Search this share" placeholder="Find a video…" />,
+    );
+
+    expect(screen.getByLabelText("Search this share")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Find a video…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Search videos")).not.toBeInTheDocument();
+  });
 });

@@ -16,10 +16,17 @@ import { forwardRef } from "react";
 interface SearchBarProps {
   value: string;
   onChange: (value: string) => void;
+  /** `aria-label` for the input; defaults to the library browse copy. */
+  label?: string;
+  /** Input placeholder; defaults to the library browse copy. */
+  placeholder?: string;
 }
 
+const DEFAULT_LABEL = "Search videos";
+const DEFAULT_PLACEHOLDER = "Search your library — titles, folders, subtitles\u2026";
+
 export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
-  function SearchBar({ value, onChange }, ref) {
+  function SearchBar({ value, onChange, label = DEFAULT_LABEL, placeholder = DEFAULT_PLACEHOLDER }, ref) {
     return (
       <div role="search" className="relative">
         {/* Search icon */}
@@ -42,8 +49,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          aria-label="Search videos"
-          placeholder={"Search your library — titles, folders, subtitles\u2026"}
+          aria-label={label}
+          placeholder={placeholder}
           title="Press / to focus"
           className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-sunken)] py-2 pl-10 pr-9 text-[13px] text-[var(--color-castify-text)] transition placeholder:text-[var(--color-castify-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--color-castify-accent)]"
         />
