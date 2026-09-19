@@ -33,7 +33,7 @@ describe("share routes are public", () => {
 });
 
 describe("owner routes keep the session loader", () => {
-  it.each(["/", "/shares", "/connections", "/settings", "/watch/v1"])(
+  it.each(["/", "/collections", "/shares", "/connections", "/settings", "/watch/v1"])(
     "%s still requires a session",
     (pathname) => {
       expect(deepestRoute(pathname).loader).toBe(requireSessionLoader);
