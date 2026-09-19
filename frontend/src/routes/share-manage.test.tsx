@@ -647,6 +647,226 @@ describe("ShareManagePage folder browse", () => {
   });
 });
 
+// ---------------- folder CRUD UI (share-folders task 007) ----------------
+
+/** Tree fixture: Trip at root with Beta inside and subfolder Night
+ * (Gamma inside); Alpha at root. */
+function treeState() {
+  return {
+    folders: [
+      { id: "f-trip", parent_id: null, name: "Trip", position: 0 },
+      { id: "f-night", parent_id: "f-trip", name: "Night", position: 0 },
+    ] as ShareFolderDto[],
+    items: [
+      { ...MEMBERS[0], folder_id: null },
+      { ...MEMBERS[1], folder_id: "f-trip" },
+      { ...GAMMA, folder_id: "f-night" },
+    ],
+  };
+}
+
+/** Stateful handler over the folder routes: GET serves the wrapped
+ * payload; POST/PATCH/DELETE record bodies and apply real semantics
+ * (delete lifts items to root and flattens subfolders) so refetched
+ * assertions see what the server would serve. */
+function folderCrudFetch(state: {
+  folders: ShareFolderDto[];
+  items: Array<VideoSummaryDto & { folder_id: string | null }>;
+  failCreate?: string;
+}) {
+  let nextId = 0;
+  const posts: Array<{ name: string; parent_id: string | null }> = [];
+  const patches: Array<{ fid: string; body: { name?: string; parent_id?: string | null } }> = [];
+  const deletes: string[] = [];
+  const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/shares") return jsonResponse([ACTIVE]);
+    if (url === "/api/shares/s1/items" && method === "GET")
+      return jsonResponse({ folders: state.folders, items: state.items });
+    if (url === "/api/shares/s1/folders" && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        name: string;
+        parent_id: string | null;
+      };
+      posts.push(body);
+      if (state.failCreate)
+        return jsonResponse({ message: state.failCreate }, 409);
+      const folder: ShareFolderDto = {
+        id: `f-new-${nextId++}`,
+        parent_id: body.parent_id,
+        name: body.name,
+        position: state.folders.length,
+      };
+      state.folders = [...state.folders, folder];
+      return jsonResponse(folder, 201);
+    }
+    const patch = url.match(/^\/api\/shares\/s1\/folders\/([^/]+)$/);
+    if (patch && method === "PATCH") {
+      const fid = patch[1]!;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        name?: string;
+        parent_id?: string | null;
+      };
+      patches.push({ fid, body });
+      state.folders = state.folders.map((f) =>
+        f.id === fid
+          ? {
+              ...f,
+              ...(body.name !== undefined ? { name: body.name } : {}),
+              ...(body.parent_id !== undefined ? { parent_id: body.parent_id } : {}),
+            }
+          : f,
+      );
+      return jsonResponse(state.folders.find((f) => f.id === fid)!, 200);
+    }
+    if (patch && method === "DELETE") {
+      const fid = patch[1]!;
+      deletes.push(fid);
+      state.folders = state.folders.map((f) =>
+        f.parent_id === fid ? { ...f, parent_id: null } : f,
+      );
+      state.items = state.items.map((i) =>
+        i.folder_id === fid ? { ...i, folder_id: null } : i,
+      );
+      state.folders = state.folders.filter((f) => f.id !== fid);
+      return new Response(null, { status: 204 });
+    }
+    return jsonError(404, `unmocked ${method} ${url}`);
+  };
+  return Object.assign(handler, { posts, patches, deletes });
+}
+
+describe("ShareManagePage folder CRUD", () => {
+  it("creates a folder in the current level from the toolbar and refetches", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /new folder/i }));
+    fireEvent.change(await screen.findByLabelText(/folder name/i), {
+      target: { value: "Docs" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(handler.posts).toEqual([{ name: "Docs", parent_id: null }]));
+    // The invalidation refetches the payload — the new tile appears.
+    expect(await screen.findByRole("link", { name: "Open folder Docs" })).toBeInTheDocument();
+  });
+
+  it("surfaces the server's duplicate-name rejection inline in the dialog", async () => {
+    const handler = folderCrudFetch({ ...treeState(), failCreate: "a sibling folder is already named Trip" });
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.click(await screen.findByRole("button", { name: /new folder/i }));
+    fireEvent.change(await screen.findByLabelText(/folder name/i), {
+      target: { value: "Trip" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(await screen.findByText(/already named trip/i)).toBeInTheDocument();
+    // Dialog stays open for a retry.
+    expect(screen.getByLabelText(/folder name/i)).toBeInTheDocument();
+  });
+
+  it("renames a folder from its kebab menu", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for trip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /rename/i }));
+    const input = await screen.findByLabelText(/folder name/i);
+    expect(input).toHaveValue("Trip");
+    fireEvent.change(input, { target: { value: "Travels" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(handler.patches).toEqual([
+        { fid: "f-trip", body: { name: "Travels" } },
+      ]),
+    );
+    expect(await screen.findByRole("link", { name: "Open folder Travels" })).toBeInTheDocument();
+  });
+
+  it("moves a folder via the picker, which excludes its own subtree", async () => {
+    // A second root folder (Docs) gives the move a distinct target.
+    const state = {
+      ...treeState(),
+      folders: [
+        ...treeState().folders,
+        { id: "f-docs", parent_id: null, name: "Docs", position: 1 },
+      ],
+    };
+    const handler = folderCrudFetch(state);
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for trip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /^move$/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /move "trip"/i });
+    // Own subtree unpickable: Trip and Night are absent.
+    expect(within(dialog).queryByRole("button", { name: "Trip" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Night" })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Docs" }));
+
+    await waitFor(() =>
+      expect(handler.patches).toEqual([
+        { fid: "f-trip", body: { parent_id: "f-docs" } },
+      ]),
+    );
+  });
+
+  it("deletes a folder after the contents-to-root confirmation; the level lifts", async () => {
+    const state = treeState();
+    const handler = folderCrudFetch(state);
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more actions for trip/i }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /delete/i }));
+
+    // The confirmation names the consequence before anything is sent.
+    const dialog = await screen.findByRole("dialog", { name: /delete "trip"/i });
+    expect(within(dialog).getByText(/move to the top level/i)).toBeInTheDocument();
+    expect(handler.deletes).toEqual([]);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    await waitFor(() => expect(handler.deletes).toEqual(["f-trip"]));
+    // Refetched payload: Trip is gone, Beta lifted to root, Night
+    // flattened to root (Gamma still inside it).
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: /open folder trip/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Beta clip")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+  });
+
+  it("terminal shares hide the toolbar action and folder menus", async () => {
+    const state = treeState();
+    const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      if (url === "/api/shares") return jsonResponse([REVOKED]);
+      if (url === "/api/shares/s1/items" && (init?.method ?? "GET").toUpperCase() === "GET")
+        return jsonResponse({ folders: state.folders, items: state.items });
+      return folderCrudFetch(state)(input, init);
+    };
+    renderManage(handler, "/settings/shares/s1");
+
+    // Root level: Alpha + the Trip tile; no editing affordances.
+    expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Trip" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /more actions for trip/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 /** Stateful handler for removal-flow tests: GET serves the live array, PUT
  * records every body (for order assertions) and flips the array. `failPut`
  * makes PUTs answer 500 to exercise the error path. */

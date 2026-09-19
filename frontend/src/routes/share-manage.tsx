@@ -30,19 +30,31 @@
 
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type FormEvent } from "react";
 
 import { PosterCard } from "../components/poster-card";
 import { ShareEditDialog } from "../components/share-edit-dialog";
+import { ShareFolderMenu } from "../components/share-folder-menu";
 import { ShareFolderTile } from "../components/share-folder-tile";
 import { ShareItemMenu } from "../components/share-item-menu";
+import { ShareMoveDialog } from "../components/share-move-dialog";
 import { StatusBadge } from "../components/status-badge";
+import { Button } from "../components/ui/button";
+import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
+import { Field, Input } from "../components/ui/field";
 import { Skeleton } from "../components/ui/skeleton";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
-import { replaceShareItems, fetchShareItemsOwned, type ShareDto } from "../api/shares";
-import type { ShareItemsDto, VideoSummaryDto } from "../api/types";
+import {
+  createShareFolder,
+  deleteShareFolder,
+  fetchShareItemsOwned,
+  replaceShareItems,
+  updateShareFolder,
+  type ShareDto,
+} from "../api/shares";
+import type { ShareFolderDto, ShareItemsDto, VideoSummaryDto } from "../api/types";
 import { buildShareTree } from "../lib/share-tree";
 import { describeError, formatDate } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
@@ -128,6 +140,72 @@ function ShareDetail({ share }: { share: ShareDto }) {
   // restores only the most recent — the page copy names the item).
   const lastToastId = useRef<number | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
+
+  // Tree browse (task 006) — computed before the mutations so they can
+  // close over the current scope (`folderId`). The index rebuilds only
+  // when the payload identity changes (a refetch), never per render.
+  const [searchParams] = useSearchParams();
+  const tree = useMemo(
+    () => (items.data ? buildShareTree(items.data) : null),
+    [items.data],
+  );
+  const folderId = tree?.resolveFolderId(searchParams.get("folder")) ?? null;
+
+  // Folder CRUD dialog slot (task 007) — one modal at a time; the
+  // dialogs below render from this state.
+  const [folderDialog, setFolderDialog] = useState<
+    | { kind: "create" }
+    | { kind: "rename"; folder: ShareFolderDto }
+    | { kind: "move"; folder: ShareFolderDto }
+    | { kind: "delete"; folder: ShareFolderDto }
+    | null
+  >(null);
+
+  /** Folder mutations invalidate the tree payload only: folders are pure
+   * organization, so `item_count` (SHARES_QUERY_KEY) cannot change — no
+   * create/rename/reparent/delete ever adds or removes a `share_items`
+   * row. The server owns the tree; no optimistic patches. */
+  function invalidateTree(): Promise<void> {
+    return queryClient.invalidateQueries({
+      queryKey: shareItemsOwnedKey(share.id),
+    });
+  }
+
+  // Create lands in the level the owner is looking at (`folderId`).
+  const createFolder = useMutation({
+    mutationFn: (name: string) =>
+      createShareFolder(share.id, { name, parent_id: folderId }),
+    onSuccess: async () => {
+      await invalidateTree();
+      setFolderDialog(null);
+    },
+  });
+
+  const renameFolder = useMutation({
+    mutationFn: ({ folder, name }: { folder: ShareFolderDto; name: string }) =>
+      updateShareFolder(share.id, folder.id, { name }),
+    onSuccess: async () => {
+      await invalidateTree();
+      setFolderDialog(null);
+    },
+  });
+
+  const moveFolder = useMutation({
+    mutationFn: ({ folder, target }: { folder: ShareFolderDto; target: string | null }) =>
+      updateShareFolder(share.id, folder.id, { parent_id: target }),
+    onSuccess: async () => {
+      await invalidateTree();
+      setFolderDialog(null);
+    },
+  });
+
+  const deleteFolder = useMutation({
+    mutationFn: (folder: ShareFolderDto) => deleteShareFolder(share.id, folder.id),
+    onSuccess: async () => {
+      await invalidateTree();
+      setFolderDialog(null);
+    },
+  });
 
   function invalidateMemberQueries(): Promise<void> {
     void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
@@ -240,14 +318,6 @@ function ShareDetail({ share }: { share: ShareDto }) {
 
   // Task 006: tree browse over the wrapped payload — the same helpers
   // and tile the recipient landing uses, so the owner preview is exact.
-  // The index rebuilds only when the payload identity changes (a
-  // refetch), never per render or per level hop.
-  const [searchParams] = useSearchParams();
-  const tree = useMemo(
-    () => (items.data ? buildShareTree(items.data) : null),
-    [items.data],
-  );
-  const folderId = tree?.resolveFolderId(searchParams.get("folder")) ?? null;
   const levelFolders = tree?.childFolders(folderId) ?? [];
   const levelVideos = tree?.childItems(folderId) ?? [];
   const visibleVideos = query
@@ -316,6 +386,13 @@ function ShareDetail({ share }: { share: ShareDto }) {
               />
               <button
                 type="button"
+                onClick={() => setFolderDialog({ kind: "create" })}
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--color-castify-accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+              >
+                New folder
+              </button>
+              <button
+                type="button"
                 onClick={() => setIsAdding(true)}
                 className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
               >
@@ -374,6 +451,16 @@ function ShareDetail({ share }: { share: ShareDto }) {
                   folder={folder}
                   to={basePath}
                   count={tree?.childCount(folder.id) ?? 0}
+                  topRightSlot={
+                    share.status === "active" ? (
+                      <ShareFolderMenu
+                        folderName={folder.name}
+                        onRename={() => setFolderDialog({ kind: "rename", folder })}
+                        onMove={() => setFolderDialog({ kind: "move", folder })}
+                        onDelete={() => setFolderDialog({ kind: "delete", folder })}
+                      />
+                    ) : undefined
+                  }
                 />
               ))}
               {visibleVideos.map((video) => {
@@ -414,6 +501,74 @@ function ShareDetail({ share }: { share: ShareDto }) {
         <ShareEditDialog share={share} onClose={() => setIsAdding(false)} />
       )}
 
+      {folderDialog?.kind === "create" && (
+        <FolderNameDialog
+          title="New folder"
+          initialName=""
+          pending={createFolder.isPending}
+          error={createFolder.isError ? describeError(createFolder.error) : undefined}
+          onSubmit={(name) => createFolder.mutate(name)}
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+
+      {folderDialog?.kind === "rename" && (
+        <FolderNameDialog
+          title={`Rename "${folderDialog.folder.name}"`}
+          initialName={folderDialog.folder.name}
+          pending={renameFolder.isPending}
+          error={renameFolder.isError ? describeError(renameFolder.error) : undefined}
+          onSubmit={(name) =>
+            renameFolder.mutate({ folder: folderDialog.folder, name })
+          }
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+
+      {folderDialog?.kind === "move" && (
+        <ShareMoveDialog
+          title={`Move "${folderDialog.folder.name}"`}
+          folders={items.data?.folders ?? []}
+          excludeSubtreeOf={folderDialog.folder.id}
+          pending={moveFolder.isPending}
+          onPick={(target) =>
+            moveFolder.mutate({ folder: folderDialog.folder, target })
+          }
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+
+      {folderDialog?.kind === "delete" && (
+        <Dialog
+          open
+          onClose={() => setFolderDialog(null)}
+          closeable={!deleteFolder.isPending}
+          title={`Delete "${folderDialog.folder.name}"?`}
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-[var(--color-castify-muted)]">
+              Videos and subfolders in it move to the top level — nothing
+              leaves the share.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setFolderDialog(null)}
+                disabled={deleteFolder.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => deleteFolder.mutate(folderDialog.folder)}
+                pending={deleteFolder.isPending}
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
+
       {remove.isError && removeError && (
         <p
           role="alert"
@@ -424,6 +579,63 @@ function ShareDetail({ share }: { share: ShareDto }) {
         </p>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Folder name dialog (task 007) — one shape for New folder and Rename.
+// ---------------------------------------------------------------------------
+
+// Client-side empty/whitespace pre-check mirrors the server's 400 (same
+// rule, friendlier timing); every other rejection (duplicate sibling
+// name 409, oversize 400) surfaces inline from the server's message.
+function FolderNameDialog({
+  title,
+  initialName,
+  pending,
+  error,
+  onSubmit,
+  onClose,
+}: {
+  title: string;
+  initialName: string;
+  pending: boolean;
+  error?: string;
+  onSubmit: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const trimmed = name.trim();
+
+  function handleSubmit(e: FormEvent): void {
+    e.preventDefault();
+    if (trimmed === "" || pending) return;
+    onSubmit(trimmed);
+  }
+
+  return (
+    <Dialog open onClose={onClose} closeable={!pending} title={title}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Field
+          label="Folder name"
+          error={trimmed === "" && name !== "" ? "Name can't be only whitespace." : error}
+        >
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={pending}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={trimmed === ""} pending={pending}>
+            Save
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 

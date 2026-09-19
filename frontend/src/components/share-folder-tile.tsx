@@ -1,13 +1,16 @@
 // ShareFolderTile (share-folders task 005) — the folder half of the share
-// browse grid. Serves the recipient landing page and (task 006) the owner
-// manage page: one grid cell mirroring PosterCard's footprint — a 16:9
-// well with a folder glyph instead of a thumbnail, the name, and the
-// direct child count — linking to the same route with `?folder=<id>`.
+// browse grid. Serves the recipient landing page and the owner manage
+// page: one grid cell mirroring PosterCard's footprint — a 16:9 well
+// with a folder glyph instead of a thumbnail, the name, and the direct
+// child count — linking to the same route with `?folder=<id>`.
 //
 // The stretched `<Link>` mirrors PosterCard's accessibility contract:
 // keyboard-focusable, descriptive `aria-label`, focus ring drawn around
-// the whole tile via `focus-within:ring` on the article.
+// the whole tile via `focus-within:ring` on the article. The owner
+// manage page (task 007) layers a `topRightSlot` kebab on the glyph
+// well — same placement ShareItemMenu takes on PosterCard.
 
+import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { ShareFolderDto } from "../api/types";
@@ -20,9 +23,12 @@ type ShareFolderTileProps = {
   to: string;
   /** Direct children (subfolders + videos) — the badge under the name. */
   count: number;
+  /** Owner-only overlay (task 007): the folder's kebab menu. Renders
+   * above the stretched link so its controls stay clickable. */
+  topRightSlot?: ReactNode;
 };
 
-export function ShareFolderTile({ folder, to, count }: ShareFolderTileProps) {
+export function ShareFolderTile({ folder, to, count, topRightSlot }: ShareFolderTileProps) {
   return (
     <article className="group relative flex flex-col gap-2">
       <Link
@@ -34,13 +40,14 @@ export function ShareFolderTile({ folder, to, count }: ShareFolderTileProps) {
                    focus-visible:ring-offset-[var(--color-castify-canvas)]"
       />
       <div
-        className="flex aspect-video items-center justify-center rounded-[var(--radius-card)]
+        className="relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
                    border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)]
                    text-[var(--color-castify-muted)] transition-colors
                    group-hover:border-[var(--color-castify-accent)]
                    group-focus-within:border-[var(--color-castify-accent)]"
       >
         <FolderIcon className="h-10 w-10" />
+        {topRightSlot && <span className="absolute right-2 top-2 z-10">{topRightSlot}</span>}
       </div>
       <div className="flex flex-col gap-1">
         <h3

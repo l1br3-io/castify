@@ -11,8 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   appendToShare,
+  createShareFolder,
   createShare,
   deleteShare,
+  deleteShareFolder,
   fetchShareItems,
   fetchShareItemsOwned,
   fetchShares,
@@ -20,6 +22,7 @@ import {
   replaceShareItems,
   revokeShare,
   unlockShare,
+  updateShareFolder,
 } from "./shares";
 import { ApiError } from "./client";
 import { jsonResponse } from "../test/utils";
@@ -191,6 +194,53 @@ describe("shares owner client", () => {
     expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
     expect(lastInit(fetchSpy).method).toBe("GET");
     expect(resolved).toEqual(payload);
+  });
+
+  it("createShareFolder POSTs name + parent to /api/shares/{id}/folders", async () => {
+    const fetchSpy = vi.fn(() =>
+      jsonResponse({ id: "f1", parent_id: null, name: "Trip", position: 0 }, 201),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const created = await createShareFolder("s1", { name: "Trip", parent_id: null });
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/folders");
+    expect(lastInit(fetchSpy).method).toBe("POST");
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({
+      name: "Trip",
+      parent_id: null,
+    });
+    expect(created.id).toBe("f1");
+  });
+
+  it("updateShareFolder PATCHes rename and reparent — null parent vs absent key", async () => {
+    const fetchSpy = vi.fn(() =>
+      jsonResponse({ id: "f1", parent_id: null, name: "Renamed", position: 0 }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await updateShareFolder("s1", "f1", { name: "Renamed" });
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/folders/f1");
+    expect(lastInit(fetchSpy).method).toBe("PATCH");
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({ name: "Renamed" });
+
+    // Explicit null moves to root and must survive serialization.
+    await updateShareFolder("s1", "f1", { parent_id: null });
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({ parent_id: null });
+
+    // A string parent reparents.
+    await updateShareFolder("s1", "f1", { parent_id: "f2" });
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({ parent_id: "f2" });
+  });
+
+  it("deleteShareFolder DELETEs /api/shares/{id}/folders/{fid}", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await deleteShareFolder("s1", "f1");
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/folders/f1");
+    expect(lastInit(fetchSpy).method).toBe("DELETE");
   });
 });
 

@@ -17,7 +17,7 @@
 // branches on these statuses; see `share.tsx`.
 
 import { apiFetch } from "./client";
-import type { ShareItemsDto } from "./types";
+import type { ShareFolderDto, ShareItemsDto } from "./types";
 
 // ---------------------------------------------------------------------------
 // Owner client — `POST/GET /api/shares`, `DELETE /api/shares/{id}`,
@@ -132,6 +132,69 @@ export function appendToShare(shareId: string, videoIds: string[]): Promise<void
     method: "POST",
     body: { video_ids: videoIds },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Owner folder client — `/api/shares/{id}/folders` (share-folders effort).
+// Folders are organization only; every mutation is active-share-only
+// server-side (409 on revoked/expired, 404 on foreign/unknown).
+// ---------------------------------------------------------------------------
+
+/** Body of `POST /api/shares/{id}/folders`. `parent_id` omitted/null
+ * creates at the share root. */
+export interface CreateShareFolderRequestDto {
+  name: string;
+  parent_id?: string | null;
+}
+
+/** Body of `PATCH /api/shares/{id}/folders/{fid}`. Absent keys leave the
+ * stored value alone; `parent_id: null` (explicit) moves the folder to
+ * the share root — the double-option distinction the server relies on. */
+export interface UpdateShareFolderRequestDto {
+  name?: string;
+  parent_id?: string | null;
+}
+
+/**
+ * `POST /api/shares/{id}/folders` — create a folder (201 with the row).
+ * 400 for empty/oversized names, 409 for a duplicate sibling name, 404
+ * for an unknown/foreign parent.
+ */
+export function createShareFolder(
+  shareId: string,
+  body: CreateShareFolderRequestDto,
+): Promise<ShareFolderDto> {
+  return apiFetch<ShareFolderDto>(`/api/shares/${encodeURIComponent(shareId)}/folders`, {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * `PATCH /api/shares/{id}/folders/{fid}` — rename and/or reparent in one
+ * write. Reparenting appends the folder at the end of its new sibling
+ * group; the server rejects cycles and depth-cap breaches with 409/400.
+ */
+export function updateShareFolder(
+  shareId: string,
+  folderId: string,
+  body: UpdateShareFolderRequestDto,
+): Promise<ShareFolderDto> {
+  return apiFetch<ShareFolderDto>(
+    `/api/shares/${encodeURIComponent(shareId)}/folders/${encodeURIComponent(folderId)}`,
+    { method: "PATCH", body },
+  );
+}
+
+/**
+ * `DELETE /api/shares/{id}/folders/{fid}` — delete the folder; its
+ * contents lift to the share root (membership never changes). 204.
+ */
+export function deleteShareFolder(shareId: string, folderId: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/shares/${encodeURIComponent(shareId)}/folders/${encodeURIComponent(folderId)}`,
+    { method: "DELETE" },
+  );
 }
 
 /**
