@@ -13,10 +13,13 @@
 // videos, `?folder=` descent, breadcrumbs — via the shared `share-tree`
 // helpers and `ShareFolderTile`. The owner's additions on top are
 // management: per-card item menus (remove/undo rides the PUT until task
-// 008), the add-items dialog, and client-side search, which filters the
-// current level's videos render-only (folders stay visible; removal
-// targets, undo indices, and the last-item guard all read the unfiltered
-// payload).
+// 008), the add-items dialog, and whole-share search (share-search-ux
+// task 004): `?q=` overlays `?folder=` with the recipient page's results
+// view — count header, folder-path labels, matching folder tiles. Search
+// stays render-only: removal targets, undo indices, and the last-item
+// guard all read the unfiltered payload, and New folder is disabled
+// while searching (spec OQ1 default) since "the current level" is the
+// share root in results view.
 //
 // State machine mirrors the recipient landing (`share.tsx`): pending →
 // skeleton, list error → ErrorState retry, unknown id after load →
@@ -30,14 +33,16 @@
 
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { PosterCard } from "../components/poster-card";
+import { SearchBar } from "../components/search-bar";
 import { ShareEditDialog } from "../components/share-edit-dialog";
 import { ShareFolderMenu } from "../components/share-folder-menu";
 import { ShareFolderTile } from "../components/share-folder-tile";
 import { ShareItemMenu } from "../components/share-item-menu";
 import { ShareMoveDialog } from "../components/share-move-dialog";
+import { ShareResultPathLabel, ShareSearchResults } from "../components/share-search-results";
 import { StatusBadge } from "../components/status-badge";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -56,7 +61,7 @@ import {
   type ShareDto,
 } from "../api/shares";
 import type { ShareFolderDto, VideoSummaryDto } from "../api/types";
-import { buildShareTree, type ShareTreeItem } from "../lib/share-tree";
+import { buildShareTree, searchTree, type ShareTreeItem } from "../lib/share-tree";
 import { describeError, formatDate } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { shareItemsOwnedKey, useShareItemsOwned } from "../hooks/use-share-items";
@@ -212,23 +217,57 @@ function ShareDetail({ share }: { share: ShareDto }) {
   const count = items.data?.items.length ?? share.item_count;
   const canRemoveItems = (items.data?.items.length ?? 0) > 1;
 
-  // Task 005: client-side search over the loaded members. Filtering is
-  // render-only — removal targets and the last-item guard all read the
-  // unfiltered `items.data`.
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+  // Whole-share search (share-search-ux task 004) — same wiring as the
+  // recipient page: `?q=` overlays `?folder=` in the URL, so search is
+  // deep-linkable and clearing returns to the folder level. Filtering is
+  // render-only over the loaded payload — removal targets and the
+  // last-item guard above read the unfiltered `items.data`.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = (searchParams.get("q") ?? "").trim();
+  const isSearching = query !== "";
+  const [raw, setRaw] = useState(query);
+  const debounced = useDebouncedValue(raw, SEARCH_DEBOUNCE_MS);
   const [isAdding, setIsAdding] = useState(false);
-  const query = debouncedSearch.trim().toLowerCase();
+
+  useEffect(() => {
+    const current = searchParams.get("q") ?? "";
+    if (debounced === current) return;
+    const params = new URLSearchParams(searchParams);
+    if (debounced === "") params.delete("q");
+    else params.set("q", debounced);
+    setSearchParams(params, { replace: true });
+    // Deps are deliberately `[debounced]` alone (TopbarSearch pattern):
+    // the write must fire only for a settled input change, never for a
+    // URL mutation from elsewhere (folder tiles, clear action, back/
+    // forward) — otherwise the stale debounced value would restore `q`
+    // right after the navigation dropped it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced]);
+
+  // URL → input: deep links, back/forward, and clears stay in sync.
+  useEffect(() => {
+    setRaw(searchParams.get("q") ?? "");
+  }, [searchParams]);
+
+  function handleClearSearch(): void {
+    setRaw("");
+    const params = new URLSearchParams(searchParams);
+    params.delete("q");
+    setSearchParams(params, { replace: true });
+  }
 
   // Tree browse (task 006) — computed before the mutations so they can
   // close over the current scope (`folderId`). The index rebuilds only
   // when the payload identity changes (a refetch), never per render.
-  const [searchParams] = useSearchParams();
   const tree = useMemo(
     () => (items.data ? buildShareTree(items.data) : null),
     [items.data],
   );
   const folderId = tree?.resolveFolderId(searchParams.get("folder")) ?? null;
+  const results = useMemo(
+    () => (isSearching && tree ? searchTree(tree, query) : null),
+    [tree, query, isSearching],
+  );
 
   // Folder CRUD dialog slot (task 007) — one modal at a time; the
   // dialogs below render from this state.
@@ -290,12 +329,9 @@ function ShareDetail({ share }: { share: ShareDto }) {
   // and tile the recipient landing uses, so the owner preview is exact.
   const levelFolders = tree?.childFolders(folderId) ?? [];
   const levelVideos = tree?.childItems(folderId) ?? [];
-  const visibleVideos = query
-    ? levelVideos.filter((v) => v.name.toLowerCase().includes(query))
-    : levelVideos;
   const crumbs = folderId === null ? [] : tree?.breadcrumbs(folderId) ?? [];
   const basePath = `/settings/shares/${share.id}`;
-  const nothingVisible = levelFolders.length === 0 && visibleVideos.length === 0;
+  const nothingVisible = levelFolders.length === 0 && levelVideos.length === 0;
 
   return (
     <section className="space-y-4">
@@ -344,126 +380,186 @@ function ShareDetail({ share }: { share: ShareDto }) {
 
       {items.data && items.data.items.length > 0 && (
         <>
-          {share.status === "active" && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <input
-                type="search"
-                aria-label="Search this share"
-                placeholder="Search this share…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full max-w-xs rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="w-full max-w-xs">
+              <SearchBar
+                value={raw}
+                onChange={setRaw}
+                label="Search this share"
+                placeholder="Find a video…"
               />
-              <button
-                type="button"
-                onClick={() => setFolderDialog({ kind: "create" })}
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--color-castify-accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-              >
-                New folder
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsAdding(true)}
-                className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-              >
-                Add items
-              </button>
             </div>
-          )}
-          {crumbs.length > 0 && (
-            <nav aria-label="Folders">
-              <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
-                <li>
-                  <Link
-                    to={{ pathname: basePath, search: "" }}
-                    className="hover:text-[var(--color-castify-accent)] hover:underline"
-                  >
-                    {share.title}
-                  </Link>
-                </li>
-                {crumbs.map((crumb, index) => (
-                  <li key={crumb.id} className="flex items-center gap-1.5">
-                    <span aria-hidden>/</span>
-                    {index === crumbs.length - 1 ? (
-                      <span aria-current="page" className="text-[var(--color-castify-foreground)]">
-                        {crumb.name}
-                      </span>
-                    ) : (
+            {share.status === "active" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFolderDialog({ kind: "create" })}
+                  disabled={isSearching}
+                  className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--color-castify-accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[var(--color-castify-rule)]"
+                >
+                  New folder
+                </button>
+                {isSearching && (
+                  <span className="text-xs text-[var(--color-castify-muted)]">
+                    Clear search to create a folder
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsAdding(true)}
+                  className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
+                >
+                  Add items
+                </button>
+              </div>
+            )}
+          </div>
+          {results !== null ? (
+            <ShareSearchResults query={query} results={results} onClear={handleClearSearch}>
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                {results.folders.map((folder) => (
+                  <ShareFolderTile
+                    key={folder.id}
+                    folder={folder}
+                    to={basePath}
+                    count={tree?.childCount(folder.id) ?? 0}
+                    topRightSlot={
+                      share.status === "active" ? (
+                        <ShareFolderMenu
+                          folderName={folder.name}
+                          onRename={() => setFolderDialog({ kind: "rename", folder })}
+                          onMove={() => setFolderDialog({ kind: "move", folder })}
+                          onDelete={() => setFolderDialog({ kind: "delete", folder })}
+                        />
+                      ) : undefined
+                    }
+                  />
+                ))}
+                {results.videos.map((video) => {
+                  // With two removals in flight this dims only the latest's
+                  // card (mutation.variables holds one) — cosmetic only; the
+                  // DELETEs are independent single-item requests.
+                  const isRemoving =
+                    remove.isPending && remove.variables?.video.id === video.id;
+                  return (
+                    <div
+                      key={video.id}
+                      className={`flex flex-col gap-2 transition-opacity ${isRemoving ? "pointer-events-none opacity-50" : ""}`}
+                    >
+                      <PosterCard
+                        video={video}
+                        href={`/watch/${encodeURIComponent(video.id)}`}
+                        topRightSlot={
+                          share.status === "active" ? (
+                            <ShareItemMenu
+                              videoName={video.name}
+                              videoHref={`/watch/${encodeURIComponent(video.id)}`}
+                              canRemove={canRemoveItems}
+                              removeHint={LAST_ITEM_HINT}
+                              onMove={() => setMovingVideo(video)}
+                              onRemove={() => handleRemove(video)}
+                            />
+                          ) : undefined
+                        }
+                      />
+                      <ShareResultPathLabel path={video.folderPath} rootLabel={share.title} />
+                    </div>
+                  );
+                })}
+              </div>
+            </ShareSearchResults>
+          ) : (
+            <>
+              {crumbs.length > 0 && (
+                <nav aria-label="Folders">
+                  <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
+                    <li>
                       <Link
-                        to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                        to={{ pathname: basePath, search: "" }}
                         className="hover:text-[var(--color-castify-accent)] hover:underline"
                       >
-                        {crumb.name}
+                        {share.title}
                       </Link>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            </nav>
-          )}
-          {nothingVisible && query && (
-            <EmptyState
-              title="No videos match."
-              body={`Nothing in this share matches “${debouncedSearch.trim()}”.`}
-            />
-          )}
-          {nothingVisible && !query && (
-            <EmptyState
-              title="This folder is empty."
-              body="Nothing was placed in this folder."
-            />
-          )}
-          {!nothingVisible && (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-              {levelFolders.map((folder) => (
-                <ShareFolderTile
-                  key={folder.id}
-                  folder={folder}
-                  to={basePath}
-                  count={tree?.childCount(folder.id) ?? 0}
-                  topRightSlot={
-                    share.status === "active" ? (
-                      <ShareFolderMenu
-                        folderName={folder.name}
-                        onRename={() => setFolderDialog({ kind: "rename", folder })}
-                        onMove={() => setFolderDialog({ kind: "move", folder })}
-                        onDelete={() => setFolderDialog({ kind: "delete", folder })}
-                      />
-                    ) : undefined
-                  }
+                    </li>
+                    {crumbs.map((crumb, index) => (
+                      <li key={crumb.id} className="flex items-center gap-1.5">
+                        <span aria-hidden>/</span>
+                        {index === crumbs.length - 1 ? (
+                          <span aria-current="page" className="text-[var(--color-castify-foreground)]">
+                            {crumb.name}
+                          </span>
+                        ) : (
+                          <Link
+                            to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                            className="hover:text-[var(--color-castify-accent)] hover:underline"
+                          >
+                            {crumb.name}
+                          </Link>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </nav>
+              )}
+              {nothingVisible && (
+                <EmptyState
+                  title="This folder is empty."
+                  body="Nothing was placed in this folder."
                 />
-              ))}
-              {visibleVideos.map((video) => {
-            // With two removals in flight this dims only the latest's
-            // card (mutation.variables holds one) — cosmetic only; the
-            // DELETEs are independent single-item requests.
-            const isRemoving =
-              remove.isPending && remove.variables?.video.id === video.id;
-            return (
-              <div
-                key={video.id}
-                className={`transition-opacity ${isRemoving ? "pointer-events-none opacity-50" : ""}`}
-              >
-                <PosterCard
-                  video={video}
-                  href={`/watch/${encodeURIComponent(video.id)}`}
-                  topRightSlot={
-                    share.status === "active" ? (
-                      <ShareItemMenu
-                        videoName={video.name}
-                        videoHref={`/watch/${encodeURIComponent(video.id)}`}
-                        canRemove={canRemoveItems}
-                        removeHint={LAST_ITEM_HINT}
-                        onMove={() => setMovingVideo(video)}
-                        onRemove={() => handleRemove(video)}
-                      />
-                    ) : undefined
-                  }
-                />
-              </div>
-            );
-          })}
-            </div>
+              )}
+              {!nothingVisible && (
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                  {levelFolders.map((folder) => (
+                    <ShareFolderTile
+                      key={folder.id}
+                      folder={folder}
+                      to={basePath}
+                      count={tree?.childCount(folder.id) ?? 0}
+                      topRightSlot={
+                        share.status === "active" ? (
+                          <ShareFolderMenu
+                            folderName={folder.name}
+                            onRename={() => setFolderDialog({ kind: "rename", folder })}
+                            onMove={() => setFolderDialog({ kind: "move", folder })}
+                            onDelete={() => setFolderDialog({ kind: "delete", folder })}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  ))}
+                  {levelVideos.map((video) => {
+                    // With two removals in flight this dims only the latest's
+                    // card (mutation.variables holds one) — cosmetic only; the
+                    // DELETEs are independent single-item requests.
+                    const isRemoving =
+                      remove.isPending && remove.variables?.video.id === video.id;
+                    return (
+                      <div
+                        key={video.id}
+                        className={`transition-opacity ${isRemoving ? "pointer-events-none opacity-50" : ""}`}
+                      >
+                        <PosterCard
+                          video={video}
+                          href={`/watch/${encodeURIComponent(video.id)}`}
+                          topRightSlot={
+                            share.status === "active" ? (
+                              <ShareItemMenu
+                                videoName={video.name}
+                                videoHref={`/watch/${encodeURIComponent(video.id)}`}
+                                canRemove={canRemoveItems}
+                                removeHint={LAST_ITEM_HINT}
+                                onMove={() => setMovingVideo(video)}
+                                onRemove={() => handleRemove(video)}
+                              />
+                            ) : undefined
+                          }
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </>
       )}

@@ -453,7 +453,7 @@ describe("ShareManagePage", () => {
       target: { value: "zzz-no-match" },
     });
 
-    expect(await screen.findByText(/no videos match/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no results for “zzz-no-match”/i)).toBeInTheDocument();
     expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument();
   });
 
@@ -548,18 +548,26 @@ describe("ShareManagePage folder browse", () => {
     expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
   });
 
-  it("search filters the current level's videos; folder tiles stay visible", async () => {
+  it("whole-share results show only matches: folder tiles appear by name, not by place", async () => {
     renderManage(treeFetch(), "/settings/shares/s1");
 
+    // A video-only query replaces the level's tiles — Trip doesn't match
+    // "beta", so it isn't part of the results (old behavior kept tiles).
     fireEvent.change(await screen.findByLabelText(/search this share/i), {
       target: { value: "beta" },
     });
     await waitFor(() =>
       expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
     );
-    // The tile survives the filter — search is render-only over videos,
-    // folders keep their place in the grid.
-    expect(screen.getByRole("link", { name: "Open folder Trip" })).toBeInTheDocument();
+    expect(screen.getByText("Beta clip")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open folder Trip" })).not.toBeInTheDocument();
+
+    // A folder-name query surfaces the folder itself as a result tile.
+    fireEvent.change(screen.getByLabelText(/search this share/i), {
+      target: { value: "night" },
+    });
+    expect(await screen.findByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+    expect(screen.queryByText("Beta clip")).not.toBeInTheDocument();
   });
 });
 
@@ -847,6 +855,163 @@ describe("ShareManagePage folder CRUD", () => {
     expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /more actions for trip/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ------------ whole-share search (share-search-ux task 004) ------------
+//
+// Owner search unifies with the recipient page: `?q=` overlays `?folder=`,
+// results span every folder with path labels, and every mutation contract
+// (removal targets, undo, last-item guard) still reads the unfiltered
+// payload.
+
+describe("ShareManagePage whole-share search", () => {
+  it("spans the whole share from any folder level, labeled with folder paths", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1");
+
+    // Descend into Trip first — the search must still reach past it.
+    fireEvent.click(await screen.findByRole("link", { name: "Open folder Trip" }));
+    expect(await screen.findByText("Beta clip")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/search this share/i), {
+      target: { value: "gamma" },
+    });
+
+    // Gamma lives in Trip/Night — two levels below where the owner sits.
+    expect(await screen.findByText(/1 result for “gamma”/)).toBeInTheDocument();
+    expect(screen.getByText("Gamma clip")).toBeInTheDocument();
+    expect(screen.getByText("Trip / Night")).toBeInTheDocument();
+    expect(screen.queryByText("Beta clip")).not.toBeInTheDocument();
+
+    // Clearing returns to the Trip level the owner was browsing.
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(await screen.findByText("Beta clip")).toBeInTheDocument();
+    expect(screen.queryByText("Gamma clip")).not.toBeInTheDocument();
+    expect(
+      (screen.getByLabelText(/search this share/i) as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("deep-links with ?q= coexisting with ?folder=", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1?folder=f-trip&q=gamma");
+
+    // Search mode wins the render regardless of the folder param, but
+    // clearing lands on the folder level the URL preserved.
+    expect(await screen.findByText(/1 result for “gamma”/)).toBeInTheDocument();
+    expect(screen.getByText("Gamma clip")).toBeInTheDocument();
+    expect(screen.queryByText("Beta clip")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(await screen.findByText("Beta clip")).toBeInTheDocument();
+    expect(screen.queryByText(/results for/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the last-item guard on unfiltered membership while searching", async () => {
+    // Two items filtered down to one visible: Remove stays enabled —
+    // the guard counts the share's items, not the results.
+    const two = folderCrudFetch({
+      folders: [],
+      items: [
+        { ...MEMBERS[0], folder_id: null },
+        { ...MEMBERS[1], folder_id: null },
+      ],
+    });
+    renderManage(two, "/settings/shares/s1");
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "beta" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /more actions for beta clip/i }),
+    );
+    expect(
+      screen.getByRole("menuitem", { name: /remove from share/i }),
+    ).not.toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByText(/a share needs at least one item/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables Remove under any query when the share truly has one item", async () => {
+    const one = folderCrudFetch({
+      folders: [],
+      items: [{ ...MEMBERS[0], folder_id: null }],
+    });
+    renderManage(one, "/settings/shares/s1");
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "alpha" },
+    });
+    expect(await screen.findByText(/1 result for “alpha”/)).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    const remove = screen.getByRole("menuitem", { name: /remove from share/i });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.getByText(/a share needs at least one item/i),
+    ).toBeInTheDocument();
+  });
+
+  it("disables New folder while searching with a visible hint; Add items unaffected", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1");
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "beta" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
+    );
+
+    expect(screen.getByRole("button", { name: /new folder/i })).toBeDisabled();
+    expect(
+      screen.getByText(/clear search to create a folder/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add items/i })).toBeEnabled();
+
+    // Back in browse mode the folder action works again.
+    fireEvent.change(screen.getByLabelText(/search this share/i), {
+      target: { value: "" },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /new folder/i })).toBeEnabled(),
+    );
+    expect(
+      screen.queryByText(/clear search to create a folder/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows search on a revoked share and finds folders, without owner actions", async () => {
+    const state = treeState();
+    const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      if (url === "/api/shares") return jsonResponse([REVOKED]);
+      if (url === "/api/shares/s1/items" && (init?.method ?? "GET").toUpperCase() === "GET")
+        return jsonResponse({ folders: state.folders, items: state.items });
+      return folderCrudFetch(state)(input, init);
+    };
+    renderManage(handler, "/settings/shares/s1");
+
+    // Terminal share: the search field is a read-only affordance too.
+    expect(await screen.findByLabelText(/search this share/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new folder/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add items/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/search this share/i), {
+      target: { value: "night" },
+    });
+    expect(await screen.findByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+    // Read-only history: no folder kebab on the result tile.
+    expect(
+      screen.queryByRole("button", { name: /more actions for night/i }),
     ).not.toBeInTheDocument();
   });
 });
