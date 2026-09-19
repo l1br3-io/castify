@@ -14,12 +14,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { ShareManagePage } from "./share-manage";
-import {
-  jsonResponse,
-  jsonError,
-  renderWithProviders,
-  type FetchHandler,
-} from "../test/utils";
+import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 import type { ShareDto } from "../api/shares";
 import type { ShareFolderDto, VideoSummaryDto } from "../api/types";
 
@@ -189,11 +184,16 @@ describe("ShareManagePage", () => {
     expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
   });
 
-  // --- Removal flow (task 004) -------------------------------------------
+  // --- Item ops (share-folders task 008) ---------------------------------
+  //
+  // Removal is the granular DELETE and undo is an append — one item, one
+  // request, no list computation. The old PUT-based machinery
+  // (pendingRemovals, freshMemberIds, stale-cache gating) is deleted with
+  // the code; these tests pin the new contract.
 
-  it("removes an item: PUT splices the id, grid refetches, undo toast offers restore", async () => {
-    const state = { items: MEMBERS };
-    const handler = removalFetch(state);
+  it("removes via the granular DELETE, refetches, and offers undo", async () => {
+    const state = { folders: [], items: [{ ...MEMBERS[0], folder_id: null }, { ...MEMBERS[1], folder_id: null }] };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -206,9 +206,7 @@ describe("ShareManagePage", () => {
     );
     fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
 
-    await waitFor(() => {
-      expect(handler.puts).toEqual([["v2"]]);
-    });
+    await waitFor(() => expect(handler.itemDeletes).toEqual(["v1"]));
     // Refetched grid no longer contains the removed item.
     await waitFor(() =>
       expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
@@ -218,9 +216,16 @@ describe("ShareManagePage", () => {
     expect(screen.getAllByRole("button", { name: /undo/i })).toHaveLength(1);
   });
 
-  it("undo re-PUTs the item at its original index", async () => {
-    const state = { items: MEMBERS };
-    const handler = removalFetch(state);
+  it("undo re-adds via append — the item returns at the share root", async () => {
+    const state = {
+      folders: [{ id: "f-trip", parent_id: null, name: "Trip", position: 0 }] as ShareFolderDto[],
+      items: [
+        { ...MEMBERS[0], folder_id: null },
+        { ...MEMBERS[1], folder_id: "f-trip" },
+        { ...GAMMA, folder_id: "f-trip" },
+      ],
+    };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -234,17 +239,21 @@ describe("ShareManagePage", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
     fireEvent.click(await screen.findByRole("button", { name: /undo/i }));
 
-    await waitFor(() => {
-      expect(handler.puts).toEqual([["v2"], ["v1", "v2"]]);
-    });
-    await waitFor(() =>
-      expect(screen.getByText("Alpha clip")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(handler.itemAppends).toEqual([["v1"]]));
+    // Back at the root level — placement is not restored by design (spec
+    // resolved question 3): the append lands the item at root, next to
+    // the Trip tile, not inside it.
+    expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Trip" })).toBeInTheDocument();
   });
 
-  it("keeps the item and surfaces an inline error when the PUT fails", async () => {
-    const state = { items: MEMBERS, failPut: true };
-    const handler = removalFetch(state);
+  it("keeps the item and surfaces an inline error when the DELETE fails", async () => {
+    const state = {
+      folders: [],
+      items: [{ ...MEMBERS[0], folder_id: null }, { ...MEMBERS[1], folder_id: null }],
+      failItemDelete: true,
+    };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -266,8 +275,8 @@ describe("ShareManagePage", () => {
   });
 
   it("guards the last item: Remove is disabled with the revoke hint", async () => {
-    const state = { items: [MEMBERS[0]] };
-    const handler = removalFetch(state);
+    const state = { folders: [], items: [{ ...MEMBERS[0], folder_id: null }] };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -284,14 +293,21 @@ describe("ShareManagePage", () => {
     expect(
       screen.getByText(/a share needs at least one item/i),
     ).toBeInTheDocument();
-    expect(handler.puts).toHaveLength(0);
+    expect(handler.itemDeletes).toHaveLength(0);
   });
 
   it("single-slot undo: a second removal replaces the first toast", async () => {
     // Three members: after removing Alpha, two remain — Beta is not yet
     // the guarded last item, so a second removal is allowed.
-    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
-    const handler = removalFetch(state);
+    const state = {
+      folders: [],
+      items: [
+        { ...MEMBERS[0], folder_id: null },
+        { ...MEMBERS[1], folder_id: null },
+        { ...GAMMA, folder_id: null },
+      ],
+    };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -321,145 +337,45 @@ describe("ShareManagePage", () => {
     expect(screen.queryByText(/removed 'alpha clip'/i)).not.toBeInTheDocument();
   });
 
-  it("rapid removals never resurrect: the second PUT waits out the stale-cache window", async () => {
-    // C1 regression: between PUT1's 204 and its refetch landing, the
-    // cached list is stale. The second removal must NOT splice from it —
-    // the just-removed Alpha would come back. Gated GET: after the first
-    // PUT, the members refetch blocks until the test releases it, holding
-    // that window open deterministically.
-    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
-    let gateNextGet = false;
-    let getGated = false;
-    let releaseGet: () => void = () => {};
-    const handler = removalFetch(state);
-    const original = handler;
-    const gatedHandler: FetchHandler = (input, init) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url === "/api/shares/s1/items" && method === "GET" && gateNextGet) {
-        gateNextGet = false;
-        getGated = true;
-        return new Promise<Response>((resolve) => {
-          releaseGet = () => resolve(jsonResponse(ownedPayload(state.items)));
-        });
-      }
-      const response = original(input, init);
-      if (url === "/api/shares/s1/items" && method === "PUT") {
-        // The next members GET (the invalidation's refetch) blocks.
-        gateNextGet = true;
-      }
-      return response;
-    };
-    renderWithProviders(
-      <Routes>
-        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
-      </Routes>,
-      { initialEntries: ["/settings/shares/s1"], fetchImplementation: gatedHandler },
-    );
+  it("moves an item into a folder via the shared picker", async () => {
+    const handler = folderCrudFetch(treeState());
+    renderManage(handler, "/settings/shares/s1");
 
-    // Remove Alpha; PUT1 lands, refetch gates open.
     fireEvent.click(
       await screen.findByRole("button", { name: /more actions for alpha clip/i }),
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
-    await waitFor(() =>
-      expect(handler.puts).toEqual([["v2", "v3"]]),
-    );
-    await waitFor(() => expect(getGated).toBe(true));
+    fireEvent.click(screen.getByRole("menuitem", { name: /move to folder…/i }));
 
-    // Remove Beta while Alpha's refetch is still gated. The buggy version
-    // computed PUT2 from the stale cache immediately (["v1","v3"],
-    // resurrecting Alpha); the fix waits for the fresh list.
-    fireEvent.click(
-      screen.getByRole("button", { name: /more actions for beta clip/i }),
-    );
-    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
-    expect(handler.puts).toHaveLength(1); // still waiting on the gate
+    const dialog = await screen.findByRole("dialog", { name: /move "alpha clip"/i });
+    // The item's current scope (root) is indicated and not pickable.
+    expect(within(dialog).getByRole("button", { name: /share root/i })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Trip" }));
 
-    releaseGet();
     await waitFor(() =>
-      expect(handler.puts).toEqual([["v2", "v3"], ["v3"]]),
+      expect(handler.itemPatches).toEqual([{ videoId: "v1", folderId: "f-trip" }]),
     );
+    // Refetched payload: Alpha now lives inside Trip — root loses it,
+    // descending Trip finds it next to Beta.
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("link", { name: "Open folder Trip" }));
+    expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.getByText("Beta clip")).toBeInTheDocument();
   });
 
-  it("undo racing an in-flight removal never re-asserts the in-flight id", async () => {
-    // R1 regression: Undo(Alpha) while Beta's removal is still computing
-    // must not PUT Beta back. Both paths await the same members fetch
-    // (ensureQueryData dedupes), so gating that one GET holds the whole
-    // race open: on release, Beta's PUT splices v2 out and the undo's PUT
-    // restores v1 into a v2-free list. Buggy code produced [v1, v2, v3].
-    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
-    let gateNextGet = false;
-    let getGated = false;
-    let releaseGet: () => void = () => {};
-    const handler = removalFetch(state);
-    const gated: FetchHandler = (input, init) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url === "/api/shares/s1/items" && method === "GET" && gateNextGet) {
-        gateNextGet = false;
-        getGated = true;
-        return new Promise<Response>((resolve) => {
-          releaseGet = () => resolve(jsonResponse(ownedPayload(state.items)));
-        });
-      }
-      const response = handler(input, init);
-      if (url === "/api/shares/s1/items" && method === "PUT") {
-        // The removal's own refetch (the mutationFn's freshMemberIds)
-        // blocks until released.
-        gateNextGet = true;
-      }
-      return response;
+  it("removing under an active search filter fires the same granular DELETE", async () => {
+    // Filtering is render-only; the DELETE targets the item by id, so no
+    // unfiltered-list computation exists to get wrong anymore.
+    const state = {
+      folders: [],
+      items: [
+        { ...MEMBERS[0], folder_id: null },
+        { ...MEMBERS[1], folder_id: null },
+        { ...GAMMA, folder_id: null },
+      ],
     };
-    renderWithProviders(
-      <Routes>
-        <Route path="/settings/shares/:id" element={<ShareManagePage />} />
-      </Routes>,
-      { initialEntries: ["/settings/shares/s1"], fetchImplementation: gated },
-    );
-
-    // Remove Alpha: its PUT arms the gate and its own invalidation
-    // refetch parks on it — release to let the removal settle fully.
-    fireEvent.click(
-      await screen.findByRole("button", { name: /more actions for alpha clip/i }),
-    );
-    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
-    await waitFor(() => expect(getGated).toBe(true));
-    releaseGet();
-    await screen.findByText(/removed 'alpha clip'/i);
-
-    // Remove Beta: PUT2 lands (ungated) and re-arms the gate, so Beta's
-    // post-PUT refetch parks — Beta is now mid-flight forever: still in
-    // pendingRemovals, toast not yet pushed.
-    fireEvent.click(
-      screen.getByRole("button", { name: /more actions for beta clip/i }),
-    );
-    fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
-    await waitFor(() =>
-      expect(handler.puts.some((p) => p.length === 1 && p[0] === "v3")).toBe(true),
-    );
-    await waitFor(() => expect(getGated).toBe(true));
-
-    // Undo Alpha (its toast is the live one). The undo's own members
-    // fetch parks on the same gate.
-    fireEvent.click(screen.getByRole("button", { name: /undo/i }));
-
-    // Release: the undo computes from the fresh list minus the in-flight
-    // v2 — its restore must land as [v1, v3], never [v1, v2, v3].
-    releaseGet?.();
-    await waitFor(() =>
-      expect(handler.puts.some((p) => p[0] === "v1" && p[1] === "v3")).toBe(true),
-    );
-    for (const put of handler.puts.filter((p) => p.includes("v1"))) {
-      expect(put).not.toContain("v2");
-    }
-  });
-
-  it("removing under an active search filter uses the unfiltered list for undo", async () => {
-    // Spec criterion 5: filtering is render-only — undo indices come from
-    // the unfiltered server list, so a filtered removal restores in place.
-    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
-    const handler = removalFetch(state);
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -467,7 +383,7 @@ describe("ShareManagePage", () => {
       { initialEntries: ["/settings/shares/s1"], fetchImplementation: handler },
     );
 
-    // Filter down to Beta alone, remove it, clear the filter, undo.
+    // Filter down to Beta alone and remove it.
     fireEvent.change(await screen.findByLabelText(/search this share/i), {
       target: { value: "beta" },
     });
@@ -478,28 +394,28 @@ describe("ShareManagePage", () => {
       screen.getByRole("button", { name: /more actions for beta clip/i }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: /remove from share/i }));
-    await waitFor(() =>
-      expect(handler.puts).toEqual([["v1", "v3"]]),
-    );
+    await waitFor(() => expect(handler.itemDeletes).toEqual(["v2"]));
 
+    // Clearing the filter shows the survivors.
     fireEvent.change(screen.getByLabelText(/search this share/i), {
       target: { value: "" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: /undo/i }));
-    await waitFor(() =>
-      expect(handler.puts).toEqual([["v1", "v3"], ["v1", "v2", "v3"]]),
-    );
-    // Beta is back between Alpha and Gamma.
-    await waitFor(() =>
-      expect(screen.getByText("Beta clip")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
+    expect(screen.getByText("Gamma clip")).toBeInTheDocument();
   });
 
   // --- Search + add-only picker (task 005) --------------------------------
 
   it("filters the grid client-side as the owner types, and clears back to full order", async () => {
-    const state = { items: [MEMBERS[0], MEMBERS[1], GAMMA] };
-    const handler = removalFetch(state);
+    const state = {
+      folders: [],
+      items: [
+        { ...MEMBERS[0], folder_id: null },
+        { ...MEMBERS[1], folder_id: null },
+        { ...GAMMA, folder_id: null },
+      ],
+    };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -524,8 +440,8 @@ describe("ShareManagePage", () => {
   });
 
   it("renders an empty-match state for a query with no hits", async () => {
-    const state = { items: MEMBERS };
-    const handler = removalFetch(state);
+    const state = { folders: [], items: [{ ...MEMBERS[0], folder_id: null }, { ...MEMBERS[1], folder_id: null }] };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -542,8 +458,8 @@ describe("ShareManagePage", () => {
   });
 
   it("Add items opens the add-only picker; saving appends and refetches the grid", async () => {
-    const state = { items: MEMBERS };
-    const handler = removalFetch(state);
+    const state = { folders: [], items: [{ ...MEMBERS[0], folder_id: null }, { ...MEMBERS[1], folder_id: null }] };
+    const handler = folderCrudFetch(state);
     renderWithProviders(
       <Routes>
         <Route path="/settings/shares/:id" element={<ShareManagePage />} />
@@ -665,25 +581,78 @@ function treeState() {
   };
 }
 
-/** Stateful handler over the folder routes: GET serves the wrapped
- * payload; POST/PATCH/DELETE record bodies and apply real semantics
- * (delete lifts items to root and flattens subfolders) so refetched
- * assertions see what the server would serve. */
+/** Stateful handler over the folder + item routes: GET serves the
+ * wrapped payload; mutations record bodies and apply real semantics
+ * (folder delete lifts items to root and flattens subfolders; item PUT
+ * keeps survivors' placement and roots newcomers; last-item DELETE
+ * answers 400) so refetched assertions see what the server would
+ * serve. */
 function folderCrudFetch(state: {
   folders: ShareFolderDto[];
   items: Array<VideoSummaryDto & { folder_id: string | null }>;
   failCreate?: string;
+  failItemDelete?: boolean;
 }) {
   let nextId = 0;
   const posts: Array<{ name: string; parent_id: string | null }> = [];
   const patches: Array<{ fid: string; body: { name?: string; parent_id?: string | null } }> = [];
   const deletes: string[] = [];
+  const itemDeletes: string[] = [];
+  const itemPatches: Array<{ videoId: string; folderId: string | null }> = [];
+  const itemAppends: string[][] = [];
+  const puts: string[][] = [];
   const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     if (url === "/api/shares") return jsonResponse([ACTIVE]);
     if (url === "/api/shares/s1/items" && method === "GET")
       return jsonResponse({ folders: state.folders, items: state.items });
+    if (url === "/api/shares/s1/items" && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { video_ids: string[] };
+      itemAppends.push(body.video_ids);
+      for (const id of body.video_ids) {
+        if (state.items.some((i) => i.id === id)) continue;
+        const video = UNIVERSE.find((v) => v.id === id);
+        if (video) state.items = [...state.items, { ...video, folder_id: null }];
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (url === "/api/shares/s1/items" && method === "PUT") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { video_ids: string[] };
+      puts.push(body.video_ids);
+      state.items = body.video_ids
+        .map((id) => {
+          const existing = state.items.find((i) => i.id === id);
+          if (existing) return existing;
+          const video = UNIVERSE.find((v) => v.id === id);
+          return video ? { ...video, folder_id: null } : null;
+        })
+        .filter((i): i is VideoSummaryDto & { folder_id: string | null } => i !== null);
+      return new Response(null, { status: 204 });
+    }
+    const item = url.match(/^\/api\/shares\/s1\/items\/([^/]+)$/);
+    if (item && method === "DELETE") {
+      const vid = item[1]!;
+      if (state.failItemDelete) return jsonResponse({ message: "database exploded" }, 500);
+      if (state.items.length <= 1) {
+        return jsonResponse(
+          { message: "cannot remove the last item — a share must contain at least 1 item" },
+          400,
+        );
+      }
+      itemDeletes.push(vid);
+      state.items = state.items.filter((i) => i.id !== vid);
+      return new Response(null, { status: 204 });
+    }
+    if (item && method === "PATCH") {
+      const vid = item[1]!;
+      const body = JSON.parse(String(init?.body ?? "{}")) as { folder_id: string | null };
+      itemPatches.push({ videoId: vid, folderId: body.folder_id });
+      state.items = state.items.map((i) =>
+        i.id === vid ? { ...i, folder_id: body.folder_id } : i,
+      );
+      return new Response(null, { status: 204 });
+    }
     if (url === "/api/shares/s1/folders" && method === "POST") {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         name: string;
@@ -732,9 +701,24 @@ function folderCrudFetch(state: {
       state.folders = state.folders.filter((f) => f.id !== fid);
       return new Response(null, { status: 204 });
     }
+    if (new URL(url, "http://localhost").pathname === "/api/videos") {
+      const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
+      const videos = UNIVERSE.filter((v) =>
+        v.name.toLowerCase().includes(q.toLowerCase()),
+      );
+      return jsonResponse({ videos, total: videos.length, page: 1, limit: 200 });
+    }
     return jsonError(404, `unmocked ${method} ${url}`);
   };
-  return Object.assign(handler, { posts, patches, deletes });
+  return Object.assign(handler, {
+    posts,
+    patches,
+    deletes,
+    itemDeletes,
+    itemPatches,
+    itemAppends,
+    puts,
+  });
 }
 
 describe("ShareManagePage folder CRUD", () => {
@@ -866,51 +850,3 @@ describe("ShareManagePage folder CRUD", () => {
     ).not.toBeInTheDocument();
   });
 });
-
-/** Stateful handler for removal-flow tests: GET serves the live array, PUT
- * records every body (for order assertions) and flips the array. `failPut`
- * makes PUTs answer 500 to exercise the error path. */
-function removalFetch(state: {
-  items: VideoSummaryDto[];
-  failPut?: boolean;
-}): ((input: RequestInfo | URL, init?: RequestInit) => Response) & {
-  puts: string[][];
-} {
-  const puts: string[][] = [];
-  const handler = (input: RequestInfo | URL, init?: RequestInit): Response => {
-    const url = String(input);
-    const method = (init?.method ?? "GET").toUpperCase();
-    if (url === "/api/shares") return jsonResponse([ACTIVE]);
-    if (url === "/api/shares/s1/items" && method === "GET")
-      return jsonResponse(ownedPayload(state.items));
-    if (url === "/api/shares/s1/items" && method === "PUT") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as {
-        video_ids: string[];
-      };
-      puts.push(body.video_ids);
-      if (state.failPut) return jsonError(500, "boom");
-      // Map ids from the full universe (an undo re-adds an id that is not
-      // in the current list — filtering current would drop it).
-      state.items = body.video_ids
-        .map((id) => UNIVERSE.find((v) => v.id === id))
-        .filter((v): v is VideoSummaryDto => v !== undefined);
-      return new Response(null, { status: 204 });
-    }
-    if (new URL(url, "http://localhost").pathname === "/api/videos") {
-      const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
-      const videos = UNIVERSE.filter((v) =>
-        v.name.toLowerCase().includes(q.toLowerCase()),
-      );
-      return jsonResponse({
-        videos,
-        total: videos.length,
-        page: 1,
-        limit: 200,
-      });
-    }
-    return jsonError(404, "unmocked");
-  };
-  handler.puts = puts;
-  return handler;
-}
-

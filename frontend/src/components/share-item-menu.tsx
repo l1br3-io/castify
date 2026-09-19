@@ -23,12 +23,16 @@ export function ShareItemMenu({
   videoHref,
   canRemove,
   removeHint,
+  onMove,
   onRemove,
 }: {
   videoName: string;
   videoHref: string;
   canRemove: boolean;
   removeHint?: string;
+  /** Open the folder picker (share-folders task 008). Provided only on
+   * active shares — a terminal share has nothing editable to move into. */
+  onMove?: () => void;
   onRemove: () => void;
 }) {
   return (
@@ -58,6 +62,19 @@ export function ShareItemMenu({
           >
             Open
           </Link>
+          {onMove && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                close();
+                onMove();
+              }}
+              className={MENU_ITEM_CLASS}
+            >
+              Move to folder…
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"

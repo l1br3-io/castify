@@ -32,8 +32,9 @@ function renderMenu(
 }
 
 describe("ShareItemMenu", () => {
-  it("opens a menu with Open and Remove from share on trigger click, focusing the first item", () => {
-    renderMenu();
+  it("opens a menu with Open, Move to folder, and Remove from share on trigger click, focusing the first item", () => {
+    const onMove = vi.fn();
+    renderMenu({ onMove });
     const trigger = screen.getByRole("button", {
       name: /more actions for alpha clip/i,
     });
@@ -45,10 +46,32 @@ describe("ShareItemMenu", () => {
       screen.getByRole("menuitem", { name: /open/i }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole("menuitem", { name: /move to folder…/i }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("menuitem", { name: /remove from share/i }),
     ).toBeInTheDocument();
     // ARIA APG: opening focuses the first menuitem.
     expect(screen.getByRole("menuitem", { name: /open/i })).toHaveFocus();
+
+    // Move closes the menu and hands off to the caller (the picker).
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: /move to folder…/i }),
+    );
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByRole("menuitem", { name: /remove from share/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("omits the Move action when no handler is provided (terminal shares)", () => {
+    renderMenu();
+    fireEvent.click(
+      screen.getByRole("button", { name: /more actions for alpha clip/i }),
+    );
+    expect(
+      screen.queryByRole("menuitem", { name: /move to folder…/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("Escape from an open menu closes it and returns focus to the trigger", () => {

@@ -19,6 +19,9 @@ type ShareMoveDialogProps = {
   folders: ShareFolderDto[];
   /** Folder id whose subtree is unpickable (self + descendants). */
   excludeSubtreeOf?: string;
+  /** The mover's current scope: that choice renders disabled with a
+   * "current" marker — re-picking it is a no-op, so it isn't offered. */
+  currentFolderId?: string | null;
   /** Pending state for the driving mutation (disables picks). */
   pending?: boolean;
   onPick: (target: string | null) => void;
@@ -62,11 +65,15 @@ export function ShareMoveDialog({
   title,
   folders,
   excludeSubtreeOf,
+  currentFolderId,
   pending = false,
   onPick,
   onClose,
 }: ShareMoveDialogProps) {
   const rows = walkTree(folders, excludeSubtreeOf);
+  // `currentFolderId` is optional: undefined = caller doesn't track a
+  // current scope (no marker); null = the mover currently sits at root.
+  const rootIsCurrent = currentFolderId === null;
 
   return (
     <Dialog open onClose={onClose} title={title}>
@@ -79,24 +86,28 @@ export function ShareMoveDialog({
         >
           <button
             type="button"
-            disabled={pending}
+            disabled={pending || rootIsCurrent}
             onClick={() => onPick(null)}
             className={CHOICE_CLASS}
           >
-            Share root
+            Share root{rootIsCurrent ? " · current" : ""}
           </button>
-          {rows.map(({ folder, depth }) => (
-            <button
-              key={folder.id}
-              type="button"
-              disabled={pending}
-              onClick={() => onPick(folder.id)}
-              className={CHOICE_CLASS}
-              style={{ paddingLeft: 12 + depth * 16 }}
-            >
-              {folder.name}
-            </button>
-          ))}
+          {rows.map(({ folder, depth }) => {
+            const isCurrent = folder.id === currentFolderId;
+            return (
+              <button
+                key={folder.id}
+                type="button"
+                disabled={pending || isCurrent}
+                onClick={() => onPick(folder.id)}
+                className={CHOICE_CLASS}
+                style={{ paddingLeft: 12 + depth * 16 }}
+              >
+                {folder.name}
+                {isCurrent ? " · current" : ""}
+              </button>
+            );
+          })}
         </div>
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={pending}>

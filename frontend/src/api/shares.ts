@@ -198,6 +198,35 @@ export function deleteShareFolder(shareId: string, folderId: string): Promise<vo
 }
 
 /**
+ * `PATCH /api/shares/{id}/items/{video_id}` — move one member item into
+ * a folder, or back to the share root with `folder_id: null`. Purely
+ * presentational: membership never changes, only scope and tail
+ * position. Non-member videos and foreign folders are plain 404s.
+ */
+export function moveShareItem(
+  shareId: string,
+  videoId: string,
+  body: { folder_id: string | null },
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/shares/${encodeURIComponent(shareId)}/items/${encodeURIComponent(videoId)}`,
+    { method: "PATCH", body },
+  );
+}
+
+/**
+ * `DELETE /api/shares/{id}/items/{video_id}` — remove one member item.
+ * 400 when it is the share's last (revoke is the way to retire a whole
+ * share), 404 for non-members, 409 on revoked/expired shares.
+ */
+export function removeShareItem(shareId: string, videoId: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/shares/${encodeURIComponent(shareId)}/items/${encodeURIComponent(videoId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/**
  * `GET /api/shares/{id}/items` — the one-shot tree payload for the
  * manage page's browse and the edit dialog's pre-checks: the flat
  * folder list plus member videos, each carrying its `folder_id`.

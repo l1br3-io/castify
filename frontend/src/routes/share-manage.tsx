@@ -47,15 +47,16 @@ import { Field, Input } from "../components/ui/field";
 import { Skeleton } from "../components/ui/skeleton";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import {
+  appendToShare,
   createShareFolder,
   deleteShareFolder,
-  fetchShareItemsOwned,
-  replaceShareItems,
+  moveShareItem,
+  removeShareItem,
   updateShareFolder,
   type ShareDto,
 } from "../api/shares";
-import type { ShareFolderDto, ShareItemsDto, VideoSummaryDto } from "../api/types";
-import { buildShareTree } from "../lib/share-tree";
+import type { ShareFolderDto, VideoSummaryDto } from "../api/types";
+import { buildShareTree, type ShareTreeItem } from "../lib/share-tree";
 import { describeError, formatDate } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { shareItemsOwnedKey, useShareItemsOwned } from "../hooks/use-share-items";
@@ -128,18 +129,96 @@ function ShareDetail({ share }: { share: ShareDto }) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
-  // In-flight removals, subtracted when computing the next PUT's id list.
-  // Set membership spans the whole stale-cache window — from onMutate until
-  // the post-PUT refetch LANDS (not just the 204): between the PUT's success
-  // and that refetch, the cached list is stale, and a second removal
-  // computed from it would resurrect the first-removed item. The undo path
-  // filters the same set so a restore can never re-assert an id whose
-  // removal is still in flight.
-  const pendingRemovals = useRef(new Set<string>());
-  // Single-slot undo: a newer removal dismisses the prior toast (undo
-  // restores only the most recent — the page copy names the item).
+  // Item removal (share-folders task 008) is the granular DELETE and
+  // undo is an append — one item, one request, no list computation. The
+  // old PUT-era machinery (a `pendingRemovals` set spanning the
+  // stale-cache window, `freshMembers` deduping against in-flight
+  // refetches, undo splicing into the freshest id list) is deliberately
+  // gone: a single-item DELETE has no list to compute from stale state,
+  // so there is no resurrect race to guard and no splice index to get
+  // right. The mutation's own pending state dims the card.
+  //
+  // Undo restores membership only: the append lands the item back at the
+  // share root, not its former folder (spec resolved question 3) — the
+  // toast never promised placement, and none is restored.
   const lastToastId = useRef<number | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
+
+  /** Item ops change `item_count` (unlike folder ops), so removal/undo
+   * invalidate the shares list too — the Settings row refetches its
+   * count from the server, no local patching. */
+  function invalidateMemberQueries(): Promise<void> {
+    void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
+    return queryClient.invalidateQueries({
+      queryKey: shareItemsOwnedKey(share.id),
+    });
+  }
+
+  async function undoRemoval(video: VideoSummaryDto): Promise<void> {
+    try {
+      await appendToShare(share.id, [video.id]);
+      await invalidateMemberQueries();
+    } catch {
+      toast.error("Couldn't restore the item. Reload the page and try again.");
+    }
+  }
+
+  function pushUndoToast(video: VideoSummaryDto): void {
+    if (lastToastId.current !== null) {
+      toast.dismiss(lastToastId.current);
+    }
+    lastToastId.current = toast.info(`Removed '${video.name}'`, {
+      ttlMs: UNDO_TTL_MS,
+      action: {
+        label: "Undo",
+        onAction: () => void undoRemoval(video),
+      },
+    });
+  }
+
+  const remove = useMutation({
+    mutationFn: ({ video }: { video: VideoSummaryDto }) =>
+      removeShareItem(share.id, video.id),
+    onMutate: () => setRemoveError(null),
+    onSuccess: async (_data, { video }) => {
+      // Await before offering Undo (same ordering as ever): the undo's
+      // append must land against a membership that already reflects the
+      // removal, and the toast should describe the refetched truth.
+      await invalidateMemberQueries();
+      pushUndoToast(video);
+    },
+    onError: (error: unknown) => {
+      setRemoveError(describeError(error));
+    },
+  });
+
+  function handleRemove(video: VideoSummaryDto): void {
+    remove.mutate({ video });
+  }
+
+  // Item move (task 008): the shared picker PATCHes placement; the tree
+  // payload refetches (item_count can't change — folders are
+  // organization, placement is presentation).
+  const [movingVideo, setMovingVideo] = useState<ShareTreeItem | null>(null);
+  const moveItem = useMutation({
+    mutationFn: ({ video, target }: { video: ShareTreeItem; target: string | null }) =>
+      moveShareItem(share.id, video.id, { folder_id: target }),
+    onSuccess: async () => {
+      await invalidateTree();
+      setMovingVideo(null);
+    },
+  });
+
+  const count = items.data?.items.length ?? share.item_count;
+  const canRemoveItems = (items.data?.items.length ?? 0) > 1;
+
+  // Task 005: client-side search over the loaded members. Filtering is
+  // render-only — removal targets and the last-item guard all read the
+  // unfiltered `items.data`.
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
+  const [isAdding, setIsAdding] = useState(false);
+  const query = debouncedSearch.trim().toLowerCase();
 
   // Tree browse (task 006) — computed before the mutations so they can
   // close over the current scope (`folderId`). The index rebuilds only
@@ -206,115 +285,6 @@ function ShareDetail({ share }: { share: ShareDto }) {
       setFolderDialog(null);
     },
   });
-
-  function invalidateMemberQueries(): Promise<void> {
-    void queryClient.invalidateQueries({ queryKey: SHARES_QUERY_KEY });
-    return queryClient.invalidateQueries({
-      queryKey: shareItemsOwnedKey(share.id),
-    });
-  }
-
-  /** Freshest members payload, deduped against any in-flight refetch.
-   * `ensureQueryData` (not `getQueryData`) because the cache can be absent
-   * or stale at exactly the wrong moments: the add-only dialog drops the
-   * entry on save (`removeQueries`) while this page's refetch is starting,
-   * and an Undo can outlive navigation away (inactive query, no observer,
-   * stale data). Joining the in-flight fetch beats reading around it. */
-  function freshMembers(): Promise<ShareItemsDto> {
-    return queryClient.ensureQueryData({
-      queryKey: shareItemsOwnedKey(share.id),
-      queryFn: () => fetchShareItemsOwned(share.id),
-    });
-  }
-
-  async function undoRemoval(snapshot: {
-    video: VideoSummaryDto;
-    index: number;
-  }): Promise<void> {
-    try {
-      const current = (await freshMembers()).items;
-      // Never re-assert an id whose removal is still in flight — an undo
-      // racing a newer removal must not resurrect what that removal is
-      // taking out (last-writer-wins would otherwise flip either way).
-      const ids = current
-        .filter((v) => !pendingRemovals.current.has(v.id))
-        .map((v) => v.id);
-      const at = Math.min(snapshot.index, ids.length);
-      await replaceShareItems(share.id, [
-        ...ids.slice(0, at),
-        snapshot.video.id,
-        ...ids.slice(at),
-      ]);
-      await invalidateMemberQueries();
-    } catch {
-      toast.error("Couldn't restore the item. Reload the page and try again.");
-    }
-  }
-
-  function pushUndoToast(snapshot: {
-    video: VideoSummaryDto;
-    index: number;
-  }): void {
-    if (lastToastId.current !== null) {
-      toast.dismiss(lastToastId.current);
-    }
-    lastToastId.current = toast.info(`Removed '${snapshot.video.name}'`, {
-      ttlMs: UNDO_TTL_MS,
-      action: {
-        label: "Undo",
-        onAction: () => void undoRemoval(snapshot),
-      },
-    });
-  }
-
-  const remove = useMutation({
-    mutationFn: async ({ video }: { video: VideoSummaryDto; index: number }) => {
-      // Freshest payload (deduped against any in-flight refetch — see
-      // freshMembers) minus in-flight removals. Never the render
-      // closure's items.data, which can predate a dialog save.
-      const base = (await freshMembers()).items;
-      const ids = base
-        .filter(
-          (v) => v.id !== video.id && !pendingRemovals.current.has(v.id),
-        )
-        .map((v) => v.id);
-      return replaceShareItems(share.id, ids);
-    },
-    onMutate: ({ video }) => {
-      setRemoveError(null);
-      pendingRemovals.current.add(video.id);
-    },
-    onSuccess: async (_data, snapshot) => {
-      // Pop the guard only AFTER the refetch lands (see pendingRemovals):
-      // the stale-cache window is exactly PUT-204 → refetch-completion.
-      // Also: await before offering Undo — undo splices into the cached
-      // list, which must already reflect the removal or the restore could
-      // double-insert (a duplicate the server would 400).
-      await invalidateMemberQueries();
-      pendingRemovals.current.delete(snapshot.video.id);
-      pushUndoToast(snapshot);
-    },
-    onError: (error: unknown, { video }) => {
-      pendingRemovals.current.delete(video.id);
-      setRemoveError(describeError(error));
-    },
-  });
-
-  function handleRemove(video: VideoSummaryDto): void {
-    const index = (items.data?.items ?? []).findIndex((v) => v.id === video.id);
-    remove.mutate({ video, index: Math.max(index, 0) });
-  }
-
-  const count = items.data?.items.length ?? share.item_count;
-  const canRemoveItems = (items.data?.items.length ?? 0) > 1;
-
-  // Task 005: client-side search over the loaded members. Filtering is
-  // render-only — removal targets, undo indices, and the last-item guard
-  // all read the unfiltered `items.data`.
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
-  const [isAdding, setIsAdding] = useState(false);
-  const query = debouncedSearch.trim().toLowerCase();
 
   // Task 006: tree browse over the wrapped payload — the same helpers
   // and tile the recipient landing uses, so the owner preview is exact.
@@ -465,8 +435,8 @@ function ShareDetail({ share }: { share: ShareDto }) {
               ))}
               {visibleVideos.map((video) => {
             // With two removals in flight this dims only the latest's
-            // card (mutation.variables holds one); the earlier card's PUT
-            // is still protected by pendingRemovals — cosmetic only.
+            // card (mutation.variables holds one) — cosmetic only; the
+            // DELETEs are independent single-item requests.
             const isRemoving =
               remove.isPending && remove.variables?.video.id === video.id;
             return (
@@ -484,6 +454,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
                         videoHref={`/watch/${encodeURIComponent(video.id)}`}
                         canRemove={canRemoveItems}
                         removeHint={LAST_ITEM_HINT}
+                        onMove={() => setMovingVideo(video)}
                         onRemove={() => handleRemove(video)}
                       />
                     ) : undefined
@@ -530,11 +501,23 @@ function ShareDetail({ share }: { share: ShareDto }) {
           title={`Move "${folderDialog.folder.name}"`}
           folders={items.data?.folders ?? []}
           excludeSubtreeOf={folderDialog.folder.id}
+          currentFolderId={folderDialog.folder.parent_id}
           pending={moveFolder.isPending}
           onPick={(target) =>
             moveFolder.mutate({ folder: folderDialog.folder, target })
           }
           onClose={() => setFolderDialog(null)}
+        />
+      )}
+
+      {movingVideo && (
+        <ShareMoveDialog
+          title={`Move "${movingVideo.name}"`}
+          folders={items.data?.folders ?? []}
+          currentFolderId={movingVideo.folder_id}
+          pending={moveItem.isPending}
+          onPick={(target) => moveItem.mutate({ video: movingVideo, target })}
+          onClose={() => setMovingVideo(null)}
         />
       )}
 

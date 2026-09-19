@@ -18,6 +18,8 @@ import {
   fetchShareItems,
   fetchShareItemsOwned,
   fetchShares,
+  moveShareItem,
+  removeShareItem,
   resolveShare,
   replaceShareItems,
   revokeShare,
@@ -240,6 +242,29 @@ describe("shares owner client", () => {
     await deleteShareFolder("s1", "f1");
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/s1/folders/f1");
+    expect(lastInit(fetchSpy).method).toBe("DELETE");
+  });
+
+  it("moveShareItem PATCHes the target folder (null = root)", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await moveShareItem("s1", "v1", { folder_id: "f1" });
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items/v1");
+    expect(lastInit(fetchSpy).method).toBe("PATCH");
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({ folder_id: "f1" });
+
+    await moveShareItem("s1", "v1", { folder_id: null });
+    expect(JSON.parse(lastInit(fetchSpy).body as string)).toEqual({ folder_id: null });
+  });
+
+  it("removeShareItem DELETEs /api/shares/{id}/items/{video_id}", async () => {
+    const fetchSpy = vi.fn(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await removeShareItem("s1", "v1");
+
+    expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items/v1");
     expect(lastInit(fetchSpy).method).toBe("DELETE");
   });
 });
