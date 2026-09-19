@@ -10,8 +10,10 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { Route, Routes, useParams } from "react-router-dom";
 
 import { CollectionsPage } from "./collections";
-import type { CollectionDto } from "../api/types";
+import type { CollectionDetailDto, CollectionDto, VideoSummaryDto } from "../api/types";
+import { collectionsQueryKeys } from "../api/collections";
 import { jsonError, jsonResponse, renderWithProviders } from "../test/utils";
+import { QueryClient } from "@tanstack/react-query";
 
 function collection(over: Partial<CollectionDto> = {}): CollectionDto {
   return {
@@ -507,7 +509,11 @@ describe("CollectionsPage", () => {
       screen.getByRole("button", { name: "Actions for Breaking Bad" }),
     );
     const items = await screen.findAllByRole("menuitem");
-    expect(items.map((i) => i.textContent)).toEqual(["Rename", "Delete"]);
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Rename",
+      "Share",
+      "Delete",
+    ]);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog", {
@@ -758,5 +764,179 @@ describe("CollectionsPage", () => {
     ).not.toBeInTheDocument();
 
     expect(postUrls(fetchSpy)).toHaveLength(0);
+  });
+
+  // --- share-collections: share from the grid kebab ---
+
+  function detailMember(id: string, name: string): VideoSummaryDto {
+    return {
+      id,
+      name,
+      provider: "google_drive",
+      size_bytes: 1000,
+      mime_type: "video/mp4",
+      duration_ms: null,
+      width: null,
+      height: null,
+      sources: [],
+      created_at: "2026-01-01T00:00:00Z",
+      path: null,
+      is_favorite: false,
+      my_rating: null,
+      thumbnail_status: "pending",
+      position_seconds: null,
+      completed: false,
+    };
+  }
+
+  const DETAIL: CollectionDetailDto = {
+    id: "c1",
+    name: "Breaking Bad",
+    kind: "show",
+    created_at: "2026-09-01T00:00:00Z",
+    members: [
+      detailMember("v1", "s01e01.mp4"),
+      detailMember("v2", "s01e02.mp4"),
+      detailMember("v3", "s01e03.mp4"),
+    ],
+  };
+
+  /** List API + detail API; detailMembers overrides the fetched detail so
+   *  the stale-count path can return something contradicting the card. */
+  function shareApi(
+    detail: CollectionDetailDto = DETAIL,
+    detailStatus: number = 200,
+  ) {
+    return (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/collections" && method === "GET")
+        return jsonResponse([
+          collection({ member_count: detail.members.length || 5 }),
+        ]);
+      if (url === "/api/collections/c1")
+        return detailStatus === 200
+          ? jsonResponse(detail)
+          : jsonError(detailStatus, "boom");
+      return jsonError(404, "unmocked");
+    };
+  }
+
+  function detailGetCount(fetchSpy: { mock: { calls: unknown[][] } }): number {
+    return fetchSpy.mock.calls.filter(
+      ([url, init]) =>
+        String(url) === "/api/collections/c1" &&
+        (init as RequestInit | undefined)?.method !== "DELETE" &&
+        (init as RequestInit | undefined)?.method !== "PATCH",
+    ).length;
+  }
+
+  async function openKebabMenu(): Promise<void> {
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Actions for Breaking Bad" }),
+    );
+    await screen.findByRole("menu");
+  }
+
+  it("kebab Share sits between Rename and Delete; selecting fetches the detail and opens the pre-filled dialog", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: shareApi(),
+    });
+
+    await openKebabMenu();
+    const items = screen.getAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual([
+      "Rename",
+      "Share",
+      "Delete",
+    ]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
+
+    // One GET of the detail, then the dialog with name label + count.
+    const dialog = await screen.findByRole("dialog", {
+      name: /share breaking bad/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByText(/these 3 videos/i)).toBeInTheDocument();
+    expect(detailGetCount(fetchSpy)).toBe(1);
+    // Selecting closed the kebab menu.
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("Share menuitem is disabled with a reason when member_count is 0 (no fetch)", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: (input) => {
+        const url = String(input);
+        if (url === "/api/collections")
+          return jsonResponse([collection({ member_count: 0 })]);
+        return jsonError(404, "unmocked");
+      },
+    });
+
+    await openKebabMenu();
+    const share = screen.getByRole("menuitem", { name: "Share" });
+    expect(share).toBeDisabled();
+    expect(share).toHaveAttribute(
+      "title",
+      "Empty collections can't be shared",
+    );
+    expect(detailGetCount(fetchSpy)).toBe(0);
+  });
+
+  it("stale member_count (fetch returns 0 members) toasts and never opens the dialog", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: shareApi({ ...DETAIL, members: [] }),
+    });
+
+    await openKebabMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/empty/i);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(detailGetCount(fetchSpy)).toBe(1);
+  });
+
+  it("failed detail fetch toasts naming the collection; no dialog", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: shareApi(DETAIL, 500),
+    });
+
+    await openKebabMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /couldn't share "breaking bad"/i,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("a cached detail serves the share path without a network request", async () => {
+    // Mirrors the production client (query-client.ts) except retry: the
+    // app-wide 30s staleTime is what lets a visited detail serve this
+    // path from cache; gcTime must stay default or the unobserved
+    // seeded entry is collected before the click.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    queryClient.setQueryData(collectionsQueryKeys.detail("c1"), DETAIL);
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: shareApi(),
+      queryClient,
+    });
+
+    await openKebabMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /share breaking bad/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(detailGetCount(fetchSpy)).toBe(0);
   });
 });

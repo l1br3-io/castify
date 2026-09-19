@@ -215,16 +215,20 @@ export function Menu({
 type MenuItemProps = {
   onSelect: () => void;
   disabled?: boolean;
+  /** Reason for a disabled item — surfaced as the button's title so the
+   *  gating announces itself on hover (mirrors the Button family). */
+  title?: string;
   children: ReactNode;
 };
 
-export function MenuItem({ onSelect, disabled = false, children }: MenuItemProps) {
+export function MenuItem({ onSelect, disabled = false, title, children }: MenuItemProps) {
   const ctx = useContext(MenuContext);
   return (
     <button
       type="button"
       role="menuitem"
       disabled={disabled}
+      title={title}
       onClick={() => {
         if (disabled) return;
         ctx?.close();

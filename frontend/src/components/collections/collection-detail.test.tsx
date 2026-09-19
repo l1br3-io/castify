@@ -142,6 +142,59 @@ describe("CollectionDetailPage", () => {
     expect(await screen.findByText("library home")).toBeInTheDocument();
   });
 
+  it("opens the share dialog pre-filled with members in curation order", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    renderDetail((input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      requests.push({
+        url,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+      if (url === "/api/shares" && method === "POST")
+        return jsonResponse({
+          id: "s1",
+          title: "Shared",
+          token: "tok_abc",
+          share_url: "/share/tok_abc",
+        });
+      return detailFetch()(input, init);
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /share/i }));
+
+    // itemLabel = collection name rides the dialog heading.
+    const dialog = await screen.findByRole("dialog", {
+      name: /share weekend watchlist/i,
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByText(/these 2 videos/i)).toBeInTheDocument();
+
+    // The create POST carries exactly the members, in on-page order.
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+    await waitFor(() => {
+      const post = requests.find(
+        (r) => r.method === "POST" && r.url === "/api/shares",
+      );
+      expect(post?.body).toMatchObject({ video_ids: ["v1", "v2"] });
+    });
+  });
+
+  it("disables share with a reason on an empty collection and never opens the dialog", async () => {
+    renderDetail(detailFetch({ ...DETAIL, members: [] }));
+
+    const share = await screen.findByRole("button", { name: /share/i });
+    expect(share).toBeDisabled();
+    expect(share).toHaveAttribute(
+      "title",
+      "Empty collections can't be shared",
+    );
+    // Play all's conditional-render pattern is deliberately not copied —
+    // the button stays mounted so the header layout doesn't jump.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("shows the empty state for a collection with no members", async () => {
     renderDetail(detailFetch({ ...DETAIL, members: [] }));
 

@@ -7,10 +7,16 @@
 // rail → detail renders. A second test dismisses a group, rescans, and
 // proves the signature suppression holds.
 //
-// Both tests restore the bucket + disconnect in `finally` — the suite
+// The "share a collection" describe (share-collections task 003) rides
+// the same fixture: a three-episode show collection is shared from the
+// detail header and from the grid kebab, and a recipient context must
+// see exactly the collection's members in curation order — including
+// after the source collection is deleted (snapshot semantics).
+//
+// All tests restore the bucket + disconnect in `finally` — the suite
 // is serial (one worker) and later specs expect the seeded state.
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
@@ -20,6 +26,16 @@ import {
   triggerScan,
   waitForScanComplete,
 } from "./helpers";
+
+/** Open a recipient context — no session, no cookies, fresh IndexedDB
+ *  (same pattern as sharing.spec.ts). */
+async function recipientPage(
+  browser: import("@playwright/test").Browser,
+): Promise<{ context: BrowserContext; page: Page }> {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  return { context, page };
+}
 
 const MINIO_ENDPOINT = "http://localhost:9000";
 const MINIO_ROOT_USER = "castify-e2e";
@@ -322,6 +338,236 @@ test.describe("library collections (MinIO, task 011)", () => {
       ).toHaveLength(0);
     } finally {
       await cleanupConnection(page, connId, uploadedKeys);
+    }
+  });
+});
+
+test.describe("share a collection (share-collections task 003)", () => {
+  test.setTimeout(180_000);
+
+  const SHOW_TITLE = "Better Things";
+  const SHARE_TITLE = "Collection share e2e";
+  // .mp4 keys (not .mkv): the staged bytes are H.264 mp4, and the name
+  // drives both classification and stream strategy — mp4 keeps the
+  // recipient playback assertion on the direct, natively-playable path.
+  const EPISODE_KEYS = [
+    "TV/Better.Things.S01E01.mp4",
+    "TV/Better.Things.S01E02.mp4",
+    "TV/Better.Things.S01E03.mp4",
+  ];
+
+  let connId = "";
+  let collectionId = "";
+  let memberNames: string[] = [];
+
+  test.beforeAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    try {
+      await ensureAuthenticated(page);
+      await waitMinioLive(page);
+      const csrf = await getCsrfToken(page);
+
+      connId = await connectS3AndScan(page);
+      for (const key of EPISODE_KEYS) {
+        await putObject(page, csrf, connId, key);
+      }
+      await rescanAndAwait(page, connId, csrf);
+
+      // Accept the three-episode show group through the API (the UI
+      // accept path is covered above and in vitest).
+      const staged = await getSuggestions(page);
+      const show = staged.find(
+        (s) => s.signature === "show:betterthings",
+      );
+      expect(show, `show suggestion staged: ${JSON.stringify(staged)}`)
+        .toMatchObject({ kind: "show", title: SHOW_TITLE, member_count: 3 });
+      const acceptRes = await page.request.post(
+        `/api/collections/suggestions/${show!.id}/accept`,
+        { headers: await authHeaders(page, csrf) },
+      );
+      expect(acceptRes.ok()).toBeTruthy();
+      const accepted = (await acceptRes.json()) as { id: string };
+      collectionId = accepted.id;
+
+      // Curation order is whatever the detail API returns — the
+      // recipient assertions compare against it, not a guess.
+      const detailRes = await page.request.get(
+        `/api/collections/${collectionId}`,
+      );
+      expect(detailRes.ok()).toBeTruthy();
+      const detail = (await detailRes.json()) as {
+        members: { name: string }[];
+      };
+      memberNames = detail.members.map((m) => m.name);
+      expect(memberNames).toHaveLength(3);
+    } finally {
+      await page.close();
+    }
+  });
+
+  test.afterAll(async ({ browser }) => {
+    if (!connId) return;
+    const page = await browser.newPage();
+    try {
+      await ensureAuthenticated(page);
+      const csrf = await getCsrfToken(page).catch(() => null);
+      if (csrf) {
+        // Revoke the shares this describe created (matched by the title
+        // both dialogs typed) so a `--grep` partial run leaves no live
+        // shares behind.
+        const list = await page.request
+          .get("/api/shares", { headers: await authHeaders(page, csrf) })
+          .catch(() => null);
+        if (list?.ok()) {
+          const shares = (await list.json()) as {
+            id: string;
+            title: string;
+          }[];
+          for (const s of shares.filter((x) => x.title === SHARE_TITLE)) {
+            await page.request
+              .delete(`/api/shares/${s.id}`, {
+                headers: await authHeaders(page, csrf),
+              })
+              .catch(() => {});
+          }
+        }
+        if (collectionId) {
+          await page.request
+            .delete(`/api/collections/${collectionId}`, {
+              headers: await authHeaders(page, csrf),
+            })
+            .catch(() => {});
+        }
+      }
+      await cleanupConnection(page, connId, EPISODE_KEYS);
+    } finally {
+      await page.close();
+    }
+  });
+
+  /** Create a share through the open ShareDialog: type a known title
+   *  (also the afterAll cleanup matcher), submit, and return the
+   *  one-time absolute link the dialog renders. */
+  async function createShareThroughDialog(
+    page: Page,
+  ): Promise<string> {
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Title (optional)").fill(SHARE_TITLE);
+    await dialog.getByRole("button", { name: "Create share" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Share link created" }),
+    ).toBeVisible();
+    const link = await dialog.locator("p.break-all").textContent();
+    expect(link).toBeTruthy();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    return link!.trim();
+  }
+
+  /** Recipient landing: the shared items, in the owner's curation
+   *  order (returned for callers that want it). */
+  async function expectRecipientItemsInOrder(
+    page: Page,
+  ): Promise<string[]> {
+    await expect(
+      page.getByRole("heading", { name: SHARE_TITLE }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("3 videos shared with you"),
+    ).toBeVisible();
+    const names = await page
+      .locator('a[aria-label^="Play "]')
+      .evaluateAll((els) =>
+        els.map((el) =>
+          (el as HTMLAnchorElement)
+            .getAttribute("aria-label")!
+            .replace(/^Play /, ""),
+        ),
+      );
+    expect(names).toEqual(memberNames);
+    return names;
+  }
+
+  test("detail → Share → recipient sees exactly the members in curation order", async ({
+    browser,
+  }) => {
+    const owner = await browser.newPage();
+    const { context, page } = await recipientPage(browser);
+    try {
+      await ensureAuthenticated(owner);
+      await owner.goto(`/collections/${collectionId}`);
+      await expect(
+        owner.getByRole("heading", { name: SHOW_TITLE }),
+      ).toBeVisible();
+
+      await owner.getByRole("button", { name: "Share" }).click();
+      await expect(
+        owner.getByRole("dialog", { name: `Share ${SHOW_TITLE}` }),
+      ).toBeVisible();
+      await expect(
+        owner.getByRole("dialog").getByText(/these 3 videos/i),
+      ).toBeVisible();
+      const link = await createShareThroughDialog(owner);
+
+      // Fresh context: no session, no cookies — the link is the only
+      // credential.
+      await page.goto(link);
+      await expectRecipientItemsInOrder(page);
+    } finally {
+      await context.close();
+      await owner.close();
+    }
+  });
+
+  test("kebab → Share → delete collection → recipient link still lists and plays", async ({
+    browser,
+  }) => {
+    const owner = await browser.newPage();
+    const { context, page } = await recipientPage(browser);
+    try {
+      await ensureAuthenticated(owner);
+
+      // Grid kebab path — no detail visit first.
+      await owner.goto("/collections");
+      await owner
+        .getByRole("button", { name: `Actions for ${SHOW_TITLE}` })
+        .click();
+      await owner.getByRole("menuitem", { name: "Share" }).click();
+      await expect(
+        owner.getByRole("dialog", { name: `Share ${SHOW_TITLE}` }),
+      ).toBeVisible();
+      const link = await createShareThroughDialog(owner);
+
+      // Snapshot durability: delete the source collection via the UI…
+      await owner.goto(`/collections/${collectionId}`);
+      await owner.getByRole("button", { name: "Delete" }).click();
+      await owner.getByRole("button", { name: "Yes, delete" }).click();
+      await expect(owner).toHaveURL(/\/$/);
+
+      // …and the recipient link is untouched: same items, same order.
+      await page.goto(link);
+      const names = await expectRecipientItemsInOrder(page);
+
+      // And it still plays: the first member's watch page buffers real
+      // bytes (s3 direct strategy — presigned MinIO URL).
+      await page.evaluate((name) => {
+        const a = document.querySelector<HTMLAnchorElement>(
+          `a[aria-label="Play ${name}"]`,
+        );
+        if (!a) throw new Error(`link "Play ${name}" not found`);
+        a.click();
+      }, names[0]);
+      const video = page.locator("video");
+      await expect(video).toBeVisible();
+      await expect
+        .poll(
+          async () =>
+            await video.evaluate((v: HTMLVideoElement) => v.readyState),
+          { timeout: 15_000, message: "recipient video buffers" },
+        )
+        .toBeGreaterThanOrEqual(1);
+    } finally {
+      await context.close();
+      await owner.close();
     }
   });
 });
