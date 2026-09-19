@@ -1985,7 +1985,7 @@ mod tests {
         );
     }
 
-    // ---- Folders (0016) ----
+    // ---- Folders (0017) ----
 
     /// Unwrap the expected validation rejection out of a folder write.
     fn expect_invalid(

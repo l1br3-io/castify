@@ -1515,7 +1515,7 @@ async fn get_items_serves_revoked_and_expired_shares() {
     }
 }
 
-// ---------------------------------------------------- folders (0016 + 003)
+// ---------------------------------------------------- folders (0017 + 003)
 
 /// CSRF-correct folder/item mutation helper over the raw `request`.
 async fn mutate(
