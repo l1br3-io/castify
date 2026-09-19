@@ -25,7 +25,7 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { CollectionDto, CollectionKind } from "../api/types";
-import { useCollections, useRenameCollection } from "../hooks/use-collections";
+import { useCollections, useDeleteCollection, useRenameCollection } from "../hooks/use-collections";
 import { useToast } from "../hooks/use-toast";
 import { CollectionCard } from "../components/collections/collection-card";
 import { Dialog } from "../components/ui/dialog";
@@ -267,10 +267,10 @@ const KEBAB_TRIGGER_CLASS =
   "hover:text-[var(--color-castify-text)] focus:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-[var(--color-focus)]";
 
-/** Kebab menu riding the card's menuSlot. Rename first; Delete joins in
- *  task 005. */
+/** Kebab menu riding the card's menuSlot: Rename, then Delete. */
 function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
   const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   return (
     <>
@@ -279,11 +279,18 @@ function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
         triggerClassName={KEBAB_TRIGGER_CLASS}
       >
         <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>
+        <MenuItem onSelect={() => setDeleting(true)}>Delete</MenuItem>
       </Menu>
       {renaming && (
         <RenameCollectionDialog
           collection={collection}
           onClose={() => setRenaming(false)}
+        />
+      )}
+      {deleting && (
+        <DeleteCollectionDialog
+          collection={collection}
+          onClose={() => setDeleting(false)}
         />
       )}
     </>
@@ -354,6 +361,62 @@ function RenameCollectionDialog({
         }}
         className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)]"
       />
+    </Dialog>
+  );
+}
+
+/** Delete confirm dialog — the same copy shape as the detail page's
+ *  delete (names the collection + member count, videos stay in the
+ *  library), so both surfaces speak identically. */
+function DeleteCollectionDialog({
+  collection,
+  onClose,
+}: {
+  collection: CollectionDto;
+  onClose: () => void;
+}) {
+  const remove = useDeleteCollection();
+  const toast = useToast();
+
+  const countLabel =
+    collection.member_count === 1
+      ? "1 video"
+      : `${collection.member_count} videos`;
+
+  return (
+    <Dialog open onClose={onClose} title="Delete collection"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className={buttonClasses("ghost")}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={remove.isPending}
+            onClick={() =>
+              remove.mutate(collection.id, {
+                onError: () =>
+                  toast.error(
+                    `Couldn't delete "${collection.name}". Please try again.`,
+                  ),
+                onSettled: onClose,
+              })
+            }
+            className={buttonClasses("destructive")}
+          >
+            {remove.isPending ? "Deleting…" : "Yes, delete"}
+          </button>
+        </>
+      }
+    >
+      <p className="text-sm text-[var(--color-castify-muted)]">
+        Delete &ldquo;{collection.name}&rdquo; ({countLabel})? The collection
+        and its member list are removed — your videos stay in the library.
+      </p>
     </Dialog>
   );
 }

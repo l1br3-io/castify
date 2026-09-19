@@ -89,6 +89,29 @@ export function useDeleteCollection() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteCollection(id),
+    // Optimistic removal (collections-page task 005): the card leaves
+    // the list cache immediately, rolls back on error, then settles
+    // into the authoritative refetch.
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({
+        queryKey: collectionsQueryKeys.all,
+      });
+      const listSnapshot = queryClient.getQueryData<CollectionDto[]>(
+        collectionsQueryKeys.all,
+      );
+      queryClient.setQueryData<CollectionDto[]>(collectionsQueryKeys.all, (old) =>
+        old?.filter((c) => c.id !== id) ?? old,
+      );
+      return { listSnapshot };
+    },
+    onError: (_error, _id, context) => {
+      if (context?.listSnapshot !== undefined) {
+        queryClient.setQueryData(
+          collectionsQueryKeys.all,
+          context.listSnapshot,
+        );
+      }
+    },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: collectionsQueryKeys.all });
     },

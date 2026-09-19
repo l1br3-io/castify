@@ -448,4 +448,150 @@ describe("CollectionsPage", () => {
     ).not.toBeInTheDocument();
     expect(document.activeElement).toBe(kebab);
   });
+
+  // --- task 005: delete from the grid ---
+
+  const TWO = [
+    collection(),
+    collection({ id: "c2", name: "Alpha Movie", kind: "movie", member_count: 2 }),
+  ];
+
+  function collectionsApi(
+    initial: CollectionDto[],
+    deleteStatus: number = 204,
+  ) {
+    // Stateful: a successful DELETE persists into later GETs.
+    let current = initial;
+    return (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/collections" && method === "GET")
+        return jsonResponse(current);
+      if (method === "DELETE" && /^\/api\/collections\/[^/]+$/.test(url)) {
+        if (deleteStatus !== 204) return jsonError(deleteStatus, "boom");
+        current = current.filter((c) => url !== `/api/collections/${c.id}`);
+        return new Response(null, { status: 204 });
+      }
+      return jsonError(404, "unmocked");
+    };
+  }
+
+  function deleteUrls(fetchSpy: { mock: { calls: unknown[][] } }): string[] {
+    return fetchSpy.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/collections/c1" &&
+          (init as RequestInit | undefined)?.method === "DELETE",
+      )
+      .map(([url]) => String(url));
+  }
+
+  async function openDeleteDialog(
+    name = "Actions for Breaking Bad",
+  ): Promise<HTMLElement> {
+    fireEvent.click(await screen.findByRole("button", { name }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    return screen.findByRole("dialog", { name: "Delete collection" });
+  }
+
+  it("kebab offers Delete below Rename; the confirm dialog names collection and count", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionsApi(TWO),
+    });
+
+    await screen.findByText("Breaking Bad");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Actions for Breaking Bad" }),
+    );
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Rename", "Delete"]);
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Delete collection",
+    });
+    expect(dialog).toHaveTextContent("Breaking Bad");
+    expect(dialog).toHaveTextContent("5 videos");
+    expect(dialog).toHaveTextContent("videos stay in the library");
+  });
+
+  it("confirm deletes: card leaves optimistically and the count updates", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionsApi(TWO),
+    });
+
+    await screen.findByText("Breaking Bad");
+    expect(screen.getByText("· 2")).toBeInTheDocument();
+
+    await openDeleteDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText("· 1")).toBeInTheDocument();
+    expect(screen.getByText("Alpha Movie")).toBeInTheDocument();
+    expect(deleteUrls(fetchSpy)).toHaveLength(1);
+  });
+
+  it("cancel leaves everything untouched and restores focus to the kebab", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionsApi(TWO),
+    });
+
+    const kebab = await screen.findByRole("button", {
+      name: "Actions for Breaking Bad",
+    });
+    fireEvent.click(kebab);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await screen.findByRole("dialog", { name: "Delete collection" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "Delete collection" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Breaking Bad")).toBeInTheDocument();
+    expect(deleteUrls(fetchSpy)).toHaveLength(0);
+    expect(document.activeElement).toBe(kebab);
+  });
+
+  it("failed delete rolls the card back and toasts", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionsApi(TWO, 500),
+    });
+
+    await openDeleteDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Breaking Bad")).toBeInTheDocument();
+    expect(screen.getByText("· 2")).toBeInTheDocument();
+  });
+
+  it("deleting the last collection of a filtered kind shows the filtered-empty state", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: collectionsApi(TWO),
+    });
+
+    await screen.findByText("Breaking Bad");
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+    expect(await screen.findByText("Alpha Movie")).toBeInTheDocument();
+
+    await openDeleteDialog("Actions for Alpha Movie");
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete" }));
+
+    expect(
+      await screen.findByText("No collections of this kind"),
+    ).toBeInTheDocument();
+    // The grid itself is gone — no blank cards left behind.
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  });
 });
