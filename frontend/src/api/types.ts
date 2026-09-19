@@ -186,6 +186,23 @@ export interface VideoSummaryDto {
   completed: boolean;
 }
 
+// A folder inside a share — organization only, never authorization
+// (share-folders effort). `parent_id: null` = share root.
+export interface ShareFolderDto {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+}
+
+// One-shot tree payload served by both items reads (recipient token +
+// owner session). Folder navigation is client state; descending never
+// issues another request.
+export interface ShareItemsDto {
+  folders: ShareFolderDto[];
+  items: (VideoSummaryDto & { folder_id: string | null })[];
+}
+
 // Paginated response from `GET /api/videos` (`VideoPage` in the backend).
 export interface VideoPageDto {
   videos: VideoSummaryDto[];

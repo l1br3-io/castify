@@ -1386,14 +1386,17 @@ async fn get_items_returns_members_in_curation_order_in_video_summary_shape() {
     .await;
     assert_eq!(status, StatusCode::OK, "body = {body}");
 
-    let items = body.as_array().expect("items is an array");
+    let items = body["items"].as_array().expect("items is an array");
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["id"], curated[0].as_str());
     assert_eq!(items[1]["id"], curated[1].as_str());
     assert_eq!(items[0]["name"], "b.mp4");
 
-    // Field contract: the catalog's VideoSummary shape, nothing extra —
-    // the same DTO the recipient endpoint and owner catalog serve.
+    // Field contract: the catalog's VideoSummary shape plus `folder_id`
+    // (null on flat shares) — the wrapped payload adds nothing else per
+    // item, and the flat share carries `folders: []`.
+    assert_eq!(body["folders"], json!([]));
+    assert!(items.iter().all(|i| i["folder_id"].is_null()));
     let mut keys: Vec<&str> = items[0]
         .as_object()
         .unwrap()
@@ -1407,6 +1410,7 @@ async fn get_items_returns_members_in_curation_order_in_video_summary_shape() {
             "completed",
             "created_at",
             "duration_ms",
+            "folder_id",
             "height",
             "id",
             "is_favorite",
@@ -1504,9 +1508,657 @@ async fn get_items_serves_revoked_and_expired_shares() {
         .await;
         assert_eq!(status, StatusCode::OK, "id = {id}, body = {body}");
         assert_eq!(
-            body.as_array().unwrap().len(),
+            body["items"].as_array().unwrap().len(),
             2,
             "the historical list is still readable"
         );
     }
+}
+
+// ---------------------------------------------------- folders (0016 + 003)
+
+/// CSRF-correct folder/item mutation helper over the raw `request`.
+async fn mutate(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    session: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let csrf = fetch_csrf(app, session).await;
+    request(
+        app.clone(),
+        method,
+        uri,
+        Some(session),
+        Some((&csrf, &csrf)),
+        body,
+    )
+    .await
+}
+
+/// `SELECT folder_id FROM share_items WHERE ...` straight from the table.
+async fn persisted_placement(pool: &SqlitePool, share_id: &str, video_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT folder_id FROM share_items WHERE share_id = ? AND video_id = ?")
+        .bind(share_id)
+        .bind(video_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .flatten()
+}
+
+#[tokio::test]
+async fn create_folder_answers_201_with_dto_and_nests() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, body) = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "  Day 1  "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+    assert_eq!(body["name"], "Day 1", "name stored trimmed");
+    assert_eq!(body["parent_id"], Value::Null, "root parent is null");
+    assert_eq!(body["position"], 0);
+    let day1 = body["id"].as_str().unwrap().to_string();
+
+    let (status, body) = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "Morning", "parent_id": day1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+    assert_eq!(body["parent_id"], day1, "nested under Day 1");
+    assert_eq!(body["position"], 0, "new scope numbers from 0");
+}
+
+#[tokio::test]
+async fn patch_folder_renames_reparents_and_leaves_absent_fields_untouched() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let trip = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "trip"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+    let holder = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "holder"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+
+    // Rename only: parent and position untouched.
+    let (status, body) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/folders/{holder}"),
+        &session,
+        Some(json!({"name": " Renamed "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["name"], "Renamed");
+    assert_eq!(body["parent_id"], Value::Null);
+    assert_eq!(body["position"], 1, "rename does not reorder");
+
+    // Reparent only: appends at the target scope's tail.
+    let (status, body) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/folders/{holder}"),
+        &session,
+        Some(json!({"parent_id": trip})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["parent_id"], trip);
+    assert_eq!(body["position"], 0);
+
+    // Absent fields are a clean no-op that still echoes the row.
+    let (status, body) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/folders/{holder}"),
+        &session,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["name"], "Renamed");
+    assert_eq!(body["parent_id"], trip);
+
+    // Explicit null parent moves back to root.
+    let (status, body) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/folders/{holder}"),
+        &session,
+        Some(json!({"parent_id": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(body["parent_id"], Value::Null);
+}
+
+#[tokio::test]
+async fn delete_folder_lifts_items_to_root_and_answers_204() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let day1 = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "Day 1"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+
+    for video in &videos {
+        let (status, _) = mutate(
+            &app,
+            "PATCH",
+            &format!("/api/shares/{id}/items/{video}"),
+            &session,
+            Some(json!({"folder_id": day1})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    let (status, _) = mutate(
+        &app,
+        "DELETE",
+        &format!("/api/shares/{id}/folders/{day1}"),
+        &session,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Membership survives; every item sits at root again.
+    assert_eq!(persisted_items(state.pool(), &id).await.len(), 3);
+    for video in &videos {
+        assert_eq!(
+            persisted_placement(state.pool(), &id, video).await,
+            None,
+            "folder deletion lifts items to root — membership intact"
+        );
+    }
+    let folders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM share_folders WHERE share_id = ?")
+        .bind(&id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    assert_eq!(folders, 0, "folder row is gone");
+}
+
+#[tokio::test]
+async fn folder_validation_matrix_maps_each_rejection() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let post = |name: Value| {
+        let app = app.clone();
+        let session = session.clone();
+        let id = id.clone();
+        async move {
+            mutate(&app, "POST", &format!("/api/shares/{id}/folders"), &session, Some(name)).await
+        }
+    };
+
+    let (status, body) = post(json!({"name": "   "})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "whitespace-only name — {body}");
+    let (status, body) = post(json!({"name": "x".repeat(201)})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "201 chars — {body}");
+    let (status, body) = post(json!({"name": "trip"})).await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+    let (status, body) = post(json!({"name": "trip"})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "sibling duplicate — {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sibling"),
+        "duplicate carries the sibling message: {body}"
+    );
+
+    // Depth: chain of 8 legal, 9th rejected; cycle: folder under itself.
+    let mut parent = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "d1"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+    for depth in 2..=8 {
+        parent = mutate(
+            &app,
+            "POST",
+            &format!("/api/shares/{id}/folders"),
+            &session,
+            Some(json!({"name": format!("d{depth}"), "parent_id": parent})),
+        )
+        .await
+        .1["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    }
+    let (status, body) = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "d9", "parent_id": parent})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "depth cap — {body}");
+
+    let d1_row: String = sqlx::query_scalar(
+        "SELECT id FROM share_folders WHERE share_id = ? AND name = 'd1'",
+    )
+    .bind(&id)
+    .fetch_one(state.pool())
+    .await
+    .unwrap();
+    let (status, body) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/folders/{d1_row}"),
+        &session,
+        Some(json!({"parent_id": parent})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "reparent into own subtree — {body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("subtree"),
+        "cycle carries the subtree message: {body}"
+    );
+}
+
+#[tokio::test]
+async fn folder_and_item_mutations_gate_session_and_csrf() {
+    let (app, _state, _session, _guard) = boot().await;
+    let share = "00000000-0000-0000-0000-000000000000";
+
+    for method in ["POST", "PATCH", "DELETE"] {
+        let (status, _) = request(
+            app.clone(),
+            method,
+            &format!("/api/shares/{share}/folders"),
+            None,
+            None,
+            Some(json!({"name": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} folders 401");
+
+        let (status, _) = request(
+            app.clone(),
+            method,
+            &format!("/api/shares/{share}/items/00000000-0000-0000-0000-000000000000"),
+            None,
+            None,
+            Some(json!({"folder_id": null})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} items 401");
+    }
+
+    // Session without CSRF is 403 (double-submit, like every owner write).
+    let (app2, _state, session, _guard) = boot().await;
+    let (status, _) = request(
+        app2,
+        "POST",
+        &format!("/api/shares/{share}/folders"),
+        Some(&session),
+        None,
+        Some(json!({"name": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn folder_and_item_mutations_scope_owner_share_folder_and_video() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos[..1].to_vec()})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let stranger_id = seed_stranger_share(state.pool(), &videos).await;
+    // A folder that exists — but in the stranger's share (created with
+    // the stranger's own owner id so the repo guard accepts it).
+    let stranger_owner: String =
+        sqlx::query_scalar("SELECT owner_id FROM shares WHERE id = ?")
+            .bind(&stranger_id)
+            .fetch_one(state.pool())
+            .await
+            .unwrap();
+    let foreign_folder = castify_api::shares::ShareRepository::new(state.pool().clone())
+        .create_folder(&stranger_owner, &stranger_id, None, "theirs")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    // A revoked share of our own.
+    let (_, revoked_created) =
+        create_share(&app, &session, json!({"video_ids": videos[..1].to_vec()})).await;
+    let revoked_id = revoked_created["id"].as_str().unwrap().to_string();
+    let csrf = fetch_csrf(&app, &session).await;
+    let (status, _) = request(
+        app.clone(),
+        "DELETE",
+        &format!("/api/shares/{revoked_id}"),
+        Some(&session),
+        Some((&csrf, &csrf)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Foreign share: plain 404 on every mutation, no existence leak.
+    for (method, uri, body) in [
+        (
+            "POST",
+            format!("/api/shares/{stranger_id}/folders"),
+            Some(json!({"name": "x"})),
+        ),
+        (
+            "PATCH",
+            format!("/api/shares/{stranger_id}/folders/{foreign_folder}"),
+            Some(json!({"name": "x"})),
+        ),
+        (
+            "DELETE",
+            format!("/api/shares/{stranger_id}/folders/{foreign_folder}"),
+            None,
+        ),
+        (
+            "PATCH",
+            format!("/api/shares/{stranger_id}/items/{}", videos[0]),
+            Some(json!({"folder_id": null})),
+        ),
+        (
+            "DELETE",
+            format!("/api/shares/{stranger_id}/items/{}", videos[0]),
+            None,
+        ),
+    ] {
+        let (status, body_out) = request(
+            app.clone(),
+            method,
+            &uri,
+            Some(&session),
+            Some((&csrf, &csrf)),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri} — {body_out}");
+    }
+
+    // Revoked share: 409 naming the state (owner can see it in their list).
+    for (method, uri, body) in [
+        ("POST", format!("/api/shares/{revoked_id}/folders"), Some(json!({"name": "x"}))),
+        (
+            "DELETE",
+            format!("/api/shares/{revoked_id}/folders/whatever"),
+            None,
+        ),
+        (
+            "PATCH",
+            format!("/api/shares/{revoked_id}/items/{}", videos[0]),
+            Some(json!({"folder_id": null})),
+        ),
+    ] {
+        let (status, body_out) = request(
+            app.clone(),
+            method,
+            &uri,
+            Some(&session),
+            Some((&csrf, &csrf)),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{method} {uri} — {body_out}");
+    }
+
+    // Our live share, but a foreign folder id and a non-member video: 404.
+    for (method, uri, body) in [
+        (
+            "POST",
+            format!("/api/shares/{id}/folders"),
+            Some(json!({"name": "x", "parent_id": foreign_folder})),
+        ),
+        (
+            "PATCH",
+            format!("/api/shares/{id}/folders/{foreign_folder}"),
+            Some(json!({"name": "x"})),
+        ),
+        (
+            "DELETE",
+            format!("/api/shares/{id}/folders/{foreign_folder}"),
+            None,
+        ),
+        (
+            "PATCH",
+            format!("/api/shares/{id}/items/{}", videos[1]),
+            Some(json!({"folder_id": foreign_folder})),
+        ),
+        (
+            "DELETE",
+            format!("/api/shares/{id}/items/{}", videos[1]),
+            None,
+        ),
+    ] {
+        let (status, body_out) = request(
+            app.clone(),
+            method,
+            &uri,
+            Some(&session),
+            Some((&csrf, &csrf)),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri} — {body_out}");
+    }
+
+    // Unknown share id: plain 404.
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        "/api/shares/00000000-0000-0000-0000-000000000000/folders",
+        Some(&session),
+        Some((&csrf, &csrf)),
+        Some(json!({"name": "x"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // None of the rejected writes touched either share's rows.
+    let folders: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM share_folders")
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
+    assert_eq!(folders, 1, "only the stranger's own folder exists");
+    assert_eq!(persisted_items(state.pool(), &id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn patch_item_moves_membership_between_scopes() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    let trip = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "trip"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+
+    let (status, _) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/items/{}", videos[0]),
+        &session,
+        Some(json!({"folder_id": trip})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        persisted_placement(state.pool(), &id, &videos[0]).await,
+        Some(trip.clone())
+    );
+
+    // Null moves back to root.
+    let (status, _) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/items/{}", videos[0]),
+        &session,
+        Some(json!({"folder_id": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(persisted_placement(state.pool(), &id, &videos[0]).await, None);
+
+    // Membership never changes through a move.
+    assert_eq!(persisted_items(state.pool(), &id).await.len(), 2);
+}
+
+#[tokio::test]
+async fn remove_item_deletes_and_guards_the_last_item() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let (status, _) = mutate(
+        &app,
+        "DELETE",
+        &format!("/api/shares/{id}/items/{}", videos[0]),
+        &session,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(persisted_items(state.pool(), &id).await, vec![videos[1].clone()]);
+
+    // The last item cannot leave — a share must keep at least 1 item.
+    let (status, body) = mutate(
+        &app,
+        "DELETE",
+        &format!("/api/shares/{id}/items/{}", videos[1]),
+        &session,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert_eq!(persisted_items(state.pool(), &id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn get_items_carries_the_folder_tree_for_the_owner_too() {
+    let (app, state, session, _guard) = boot().await;
+    let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4", "c.mp4"]).await;
+    let (_, created) = create_share(&app, &session, json!({"video_ids": videos})).await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Organize through the owner API itself — the manage page's exact
+    // writes.
+    let trip = mutate(
+        &app,
+        "POST",
+        &format!("/api/shares/{id}/folders"),
+        &session,
+        Some(json!({"name": "Trip"})),
+    )
+    .await
+    .1["id"]
+    .as_str()
+    .unwrap()
+    .to_string();
+    let (status, _) = mutate(
+        &app,
+        "PATCH",
+        &format!("/api/shares/{id}/items/{}", videos[1]),
+        &session,
+        Some(json!({"folder_id": trip})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, body) = request(
+        app,
+        "GET",
+        &format!("/api/shares/{id}/items"),
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+
+    // Same DTO, same order rule as the recipient read: folders flat,
+    // items root-first then per folder.
+    let folders = body["folders"].as_array().unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0]["name"], "Trip");
+    let items = body["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|v| v["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        vec![videos[0].as_str(), videos[2].as_str(), videos[1].as_str()],
+        "root items first, then the folder's"
+    );
+    assert_eq!(items[2]["folder_id"], trip);
+    assert!(items[0]["folder_id"].is_null());
 }

@@ -178,14 +178,16 @@ describe("shares owner client", () => {
     expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash/items");
   });
 
-  it("fetchShareItemsOwned GETs /api/shares/{id}/items", async () => {
-    const fetchSpy = vi.fn(() => jsonResponse([]));
+  it("fetchShareItemsOwned GETs /api/shares/{id}/items and unwraps the tree payload", async () => {
+    const items = [{ id: "v1" }];
+    const fetchSpy = vi.fn(() => jsonResponse({ folders: [], items }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await fetchShareItemsOwned("s1");
+    const resolved = await fetchShareItemsOwned("s1");
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
     expect(lastInit(fetchSpy).method).toBe("GET");
+    expect(resolved).toEqual(items);
   });
 });
 
@@ -214,13 +216,15 @@ describe("shares recipient client", () => {
     expect(lastCall(fetchSpy)).toBe("/api/share/tok%2Fwith%2Fslash");
   });
 
-  it("fetchShareItems GETs /api/share/{token}/items in share order", async () => {
-    const fetchSpy = vi.fn(() => jsonResponse([]));
+  it("fetchShareItems GETs /api/share/{token}/items and unwraps the tree payload", async () => {
+    const items = [{ id: "v1" }];
+    const fetchSpy = vi.fn(() => jsonResponse({ folders: [], items }));
     vi.stubGlobal("fetch", fetchSpy);
 
-    await fetchShareItems("tok_abc");
+    const resolved = await fetchShareItems("tok_abc");
 
     expect(lastCall(fetchSpy)).toBe("/api/share/tok_abc/items");
+    expect(resolved).toEqual(items);
   });
 
   it("unlockShare POSTs the password to /api/share/{token}/unlock and resolves on 204", async () => {

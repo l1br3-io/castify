@@ -49,7 +49,7 @@ pub struct ShareItemRow {
     pub folder_id: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareFolderRow {
     pub id: String,
     pub share_id: String,
@@ -565,10 +565,10 @@ impl ShareRepository {
         }))
     }
 
-    /// Owner-scoped folder rename (one transaction: guard, validate,
-    /// update). Trim/length/sibling rules as [`Self::create_folder`];
-    /// parent and position are untouched. `Ok(None)` = guard rejection
-    /// (share state, or the folder id is unknown/foreign to this share).
+    /// Owner-scoped folder rename (one transaction). Thin wrapper over
+    /// [`Self::update_folder`] — see there for the shared ladder. `Ok(None)`
+    /// = guard rejection (share state, or the folder id is unknown/foreign
+    /// to this share).
     pub async fn rename_folder(
         &self,
         owner_id: &str,
@@ -576,52 +576,15 @@ impl ShareRepository {
         folder_id: &str,
         name: &str,
     ) -> Result<Option<ShareFolderRow>, FolderWriteError> {
-        let mut tx = self.pool.begin().await?;
-        if Self::guard_live_share(&mut tx, owner_id, share_id)
-            .await?
-            .is_none()
-        {
-            return Ok(None);
-        }
-        let Some(folder) = Self::fetch_folder(&mut tx, share_id, folder_id).await? else {
-            return Ok(None);
-        };
-        let name = valid_folder_name(name).ok_or(FolderInvalid::Name)?;
-        // The folder itself is excluded — keeping one's own name is not
-        // a collision.
-        if Self::sibling_name_taken(
-            &mut tx,
-            share_id,
-            folder.parent_id.as_deref(),
-            name,
-            Some(folder_id),
-        )
-        .await?
-        {
-            return Err(FolderInvalid::DuplicateName.into());
-        }
-        sqlx::query("UPDATE share_folders SET name = ? WHERE id = ?")
-            .bind(name)
-            .bind(folder_id)
-            .execute(&mut *tx)
+        self.update_folder(owner_id, share_id, folder_id, Some(name), None)
             .await
-            .map_err(Self::map_folder_write_err)?;
-        tx.commit().await?;
-
-        Ok(Some(ShareFolderRow {
-            name: name.to_string(),
-            ..folder
-        }))
     }
 
-    /// Owner-scoped folder reparent (one transaction: guard, cycle/depth
-    /// walk, append). `new_parent_id: None` moves to the share root. The
-    /// folder lands at the END of its new sibling group
-    /// (`MAX(position)+1`); the scope it vacates renumbers densely; its
-    /// own subtree keeps its internal order. Moving under itself or any
-    /// descendant is `FolderInvalid::Cycle`; past the depth cap is
-    /// `FolderInvalid::Depth`. `Ok(None)` = guard rejection (share
-    /// state, or folder/new-parent id unknown/foreign).
+    /// Owner-scoped folder reparent (one transaction). Thin wrapper over
+    /// [`Self::update_folder`] — see there for the shared ladder. The
+    /// folder lands at the END of its new sibling group; the scope it
+    /// vacates renumbers densely; its own subtree keeps its internal
+    /// order. `Ok(None)` = guard rejection.
     pub async fn reparent_folder(
         &self,
         owner_id: &str,
@@ -629,67 +592,131 @@ impl ShareRepository {
         folder_id: &str,
         new_parent_id: Option<&str>,
     ) -> Result<Option<ShareFolderRow>, FolderWriteError> {
+        self.update_folder(owner_id, share_id, folder_id, None, Some(new_parent_id))
+            .await
+    }
+
+    /// Owner-scoped folder update — the one-transaction write behind
+    /// `PATCH /api/shares/{id}/folders/{fid}`. Rename and reparent
+    /// share this path so a PATCH carrying both fields is atomic: one
+    /// guard, one sibling-name check per affected scope (the reparent's
+    /// check runs against the NEW name in the TARGET scope), one
+    /// update, one commit — a half-applied rename+move can never land.
+    ///
+    /// `name: Some(_)` renames (trim/length rules as create);
+    /// `new_parent_id` distinguishes three states: `None` = leave the
+    /// parent alone, `Some(None)` = move to the share root,
+    /// `Some(Some(id))` = move under that folder (appending at the end
+    /// of its sibling group; the vacated scope renumbers densely;
+    /// cycle/depth walks as create-with-parent). `Ok(None)` = guard
+    /// rejection (share state, or folder/new-parent id unknown/foreign
+    /// to this share).
+    pub async fn update_folder(
+        &self,
+        owner_id: &str,
+        share_id: &str,
+        folder_id: &str,
+        name: Option<&str>,
+        new_parent_id: Option<Option<&str>>,
+    ) -> Result<Option<ShareFolderRow>, FolderWriteError> {
         let mut tx = self.pool.begin().await?;
         if Self::guard_live_share(&mut tx, owner_id, share_id)
             .await?
             .is_none()
         {
+            // Dropping the tx rolls back — nothing was written.
             return Ok(None);
         }
         let Some(folder) = Self::fetch_folder(&mut tx, share_id, folder_id).await? else {
             return Ok(None);
         };
-        if let Some(pid) = new_parent_id {
-            if Self::fetch_folder(&mut tx, share_id, pid)
-                .await?
-                .is_none()
-            {
-                return Ok(None);
+
+        // Resolve the effective name first: every later check (and the
+        // row update) must see the post-rename value.
+        let effective_name = match name {
+            Some(raw) => valid_folder_name(raw).ok_or(FolderInvalid::Name)?,
+            None => folder.name.as_str(),
+        };
+
+        // No-op fast path: same name, no parent change.
+        if name.is_none() && new_parent_id.is_none() {
+            return Ok(Some(folder));
+        }
+
+        let mut new_parent = folder.parent_id.as_deref();
+        let mut position = folder.position;
+        if let Some(target) = new_parent_id {
+            new_parent = target;
+            if let Some(pid) = target {
+                if Self::fetch_folder(&mut tx, share_id, pid)
+                    .await?
+                    .is_none()
+                {
+                    return Ok(None);
+                }
+                // Cycle: the new parent must not live inside the moved
+                // folder's own subtree — one downward CTE covers self,
+                // children, and every deeper descendant.
+                if Self::subtree_contains(&mut tx, folder_id, pid).await? {
+                    return Err(FolderInvalid::Cycle.into());
+                }
+                // Depth: the new parent's ancestor chain (it included)
+                // plus the moved subtree's height (folder included)
+                // must stay within the cap.
+                if Self::ancestor_chain_len(&mut tx, pid).await?
+                    + Self::subtree_height(&mut tx, folder_id).await?
+                    > MAX_FOLDER_DEPTH
+                {
+                    return Err(FolderInvalid::Depth.into());
+                }
             }
-            // Cycle: the new parent must not live inside the moved
-            // folder's own subtree — one downward CTE covers self,
-            // children, and every deeper descendant.
-            if Self::subtree_contains(&mut tx, folder_id, pid).await? {
-                return Err(FolderInvalid::Cycle.into());
-            }
-            // Depth: the new parent's ancestor chain (it included) plus
-            // the moved subtree's height (folder included) must stay
-            // within the cap.
-            if Self::ancestor_chain_len(&mut tx, pid).await?
-                + Self::subtree_height(&mut tx, folder_id).await?
-                > MAX_FOLDER_DEPTH
+            // Root moves can only reduce depth (the subtree was already
+            // within the cap), so no walk is needed for `Some(None)`.
+            if Self::sibling_name_taken(
+                &mut tx,
+                share_id,
+                new_parent,
+                effective_name,
+                Some(folder_id),
+            )
+            .await?
             {
-                return Err(FolderInvalid::Depth.into());
+                return Err(FolderInvalid::DuplicateName.into());
+            }
+            position = Self::next_folder_position(&mut tx, share_id, new_parent).await?;
+        } else if name.is_some() {
+            // Rename-in-place: check the current scope with the new name.
+            if Self::sibling_name_taken(
+                &mut tx,
+                share_id,
+                folder.parent_id.as_deref(),
+                effective_name,
+                Some(folder_id),
+            )
+            .await?
+            {
+                return Err(FolderInvalid::DuplicateName.into());
             }
         }
-        // Root moves can only reduce depth (the subtree was already
-        // within the cap), so no walk is needed for `new_parent_id: None`.
-        if Self::sibling_name_taken(
-            &mut tx,
-            share_id,
-            new_parent_id,
-            &folder.name,
-            Some(folder_id),
-        )
-        .await?
-        {
-            return Err(FolderInvalid::DuplicateName.into());
-        }
-        let position = Self::next_folder_position(&mut tx, share_id, new_parent_id).await?;
-        sqlx::query("UPDATE share_folders SET parent_id = ?, position = ? WHERE id = ?")
-            .bind(new_parent_id)
+
+        sqlx::query("UPDATE share_folders SET name = ?, parent_id = ?, position = ? WHERE id = ?")
+            .bind(effective_name)
+            .bind(new_parent)
             .bind(position)
             .bind(folder_id)
             .execute(&mut *tx)
             .await
             .map_err(Self::map_folder_write_err)?;
-        // Close the gap the folder left behind: the source scope
+        // Close the gap a reparent left behind: the source scope
         // renumbers densely on write; untouched scopes never rewrite.
-        Self::renumber_folder_scope(&mut tx, share_id, folder.parent_id.as_deref()).await?;
+        if new_parent_id.is_some() && new_parent != folder.parent_id.as_deref() {
+            Self::renumber_folder_scope(&mut tx, share_id, folder.parent_id.as_deref()).await?;
+        }
         tx.commit().await?;
 
         Ok(Some(ShareFolderRow {
-            parent_id: new_parent_id.map(str::to_string),
+            name: effective_name.to_string(),
+            parent_id: new_parent.map(str::to_string),
             position,
             ..folder
         }))
@@ -2296,6 +2323,102 @@ mod tests {
             .await
             .unwrap()
             .expect("own name does not trip the sibling check");
+    }
+
+    /// The PATCH route's combined write: one transaction renames AND
+    /// reparents, with the sibling-name check for the reparent run
+    /// against the NEW name in the TARGET scope.
+    #[tokio::test]
+    async fn update_folder_renames_and_reparents_in_one_write() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = ShareRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let share = repo
+            .create_share(&new_share(&owner, &any_hash(), &videos))
+            .await
+            .unwrap();
+
+        // Root: trip(0), holder(1). trip already has a child "memo".
+        let trip = repo
+            .create_folder(&owner.to_string(), &share.id, None, "trip")
+            .await
+            .unwrap()
+            .unwrap();
+        let holder = repo
+            .create_folder(&owner.to_string(), &share.id, None, "holder")
+            .await
+            .unwrap()
+            .unwrap();
+        repo.create_folder(&owner.to_string(), &share.id, Some(&trip.id), "memo")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Rename `holder` → `memo` AND move it under `trip` in one
+        // write: the target scope already owns a "memo", so the
+        // combined check must see the NEW name colliding.
+        assert_eq!(
+            expect_invalid(
+                repo.update_folder(
+                    &owner.to_string(),
+                    &share.id,
+                    &holder.id,
+                    Some("memo"),
+                    Some(Some(&trip.id)),
+                )
+                .await
+            ),
+            FolderInvalid::DuplicateName,
+            "combined write checks the new name in the target scope"
+        );
+
+        // Non-colliding combo succeeds atomically: name + parent land
+        // together, position appends in the target scope.
+        let updated = repo
+            .update_folder(
+                &owner.to_string(),
+                &share.id,
+                &holder.id,
+                Some(" holder2 "),
+                Some(Some(&trip.id)),
+            )
+            .await
+            .unwrap()
+            .expect("combined write returns the updated row");
+        assert_eq!(updated.name, "holder2", "name trimmed and stored");
+        assert_eq!(updated.parent_id.as_deref(), Some(trip.id.as_str()));
+        assert_eq!(updated.position, 1, "appends after trip's existing child");
+
+        let folders = repo.list_folders(&share.id).await.unwrap();
+        assert_eq!(
+            folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            vec!["trip", "memo", "holder2"],
+            "root gap closed, target scope dense"
+        );
+
+        // No-op PATCH (both fields absent) is a clean pass-through.
+        let untouched = repo
+            .update_folder(&owner.to_string(), &share.id, &holder.id, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(untouched, updated, "absent fields leave the row alone");
+
+        // Explicit null parent in a combined write moves to root.
+        let to_root = repo
+            .update_folder(
+                &owner.to_string(),
+                &share.id,
+                &holder.id,
+                None,
+                Some(None),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(to_root.parent_id, None);
+        assert_eq!(to_root.position, 1, "root tail after trip(0)");
     }
 
     /// The partial unique index is the race-proof backstop: a rename the
