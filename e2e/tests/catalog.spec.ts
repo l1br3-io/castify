@@ -65,8 +65,10 @@ test.describe("Catalog flow (e2e mock)", () => {
     ).toBeVisible();
 
     // Dedup badge on the shared video. Multiple shelves (Recently Added,
-    // By Provider, All Videos) render the badge — match the first.
-    await expect(page.getByText(/Also in:/).first()).toBeVisible();
+    // By Provider, All Videos) render the badge — match the first. The
+    // sentence lives in the badge's sr-only text ("Also in Dropbox" —
+    // the visible badge is provider marks).
+    await expect(page.getByText(/^Also in /).first()).toBeVisible();
 
     // Verify via API: shared-doc has 2 sources
     const data = await getVideos(page);
@@ -87,7 +89,7 @@ test.describe("Catalog flow (e2e mock)", () => {
     await expect(page.getByText("vacation.mp4")).toHaveCount(0);
     await expect(page.getByText("shared-doc.mp4").first()).toBeVisible();
     // No more dedup badge (only one copy of shared-doc remains)
-    await expect(page.getByText(/Also in:/)).toHaveCount(0);
+    await expect(page.getByText(/^Also in /)).toHaveCount(0);
 
     // ── 4. Disconnect Dropbox → first-run guide reappears ─────────
     await disconnect(page, dbId, csrf);

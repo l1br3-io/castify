@@ -139,7 +139,11 @@ test("keyboard-only playback — transport, volume, subtitles, settings menu, ax
         .evaluate(() => !!document.fullscreenElement)
         .catch(() => false);
       if (entered) {
-        await page.keyboard.press("Escape"); // browser-native exit
+        // Exit through the app's own binding: `f` toggles (exits when
+        // fullscreenElement is set). Browser-native Escape exit works
+        // headed only — headless Chromium enters fullscreen but never
+        // surfaces the native Escape exit, so relying on it flakes.
+        await page.keyboard.press("f");
         await expect
           .poll(async () => await page.evaluate(() => !!document.fullscreenElement))
           .toBe(false);
