@@ -304,4 +304,49 @@ test.describe("Share manage page (docs/specs/share-manage-page task 006)", () =>
       await owner.close();
     }
   });
+
+  // Search happy path (share-search-ux task 006). Runs after test B's
+  // revoke on purpose: a terminal share keeps its search — read-only
+  // history is still findable — which is itself a spec criterion.
+  test("search spans the share from the toolbar: results → path label → clear restores", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+
+    const owner = await browser.newPage();
+    try {
+      // Journey state: test B revoked the share; vacation + shared-doc
+      // remain as members.
+      const s = theShare();
+      await ensureAuthenticated(owner);
+      await owner.goto(`/settings/shares/${s.id}`);
+      await expect(owner.getByText("Revoked", { exact: true })).toBeVisible();
+
+      // Type → debounced ?q= → flat results with the readout.
+      await owner.getByLabel("Search this share").fill("vacation");
+      await expect(owner).toHaveURL(/q=vacation/);
+      await expect(owner.getByText(/1 result for “vacation”/)).toBeVisible();
+      await expect(
+        owner.getByRole("link", { name: "Play vacation.mp4" }),
+      ).toBeVisible();
+      await expect(
+        owner.getByRole("link", { name: "Play shared-doc.mp4" }),
+      ).toHaveCount(0);
+      // The root-level hit is labeled with the share title (the tree
+      // root); distinct from the h1 via its title attribute.
+      await expect(
+        owner.locator('p[title="Manage page"]'),
+      ).toBeVisible();
+
+      // Clear → the browse grid returns in place.
+      await owner.getByRole("button", { name: "Clear search" }).click();
+      await expect(
+        owner.getByRole("link", { name: "Play shared-doc.mp4" }),
+      ).toBeVisible();
+      await expect(owner.getByText(/results for/)).toHaveCount(0);
+      await expect(owner).not.toHaveURL(/q=/);
+    } finally {
+      await owner.close();
+    }
+  });
 });

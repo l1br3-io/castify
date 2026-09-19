@@ -191,4 +191,39 @@ describe("AppLayout (design frame shell: topbar + sidebar + drawer)", () => {
       expect(fetchedUrls(fetchSpy)).not.toContain("/api/connections");
     });
   });
+
+  describe("topbar search", () => {
+    // Regression (share-search-ux task 006, found in e2e): the topbar
+    // must not adopt a `q` that belongs to another route. Share manage
+    // deep-links `?q=` on /settings/shares/:id — if the topbar's URL→
+    // input sync read it there, its field would fill uninvited and the
+    // settled debounce would hijack the navigation to `/?q=…`.
+    it("ignores a q param on a non-library route", async () => {
+      renderWithProviders(
+        <Routes>
+          <Route path="/" element={<AppLayout />}>
+            <Route index element={<div data-testid="page">Content</div>} />
+            <Route
+              path="settings/shares/:id"
+              element={<div data-testid="manage">Manage</div>}
+            />
+          </Route>
+        </Routes>,
+        {
+          initialEntries: ["/settings/shares/s1?q=vacation"],
+          fetchImplementation: (input) => {
+            const url = String(input);
+            if (url === "/api/folders/tree") return jsonResponse([]);
+            return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
+          },
+        },
+      );
+
+      const topbar = (await screen.findByLabelText(
+        "Search videos",
+      )) as HTMLInputElement;
+      expect(topbar.value).toBe("");
+      expect(screen.queryByRole("button", { name: "Clear search" })).not.toBeInTheDocument();
+    });
+  });
 });

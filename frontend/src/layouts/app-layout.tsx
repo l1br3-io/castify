@@ -130,7 +130,12 @@ function TopbarSearch() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const [raw, setRaw] = useState(searchParams.get("q") ?? "");
+  // The library's `q` is the topbar's own — other routes may carry a
+  // `q` of theirs (share manage's whole-share search). Adopting it here
+  // would type into the topbar uninvited and, once its debounce
+  // settles, hijack the navigation to `/?q=…`.
+  const ownQuery = location.pathname === "/" ? searchParams.get("q") ?? "" : "";
+  const [raw, setRaw] = useState(ownQuery);
   const debounced = useDebouncedValue(raw, 300);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -175,10 +180,11 @@ function TopbarSearch() {
   }, [debounced]);
 
   // URL → input: back/forward, the page's clear-search action, and any
-  // other `q` writer stay reflected in the field.
+  // other `q` writer stay reflected in the field — scoped to the
+  // library route per `ownQuery` above.
   useEffect(() => {
-    setRaw(searchParams.get("q") ?? "");
-  }, [searchParams]);
+    setRaw(ownQuery);
+  }, [ownQuery]);
 
   return <SearchBar ref={inputRef} value={raw} onChange={setRaw} />;
 }
