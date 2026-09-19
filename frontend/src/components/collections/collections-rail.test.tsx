@@ -4,7 +4,7 @@
 // renders nothing so the browse layout stays quiet.
 
 import { describe, expect, it } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { CollectionsRail } from "./collections-rail";
@@ -32,9 +32,11 @@ describe("CollectionsRail", () => {
       { fetchImplementation: () => jsonResponse([]) },
     );
 
-    // Give the query a tick to resolve — the rail must stay absent.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(screen.queryByText("Collections")).not.toBeInTheDocument();
+    // Let the empty-list query settle — waitFor keeps the resolution's
+    // state updates inside act(); the rail must stay absent.
+    await waitFor(() =>
+      expect(screen.queryByText("Collections")).not.toBeInTheDocument(),
+    );
   });
 
   it("shows a card per collection with kind label, count, and detail link", async () => {

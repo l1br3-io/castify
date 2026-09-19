@@ -1309,6 +1309,10 @@ const mockSaveShareLink = vi.mocked(saveShareLink);
 describe("BrowsePage — multi-select share mode (task 012)", () => {
   beforeEach(() => {
     setCsrfToken("csrf-test");
+    // `restoreMocks: true` strips the factory default between tests —
+    // re-seed like the other describes so the CW-shelf query never
+    // resolves to undefined.
+    mockGetInProgressVideos.mockResolvedValue([]);
     mockSaveShareLink.mockResolvedValue(undefined);
   });
   afterEach(() => setCsrfToken(null));
