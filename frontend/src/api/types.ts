@@ -354,12 +354,13 @@ export interface StreamUrlDto {
 // ── Library collections (docs/specs/library-collections) ────────────────
 //
 // Shapes mirror `crates/api/src/routes/collections.rs` DTOs. `kind` maps the
-// backend's `CollectionKind`: show/movie/time arrive via suggestion
-// acceptance, manual via explicit creation.
+// backend's `CollectionKind`: `manual` is the only kind creatable via the
+// API; show/movie/time appear only on collections accepted from the retired
+// suggestion pipeline (pre-purge data) and remain browsable.
 
 export type CollectionKind = "show" | "movie" | "time" | "manual";
 
-// Bare collection row (rename/accept responses).
+// Bare collection row (rename response).
 export interface CollectionMetaDto {
   id: string;
   name: string;
@@ -379,23 +380,4 @@ export interface CollectionDto extends CollectionMetaDto {
 // `GET /api/collections/{id}`: the full ordered member list.
 export interface CollectionDetailDto extends CollectionMetaDto {
   members: VideoSummaryDto[];
-}
-
-// `POST …/suggestions/{id}/accept` response.
-export interface AcceptedCollectionDto extends CollectionMetaDto {
-  member_count: number;
-}
-
-// `GET /api/collections/suggestions` row (spec F2). `members` is a bounded
-// preview in curation order; `member_count` is the full group size.
-// `created_at` is the staging regeneration time — the panel's snooze
-// compares against it ("reappears only after another scan").
-export interface CollectionSuggestionDto {
-  id: string;
-  kind: CollectionKind;
-  title: string;
-  signature: string;
-  member_count: number;
-  members: VideoSummaryDto[];
-  created_at: string;
 }

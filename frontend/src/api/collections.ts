@@ -1,5 +1,5 @@
-// Library-collections API (docs/specs/library-collections, spec F2/F3):
-// suggestion review + collection CRUD/membership.
+// Collections API (docs/specs/library-collections, spec F3): collection
+// CRUD/membership.
 //
 // Mirrors the Rust DTOs in `crates/api/src/routes/collections.rs`. All
 // mutations ride `apiFetch`'s CSRF injection; membership is video-only by
@@ -7,23 +7,19 @@
 
 import { apiFetch } from "./client";
 import type {
-  AcceptedCollectionDto,
   CollectionDetailDto,
   CollectionDto,
   CollectionMetaDto,
-  CollectionSuggestionDto,
 } from "./types";
 
 /**
  * TanStack Query key factory. Mutations invalidate `all` (list shape
- * changes) or `detail(id)` (membership/rename), plus `suggestions`
- * after accept/dismiss — the review panel's queue shrinks as the user
- * works through it. `byVideo(id)` scopes the picker's checkmark state.
+ * changes) or `detail(id)` (membership/rename). `byVideo(id)` scopes the
+ * picker's checkmark state.
  */
 export const collectionsQueryKeys = {
   all: ["collections"] as const,
   detail: (id: string) => ["collections", id] as const,
-  suggestions: ["collections", "suggestions"] as const,
   byVideo: (videoId: string) => ["collections", "video", videoId] as const,
 };
 
@@ -106,44 +102,5 @@ export function replaceCollectionItems(
   return apiFetch<void>(
     `/api/collections/${encodeURIComponent(collectionId)}/items`,
     { method: "PUT", body: { video_ids: videoIds } },
-  );
-}
-
-export interface SuggestionsParams {
-  /** Max groups (server default 20, cap 100). */
-  limit?: number;
-  /** Max member summaries per group (server default 4, cap 50). */
-  preview?: number;
-}
-
-/** `GET /api/collections/suggestions` — the post-scan review queue. */
-export function fetchCollectionSuggestions(
-  params: SuggestionsParams = {},
-): Promise<CollectionSuggestionDto[]> {
-  const search = new URLSearchParams();
-  if (params.limit !== undefined) search.set("limit", String(params.limit));
-  if (params.preview !== undefined)
-    search.set("preview", String(params.preview));
-  const query = search.toString();
-  return apiFetch<CollectionSuggestionDto[]>(
-    `/api/collections/suggestions${query ? `?${query}` : ""}`,
-  );
-}
-
-/** `POST …/suggestions/{id}/accept` — suggestion becomes a collection. */
-export function acceptCollectionSuggestion(
-  suggestionId: string,
-): Promise<AcceptedCollectionDto> {
-  return apiFetch<AcceptedCollectionDto>(
-    `/api/collections/suggestions/${encodeURIComponent(suggestionId)}/accept`,
-    { method: "POST" },
-  );
-}
-
-/** `POST …/suggestions/{id}/dismiss` — suppress by signature. */
-export function dismissCollectionSuggestion(suggestionId: string): Promise<void> {
-  return apiFetch<void>(
-    `/api/collections/suggestions/${encodeURIComponent(suggestionId)}/dismiss`,
-    { method: "POST" },
   );
 }

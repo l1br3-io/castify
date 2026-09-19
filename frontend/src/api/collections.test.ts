@@ -6,13 +6,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  acceptCollectionSuggestion,
   addCollectionItem,
   createCollection,
   deleteCollection,
-  dismissCollectionSuggestion,
   fetchCollection,
-  fetchCollectionSuggestions,
   fetchCollections,
   removeCollectionItem,
   renameCollection,
@@ -131,40 +128,6 @@ describe("collections API", () => {
       url: "/api/collections/c1/items",
       method: "PUT",
       body: { video_ids: ["v3", "v1"] },
-    });
-  });
-
-  it("fetchCollectionSuggestions builds optional params", async () => {
-    const fetchSpy = vi.fn(() => jsonResponse([]));
-    vi.stubGlobal("fetch", fetchSpy);
-
-    await fetchCollectionSuggestions();
-    expect(lastCall(fetchSpy).url).toBe("/api/collections/suggestions");
-
-    await fetchCollectionSuggestions({ limit: 50, preview: 8 });
-    const url = new URL(lastCall(fetchSpy).url, "http://x");
-    expect(url.searchParams.get("limit")).toBe("50");
-    expect(url.searchParams.get("preview")).toBe("8");
-  });
-
-  it("accept and dismiss hit their suggestion routes", async () => {
-    const fetchSpy = vi.fn(() =>
-      jsonResponse({ id: "col", name: "X", kind: "show", created_at: "t", member_count: 3 }),
-    );
-    vi.stubGlobal("fetch", fetchSpy);
-
-    await acceptCollectionSuggestion("sug-1");
-    expect(lastCall(fetchSpy)).toMatchObject({
-      url: "/api/collections/suggestions/sug-1/accept",
-      method: "POST",
-    });
-
-    const dismissSpy = vi.fn(() => new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", dismissSpy);
-    await dismissCollectionSuggestion("sug-2");
-    expect(lastCall(dismissSpy)).toMatchObject({
-      url: "/api/collections/suggestions/sug-2/dismiss",
-      method: "POST",
     });
   });
 
