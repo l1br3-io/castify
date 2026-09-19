@@ -30,6 +30,16 @@ describe("Menu", () => {
     expect(screen.getByRole("menu", { name: "Actions for cat.mp4" })).toBeInTheDocument();
   });
 
+  it("caps the panel at the viewport width so long items wrap, not overflow", () => {
+    renderMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Actions for cat.mp4" }));
+    // min-w keeps the panel readable; the max-w cap keeps it on-screen
+    // at phone widths even with long item labels (items wrap inside).
+    expect(screen.getByRole("menu", { name: "Actions for cat.mp4" })).toHaveClass(
+      "max-w-[calc(100vw-2rem)]",
+    );
+  });
+
   it("moves focus to the first item on open", () => {
     renderMenu();
     fireEvent.click(screen.getByRole("button", { name: "Actions for cat.mp4" }));
