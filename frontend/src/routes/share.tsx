@@ -14,7 +14,16 @@
 //     │    ├─ 429 → inline try-later state, stay on the form
 //     │    ├─ other error → inline server error, stay on the form
 //     │    └─ 204 → flip cached resolve to unlocked, GET items → grid
-//     └─ unlocked → GET items → grid
+//     └─ unlocked → GET items → folder browse (share-folders task 005)
+//
+// The items fetch is the ONE tree read (share-folders spec criterion 1):
+// the payload carries every folder and every item's placement, and all
+// navigation afterward is client state — the current level is `?folder=`
+// in the URL, so descend/back/refresh/bookmark all work with zero
+// further requests. A stale `?folder=` id (the owner deleted the folder
+// after the link was saved) resolves to root silently — never an error.
+// Folders render before the level's videos; a flat share has neither
+// tiles nor breadcrumbs and renders exactly as before folders existed.
 //
 // The resolve query is `staleTime: Infinity` + `retry: false`: a dead share
 // stays dead on this mount (no re-resolve loop), and revisiting the page
@@ -34,17 +43,20 @@
 // between resolve and items (24h rolling window edge), items answers 401
 // and the page falls back to the gate — unlock again and items refetch.
 
-import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { PosterCard } from "../components/poster-card";
+import { ShareFolderTile } from "../components/share-folder-tile";
 import { EmptyState } from "../components/ui/empty-state";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import { fetchShareItems, resolveShare, unlockShare, type ShareResolveDto } from "../api/shares";
+import type { ShareItemsDto } from "../api/types";
 import { ApiError } from "../api/client";
+import { buildShareTree } from "../lib/share-tree";
 import { describeError } from "../lib/format";
 import { SharedChrome } from "../components/shared-chrome";
 import { Button } from "../components/ui/button";
@@ -150,25 +162,100 @@ export function SharePage() {
     );
   }
 
+  return <ShareBrowse title={share.title} token={token as string} payload={items.data} />;
+}
+
+// ---------------------------------------------------------------------------
+// Folder browse (share-folders task 005)
+// ---------------------------------------------------------------------------
+
+// The unlocked grid: folders first, then the level's videos. All state is
+// the `?folder=` URL param — one fetch already brought the whole tree, so
+// this component renders levels without touching the network.
+function ShareBrowse({
+  title,
+  token,
+  payload,
+}: {
+  title: string;
+  token: string;
+  payload: ShareItemsDto;
+}) {
+  const [searchParams] = useSearchParams();
+  // Built once per payload identity — the indexes serve every level hop.
+  const tree = useMemo(() => buildShareTree(payload), [payload]);
+  // Stale ids (owner deleted the folder) fall back to root, silently.
+  const folderId = tree.resolveFolderId(searchParams.get("folder"));
+
+  const basePath = `/share/${encodeURIComponent(token)}`;
+  const levelFolders = tree.childFolders(folderId);
+  const levelItems = tree.childItems(folderId);
+  const crumbs = folderId === null ? [] : tree.breadcrumbs(folderId);
+  const totalItems = payload.items.length;
+  const levelIsEmpty = levelFolders.length === 0 && levelItems.length === 0;
+
   return (
     <SharedChrome>
       <div className="mx-auto max-w-7xl space-y-4">
       <div>
-        <h1 className="text-2xl">{share.title}</h1>
+        <h1 className="text-2xl">{title}</h1>
         <p className="mt-1 text-sm text-[var(--color-castify-muted)]">
-          {items.data.length} {items.data.length === 1 ? "video" : "videos"} shared with you
+          {totalItems} {totalItems === 1 ? "video" : "videos"} shared with you
         </p>
       </div>
-      {items.data.length === 0 ? (
-        <EmptyState title="Nothing in this share." body="Whoever shared it hasn't added any videos." />
+      {crumbs.length > 0 && (
+        <nav aria-label="Folders">
+          <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
+            <li>
+              <Link
+                to={{ pathname: basePath, search: "" }}
+                className="hover:text-[var(--color-castify-accent)] hover:underline"
+              >
+                {title}
+              </Link>
+            </li>
+            {crumbs.map((crumb, index) => (
+              <li key={crumb.id} className="flex items-center gap-1.5">
+                <span aria-hidden>/</span>
+                {index === crumbs.length - 1 ? (
+                  <span aria-current="page" className="text-[var(--color-castify-foreground)]">
+                    {crumb.name}
+                  </span>
+                ) : (
+                  <Link
+                    to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                    className="hover:text-[var(--color-castify-accent)] hover:underline"
+                  >
+                    {crumb.name}
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ol>
+        </nav>
+      )}
+      {levelIsEmpty ? (
+        totalItems === 0 ? (
+          <EmptyState title="Nothing in this share." body="Whoever shared it hasn't added any videos." />
+        ) : (
+          <EmptyState title="This folder is empty." body="Nothing was placed in this folder." />
+        )
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-          {items.data.map((video) => (
+          {levelFolders.map((folder) => (
+            <ShareFolderTile
+              key={folder.id}
+              folder={folder}
+              to={basePath}
+              count={tree.childCount(folder.id)}
+            />
+          ))}
+          {levelItems.map((video) => (
             <PosterCard
               key={video.id}
               video={video}
-              href={`/share/${encodeURIComponent(token as string)}/watch/${encodeURIComponent(video.id)}`}
-              scope={{ kind: "share", token: token as string }}
+              href={`${basePath}/watch/${encodeURIComponent(video.id)}`}
+              scope={{ kind: "share", token }}
             />
           ))}
         </div>

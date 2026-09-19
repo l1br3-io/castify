@@ -179,19 +179,15 @@ export function resolveShare(token: string): Promise<ShareResolveDto> {
 }
 
 /**
- * `GET /api/share/{token}/items` — member videos in the owner's curation
- * order, in the same `VideoSummary` shape the owner catalog uses (with
- * neutral personalization — the owner's favorites/ratings/progress never
- * leak). 401 while locked; unlock first.
- *
- * The server now wraps the payload (`{ folders, items }`, share-folders
- * task 004); `unwrapItems` bridges both shapes until the landing page
- * migrates onto the tree (task 005).
+ * `GET /api/share/{token}/items` — the one-shot tree payload: the flat
+ * folder list plus member videos in the same `VideoSummary` shape the
+ * owner catalog uses (with neutral personalization — the owner's
+ * favorites/ratings/progress never leak), each carrying its
+ * `folder_id`. Folder navigation is client state, so this single fetch
+ * covers every descent. 401 while locked; unlock first.
  */
-export function fetchShareItems(token: string): Promise<VideoSummaryDto[]> {
-  return apiFetch<ShareItemsDto | VideoSummaryDto[]>(
-    `/api/share/${encodeURIComponent(token)}/items`,
-  ).then(unwrapItems);
+export function fetchShareItems(token: string): Promise<ShareItemsDto> {
+  return apiFetch<ShareItemsDto>(`/api/share/${encodeURIComponent(token)}/items`);
 }
 
 /**

@@ -17,7 +17,7 @@ import {
   renderWithProviders,
   type FetchHandler,
 } from "../test/utils";
-import type { VideoSummaryDto } from "../api/types";
+import type { ShareFolderDto, VideoSummaryDto } from "../api/types";
 import type { ShareResolveDto } from "../api/shares";
 
 const TOKEN = "tok_abc123";
@@ -43,6 +43,25 @@ function shareVideo(id: string, name: string): VideoSummaryDto {
   };
 }
 
+function treeFolder(id: string, name: string, parentId: string | null): ShareFolderDto {
+  return { id, parent_id: parentId, name, position: 0 };
+}
+
+// Wrapped items payload (share-folders task 004 shape): folder list plus
+// per-item placement. Defaults to the flat degenerate case.
+function treePayload(
+  videos: Array<{ id: string; name: string; folderId?: string }>,
+  folders: ShareFolderDto[] = [],
+): ReturnType<typeof jsonResponse> {
+  return jsonResponse({
+    folders,
+    items: videos.map((v) => ({
+      ...shareVideo(v.id, v.name),
+      folder_id: v.folderId ?? null,
+    })),
+  });
+}
+
 interface ShareApi {
   resolve: () => Response;
   items?: () => Response;
@@ -63,13 +82,13 @@ function shareHandler(api: ShareApi): FetchHandler {
   };
 }
 
-function renderSharePage(api: ShareApi) {
+function renderSharePage(api: ShareApi, initialPath = `/share/${TOKEN}`) {
   return renderWithProviders(
     <Routes>
       <Route path="/share/:token" element={<SharePage />} />
     </Routes>,
     {
-      initialEntries: [`/share/${TOKEN}`],
+      initialEntries: [initialPath],
       fetchImplementation: shareHandler(api),
     },
   );
@@ -109,7 +128,7 @@ describe("SharePage", () => {
     const { fetchSpy } = renderSharePage({
       resolve: () =>
         jsonResponse({ title: "Trip footage", locked: false }),
-      items: () => jsonResponse([]),
+      items: () => treePayload([]),
     });
 
     await screen.findByRole("heading", { name: "Trip footage" });
@@ -134,7 +153,10 @@ describe("SharePage", () => {
         }),
       unlock: () => new Response(null, { status: 204 }),
       items: () =>
-        jsonResponse([shareVideo("vA", "Video A"), shareVideo("vB", "Video B")]),
+        treePayload([
+          { id: "vA", name: "Video A" },
+          { id: "vB", name: "Video B" },
+        ]),
     });
 
     fireEvent.change(await screen.findByLabelText("Password"), {
@@ -238,7 +260,7 @@ describe("SharePage", () => {
           status: "active",
         }),
       unlock: () => new Response(null, { status: 204 }),
-      items: () => jsonResponse([shareVideo("vA", "Video A")]),
+      items: () => treePayload([{ id: "vA", name: "Video A" }]),
     });
 
     fireEvent.change(await screen.findByLabelText("Password"), {
@@ -294,7 +316,7 @@ describe("SharePage", () => {
           locked: false,
           status: "active",
         }),
-      items: () => jsonResponse([shareVideo("vA", "Video A")]),
+      items: () => treePayload([{ id: "vA", name: "Video A" }]),
     });
 
     expect(await screen.findByRole("link", { name: "Play Video A" })).toBeInTheDocument();
@@ -306,5 +328,124 @@ describe("SharePage", () => {
     expect(callsTo(fetchSpy, UNLOCK_URL)).toBe(0);
     const requestedUrls = fetchSpy.mock.calls.map(([u]) => String(u));
     expect(requestedUrls.every((u) => u.startsWith(`/api/share/${TOKEN}`))).toBe(true);
+  });
+});
+
+// -------------------- folder browse (share-folders task 005) --------------------
+//
+// One items fetch covers the whole tree: descending is `?folder=` client
+// state, so every navigation below must leave the request count alone.
+
+function treeApi(): ShareApi {
+  return {
+    resolve: () =>
+      jsonResponse({
+        title: "Trip footage",
+        item_count: 3,
+        locked: false,
+        status: "active",
+      }),
+    items: () =>
+      treePayload(
+        [
+          { id: "vA", name: "Video A" },
+          { id: "vC", name: "Video C", folderId: "trip" },
+          { id: "vD", name: "Video D", folderId: "night" },
+        ],
+        [treeFolder("trip", "Trip", null), treeFolder("night", "Night", "trip")],
+      ),
+  };
+}
+
+describe("SharePage folder browse", () => {
+  it("renders folder tiles before the level's videos, then descends without fetching", async () => {
+    const { fetchSpy } = renderSharePage(treeApi());
+
+    const tripTile = await screen.findByRole("link", { name: "Open folder Trip" });
+    const videoA = screen.getByRole("link", { name: "Play Video A" });
+    // Folders first, videos after — the level's deterministic order.
+    expect(
+      tripTile.compareDocumentPosition(videoA) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Folder contents are not rendered at the root level.
+    expect(screen.queryByRole("link", { name: "Play Video C" })).not.toBeInTheDocument();
+
+    fireEvent.click(tripTile);
+
+    // Inside Trip: the nested Night tile + Trip's videos.
+    expect(await screen.findByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Play Video C" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Play Video A" })).not.toBeInTheDocument();
+
+    // Descent is client state — the items fetch count never moves.
+    await waitFor(() => expect(callsTo(fetchSpy, ITEMS_URL)).toBe(1));
+  });
+
+  it("descends deeper and climbs back via breadcrumbs", async () => {
+    renderSharePage(treeApi());
+
+    fireEvent.click(await screen.findByRole("link", { name: "Open folder Trip" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Open folder Night" }));
+
+    // The chain renders: root crumb (share title) / Trip / Night (current).
+    expect(await screen.findByRole("link", { name: "Play Video D" })).toBeInTheDocument();
+    const rootCrumb = screen.getByRole("link", { name: "Trip footage" });
+    const tripCrumb = screen.getByRole("link", { name: "Trip" });
+    expect(
+      rootCrumb.compareDocumentPosition(tripCrumb) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // One hop up: back inside Trip (its videos, Night as a tile again).
+    fireEvent.click(tripCrumb);
+    expect(await screen.findByRole("link", { name: "Play Video C" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+
+    // All the way up via the root crumb.
+    fireEvent.click(screen.getByRole("link", { name: "Trip footage" }));
+    expect(await screen.findByRole("link", { name: "Play Video A" })).toBeInTheDocument();
+  });
+
+  it("restores a deep-linked folder level on first render", async () => {
+    renderSharePage(treeApi(), `/share/${TOKEN}?folder=night`);
+
+    expect(await screen.findByRole("link", { name: "Play Video D" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Trip" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Play Video A" })).not.toBeInTheDocument();
+  });
+
+  it("falls back to the root level for a stale folder id, silently", async () => {
+    renderSharePage(treeApi(), `/share/${TOKEN}?folder=deleted-long-ago`);
+
+    expect(await screen.findByRole("link", { name: "Play Video A" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Trip" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state inside a folder with no children", async () => {
+    const empty: ShareApi = {
+      resolve: () =>
+        jsonResponse({ title: "Trip footage", item_count: 1, locked: false, status: "active" }),
+      items: () =>
+        treePayload(
+          [{ id: "vA", name: "Video A" }],
+          [treeFolder("hollow", "Hollow", null)],
+        ),
+    };
+    renderSharePage(empty);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Open folder Hollow" }));
+    expect(await screen.findByText("This folder is empty.")).toBeInTheDocument();
+  });
+
+  it("renders a flat share with no folder affordances at all", async () => {
+    renderSharePage({
+      resolve: () =>
+        jsonResponse({ title: "Trip footage", item_count: 1, locked: false, status: "active" }),
+      items: () => treePayload([{ id: "vA", name: "Video A" }]),
+    });
+
+    expect(await screen.findByRole("link", { name: "Play Video A" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Open folder/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Folders" })).not.toBeInTheDocument();
   });
 });

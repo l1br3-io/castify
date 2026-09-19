@@ -216,15 +216,18 @@ describe("shares recipient client", () => {
     expect(lastCall(fetchSpy)).toBe("/api/share/tok%2Fwith%2Fslash");
   });
 
-  it("fetchShareItems GETs /api/share/{token}/items and unwraps the tree payload", async () => {
-    const items = [{ id: "v1" }];
-    const fetchSpy = vi.fn(() => jsonResponse({ folders: [], items }));
+  it("fetchShareItems GETs /api/share/{token}/items and returns the wrapped tree payload", async () => {
+    const payload = {
+      folders: [{ id: "f1", parent_id: null, name: "Trip", position: 0 }],
+      items: [{ id: "v1", folder_id: "f1" }],
+    };
+    const fetchSpy = vi.fn(() => jsonResponse(payload));
     vi.stubGlobal("fetch", fetchSpy);
 
     const resolved = await fetchShareItems("tok_abc");
 
     expect(lastCall(fetchSpy)).toBe("/api/share/tok_abc/items");
-    expect(resolved).toEqual(items);
+    expect(resolved).toEqual(payload);
   });
 
   it("unlockShare POSTs the password to /api/share/{token}/unlock and resolves on 204", async () => {

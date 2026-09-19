@@ -146,11 +146,17 @@ interface WatchApi {
   streamUrl?: () => Response;
 }
 
+// Wrapped items payload (share-folders task 004 shape) — flat share by
+// default, matching what the server actually serves.
+function treePayload(videos: VideoSummaryDto[]): Response {
+  return jsonResponse({ folders: [], items: videos });
+}
+
 function shareWatchHandler(api: WatchApi = {}): FetchHandler {
   return (input, init) => {
     const url = String(input);
     if (url === `/api/share/${TOKEN}/items`)
-      return api.items ? api.items() : jsonResponse([shareVideo()]);
+      return api.items ? api.items() : treePayload([shareVideo()]);
     if (url === `${BASE}/subtitles`)
       return api.subtitles ? api.subtitles() : jsonResponse(SUBTITLE_TRACKS);
     if (url === `${BASE}/stream-url`)
@@ -390,7 +396,7 @@ describe("ShareWatchPage", () => {
     renderShareWatchPage(
       "vZ",
       shareWatchHandler({
-        items: () => jsonResponse([shareVideo("vA", "Video A")]),
+        items: () => treePayload([shareVideo("vA", "Video A")]),
       }),
     );
 

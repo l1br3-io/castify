@@ -116,9 +116,12 @@ export function ShareWatchPage() {
     staleTime: Infinity,
   });
 
+  // Membership lookup over the tree payload (share-folders task 004):
+  // the video summary rides in `.items`, each carrying its `folder_id` —
+  // placement is irrelevant here, membership is the only gate.
   const video: VideoSummaryDto | undefined =
     videoId !== undefined
-      ? items.data?.find((item) => item.id === videoId)
+      ? items.data?.items.find((item) => item.id === videoId)
       : undefined;
 
   // Sidecar tracks via the share mirror. Gated on membership so a
