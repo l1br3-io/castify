@@ -17,7 +17,7 @@
 // branches on these statuses; see `share.tsx`.
 
 import { apiFetch } from "./client";
-import type { ShareItemsDto, VideoSummaryDto } from "./types";
+import type { ShareItemsDto } from "./types";
 
 // ---------------------------------------------------------------------------
 // Owner client — `POST/GET /api/shares`, `DELETE /api/shares/{id}`,
@@ -135,21 +135,17 @@ export function appendToShare(shareId: string, videoIds: string[]): Promise<void
 }
 
 /**
- * `GET /api/shares/{id}/items` — the current members for the edit dialog to
- * pre-check. Session-gated owner route: the recipient endpoint is
- * token-scoped and the raw token may not exist on this device (the server
- * stores only a hash), so the owner reads members by share id instead.
- * Unlike the PUT it also serves revoked/expired shares — read-only history
- * for a dialog that may outlive the share's life.
- *
- * The server now wraps the payload (`{ folders, items }`, share-folders
- * task 004); `unwrapItems` bridges both shapes until the manage/browse
- * pages migrate onto the tree (tasks 005/006).
+ * `GET /api/shares/{id}/items` — the one-shot tree payload for the
+ * manage page's browse and the edit dialog's pre-checks: the flat
+ * folder list plus member videos, each carrying its `folder_id`.
+ * Session-gated owner route: the recipient endpoint is token-scoped and
+ * the raw token may not exist on this device (the server stores only a
+ * hash), so the owner reads members by share id instead. Unlike the PUT
+ * it also serves revoked/expired shares — read-only history for a
+ * dialog that may outlive the share's life.
  */
-export function fetchShareItemsOwned(shareId: string): Promise<VideoSummaryDto[]> {
-  return apiFetch<ShareItemsDto | VideoSummaryDto[]>(
-    `/api/shares/${encodeURIComponent(shareId)}/items`,
-  ).then(unwrapItems);
+export function fetchShareItemsOwned(shareId: string): Promise<ShareItemsDto> {
+  return apiFetch<ShareItemsDto>(`/api/shares/${encodeURIComponent(shareId)}/items`);
 }
 
 // ---------------------------------------------------------------------------
@@ -188,18 +184,6 @@ export function resolveShare(token: string): Promise<ShareResolveDto> {
  */
 export function fetchShareItems(token: string): Promise<ShareItemsDto> {
   return apiFetch<ShareItemsDto>(`/api/share/${encodeURIComponent(token)}/items`);
-}
-
-/**
- * Temporary bridge over the items-read shape change (share-folders task
- * 004): the server answers `{ folders, items }`, while pre-migration
- * fixtures still stub the legacy bare array. Deleted when the last
- * consumer migrates onto the tree payload.
- */
-function unwrapItems(
-  payload: ShareItemsDto | VideoSummaryDto[],
-): VideoSummaryDto[] {
-  return Array.isArray(payload) ? payload : payload.items;
 }
 
 /**

@@ -21,7 +21,7 @@ import {
   type FetchHandler,
 } from "../test/utils";
 import type { ShareDto } from "../api/shares";
-import type { VideoSummaryDto } from "../api/types";
+import type { ShareFolderDto, VideoSummaryDto } from "../api/types";
 
 const ACTIVE: ShareDto = {
   id: "s1",
@@ -65,6 +65,13 @@ const GAMMA = video("v3", "Gamma clip");
 /** Every video any test in this file can PUT — the id→video universe. */
 const UNIVERSE = [...MEMBERS, GAMMA];
 
+/** Wrapped owned-items payload (share-folders task 004 shape). Flat by
+ * default — folder fixtures pass their own folder list. Items always
+ * carry `folder_id` (null = root), exactly as the server serializes. */
+function ownedPayload(items: VideoSummaryDto[], folders: ShareFolderDto[] = []) {
+  return { folders, items: items.map((v) => ({ ...v, folder_id: null })) };
+}
+
 /** Stubs the two GETs the page rides. Extra URLs 404 so omissions are loud. */
 function manageFetch(
   shares: ShareDto[],
@@ -76,7 +83,7 @@ function manageFetch(
     if (url === "/api/shares/s1/items") {
       return items
         ? jsonError(items.status, "boom")
-        : jsonResponse(MEMBERS);
+        : jsonResponse(ownedPayload(MEMBERS));
     }
     return jsonError(404, "unmocked");
   };
@@ -162,7 +169,7 @@ describe("ShareManagePage", () => {
             failures += 1;
             return failures === 1
               ? jsonError(500, "boom")
-              : jsonResponse(MEMBERS);
+              : jsonResponse(ownedPayload(MEMBERS));
           }
           return manageFetch([ACTIVE])(input);
         },
@@ -333,7 +340,7 @@ describe("ShareManagePage", () => {
         gateNextGet = false;
         getGated = true;
         return new Promise<Response>((resolve) => {
-          releaseGet = () => resolve(jsonResponse(state.items));
+          releaseGet = () => resolve(jsonResponse(ownedPayload(state.items)));
         });
       }
       const response = original(input, init);
@@ -393,7 +400,7 @@ describe("ShareManagePage", () => {
         gateNextGet = false;
         getGated = true;
         return new Promise<Response>((resolve) => {
-          releaseGet = () => resolve(jsonResponse(state.items));
+          releaseGet = () => resolve(jsonResponse(ownedPayload(state.items)));
         });
       }
       const response = handler(input, init);
@@ -566,6 +573,80 @@ describe("ShareManagePage", () => {
   });
 });
 
+// --------------- folder browse parity (share-folders task 006) -----------
+//
+// The owner sees exactly what recipients see (task 5 helpers/tile):
+// folders first per level, `?folder=` descent, breadcrumbs — no editing
+// affordances on folders yet (tasks 7/8).
+
+const TREE_FOLDERS: ShareFolderDto[] = [
+  { id: "f-trip", parent_id: null, name: "Trip", position: 0 },
+  { id: "f-night", parent_id: "f-trip", name: "Night", position: 0 },
+];
+
+/** Alpha at root, Beta in Trip, Gamma in Night — GET-only handler. */
+function treeFetch(): (input: RequestInfo | URL) => Response {
+  return (input) => {
+    const url = String(input);
+    if (url === "/api/shares")
+      return jsonResponse([{ ...ACTIVE, item_count: 3 }]);
+    if (url === "/api/shares/s1/items")
+      return jsonResponse({
+        folders: TREE_FOLDERS,
+        items: [
+          { ...MEMBERS[0], folder_id: null },
+          { ...MEMBERS[1], folder_id: "f-trip" },
+          { ...GAMMA, folder_id: "f-night" },
+        ],
+      });
+    return jsonError(404, "unmocked");
+  };
+}
+
+describe("ShareManagePage folder browse", () => {
+  it("renders folder tiles before the level's videos, descends, and climbs via breadcrumbs", async () => {
+    renderManage(treeFetch(), "/settings/shares/s1");
+
+    const tripTile = await screen.findByRole("link", { name: "Open folder Trip" });
+    expect(screen.getByText("Alpha clip")).toBeInTheDocument();
+    // Folder contents stay hidden at the root level.
+    expect(screen.queryByText("Beta clip")).not.toBeInTheDocument();
+
+    fireEvent.click(tripTile);
+    expect(await screen.findByText("Beta clip")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open folder Night" })).toBeInTheDocument();
+    expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument();
+
+    // Breadcrumb parity: root crumb (share title) / current folder.
+    fireEvent.click(screen.getByRole("link", { name: "Open folder Night" }));
+    expect(await screen.findByText("Gamma clip")).toBeInTheDocument();
+    const rootCrumb = screen.getByRole("link", { name: "Trip footage" });
+    const tripCrumb = screen.getByRole("link", { name: "Trip" });
+    expect(
+      rootCrumb.compareDocumentPosition(tripCrumb) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(tripCrumb);
+    expect(await screen.findByText("Beta clip")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Trip footage" }));
+    expect(await screen.findByText("Alpha clip")).toBeInTheDocument();
+  });
+
+  it("search filters the current level's videos; folder tiles stay visible", async () => {
+    renderManage(treeFetch(), "/settings/shares/s1");
+
+    fireEvent.change(await screen.findByLabelText(/search this share/i), {
+      target: { value: "beta" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha clip")).not.toBeInTheDocument(),
+    );
+    // The tile survives the filter — search is render-only over videos,
+    // folders keep their place in the grid.
+    expect(screen.getByRole("link", { name: "Open folder Trip" })).toBeInTheDocument();
+  });
+});
+
 /** Stateful handler for removal-flow tests: GET serves the live array, PUT
  * records every body (for order assertions) and flips the array. `failPut`
  * makes PUTs answer 500 to exercise the error path. */
@@ -581,7 +662,7 @@ function removalFetch(state: {
     const method = (init?.method ?? "GET").toUpperCase();
     if (url === "/api/shares") return jsonResponse([ACTIVE]);
     if (url === "/api/shares/s1/items" && method === "GET")
-      return jsonResponse(state.items);
+      return jsonResponse(ownedPayload(state.items));
     if (url === "/api/shares/s1/items" && method === "PUT") {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
         video_ids: string[];

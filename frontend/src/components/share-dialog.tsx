@@ -169,7 +169,9 @@ export function ShareDialog({
     pickerShareId === null
       ? null
       : (activeShares.find((s) => s.id === pickerShareId) ?? null);
-  const memberIds = new Set(members.data?.map((v) => v.id) ?? []);
+  // Wrapped tree payload (share-folders task 004): the picker only cares
+  // which videos are already members — `.items`; `folder_id` is ignored.
+  const memberIds = new Set(members.data?.items.map((v) => v.id) ?? []);
   const alreadyCount = videoIds.filter((id) => memberIds.has(id)).length;
   const freshIds = videoIds.filter((id) => !memberIds.has(id));
 

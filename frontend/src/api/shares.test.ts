@@ -178,16 +178,19 @@ describe("shares owner client", () => {
     expect(lastCall(fetchSpy)).toBe("/api/shares/id%2Fwith%2Fslash/items");
   });
 
-  it("fetchShareItemsOwned GETs /api/shares/{id}/items and unwraps the tree payload", async () => {
-    const items = [{ id: "v1" }];
-    const fetchSpy = vi.fn(() => jsonResponse({ folders: [], items }));
+  it("fetchShareItemsOwned GETs /api/shares/{id}/items and returns the wrapped tree payload", async () => {
+    const payload = {
+      folders: [{ id: "f1", parent_id: null, name: "Trip", position: 0 }],
+      items: [{ id: "v1", folder_id: "f1" }],
+    };
+    const fetchSpy = vi.fn(() => jsonResponse(payload));
     vi.stubGlobal("fetch", fetchSpy);
 
     const resolved = await fetchShareItemsOwned("s1");
 
     expect(lastCall(fetchSpy)).toBe("/api/shares/s1/items");
     expect(lastInit(fetchSpy).method).toBe("GET");
-    expect(resolved).toEqual(items);
+    expect(resolved).toEqual(payload);
   });
 });
 

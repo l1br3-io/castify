@@ -405,7 +405,8 @@ describe("ShareDialog", () => {
         if (method === "GET") {
           if (opts.membersResponse) return opts.membersResponse();
           const ids = opts.members?.[shareId] ?? [];
-          return jsonResponse(ids.map((id) => ({ id })));
+          // Wrapped tree payload (share-folders task 004 shape).
+          return jsonResponse({ folders: [], items: ids.map((id) => ({ id })) });
         }
         if (method === "POST") {
           return opts.appendResponse ? opts.appendResponse() : new Response(null, { status: 204 });
@@ -557,7 +558,7 @@ describe("ShareDialog", () => {
     const add = screen.getByRole("button", { name: /add to share/i });
     expect(add).toBeDisabled();
 
-    release(jsonResponse([{ id: "v9" }]));
+    release(jsonResponse({ folders: [], items: [{ id: "v9" }] }));
     // No overlap with {v1, v2} — both are fresh, so Add unlocks.
     expect(
       await screen.findByText(/not in this share yet/i),

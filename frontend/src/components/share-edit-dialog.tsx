@@ -86,10 +86,12 @@ export function ShareEditDialog({
   });
 
   // Adopt the server's order exactly once — a later refetch (window
-  // refocus) must not clobber in-progress edits.
+  // refocus) must not clobber in-progress edits. The dialog is
+  // folder-blind by design: it pre-checks members and appends at root;
+  // `folder_id` is the manage page's axis, not this picker's.
   useEffect(() => {
     if (members.data && selectedIds === null) {
-      setSelectedIds(members.data.map((v) => v.id));
+      setSelectedIds(members.data.items.map((v) => v.id));
     }
   }, [members.data, selectedIds]);
 
@@ -127,7 +129,7 @@ export function ShareEditDialog({
   }
 
   const checked = new Set(selectedIds ?? []);
-  const memberIds = new Set((members.data ?? []).map((v) => v.id));
+  const memberIds = new Set((members.data?.items ?? []).map((v) => v.id));
   const catalogRows = (catalog.data?.videos ?? []).filter(
     (v) => !memberIds.has(v.id),
   );
@@ -185,7 +187,7 @@ export function ShareEditDialog({
                 </button>
               </p>
             )}
-            {members.data?.map((v) => (
+            {members.data?.items.map((v) => (
               <PickerRow
                 key={v.id}
                 name={v.name}

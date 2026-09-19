@@ -5,25 +5,36 @@
 //   * meta   — `useShares()` (the Settings list query, already cached) with
 //     a find-by-id; there is no single-share GET, and the list is the
 //     server-owned source for status/expiry.
-//   * members — `useShareItemsOwned` (curation order). Serves terminal
-//     shares too: read-only history, same as the edit dialog's GET.
+//   * members — `useShareItemsOwned` (the one-shot tree payload). Serves
+//     terminal shares too: read-only history, same as the edit dialog's GET.
+//
+// Browse parity (share-folders task 006): the page renders the same tree
+// the recipient landing renders — folder tiles first, then the level's
+// videos, `?folder=` descent, breadcrumbs — via the shared `share-tree`
+// helpers and `ShareFolderTile`. The owner's additions on top are
+// management: per-card item menus (remove/undo rides the PUT until task
+// 008), the add-items dialog, and client-side search, which filters the
+// current level's videos render-only (folders stay visible; removal
+// targets, undo indices, and the last-item guard all read the unfiltered
+// payload).
 //
 // State machine mirrors the recipient landing (`share.tsx`): pending →
 // skeleton, list error → ErrorState retry, unknown id after load →
-// not-found card. Terminal shares render the grid with a read-only note —
-// removal/add affordances are active-share-only and arrive with tasks
-// 004/005; the server would 409 any edit anyway.
+// not-found card. Terminal shares render the tree with a read-only note —
+// removal/add affordances are active-share-only; the server would 409 any
+// edit anyway.
 //
 // Cards reuse `PosterCard` with the owner scope (session-gated thumbnails,
 // `/watch/:id` links) — this page is the owner's mirror of what recipients
 // see, plus management on top.
 
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { PosterCard } from "../components/poster-card";
 import { ShareEditDialog } from "../components/share-edit-dialog";
+import { ShareFolderTile } from "../components/share-folder-tile";
 import { ShareItemMenu } from "../components/share-item-menu";
 import { StatusBadge } from "../components/status-badge";
 import { EmptyState } from "../components/ui/empty-state";
@@ -31,7 +42,8 @@ import { ErrorState } from "../components/ui/error-state";
 import { Skeleton } from "../components/ui/skeleton";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import { replaceShareItems, fetchShareItemsOwned, type ShareDto } from "../api/shares";
-import type { VideoSummaryDto } from "../api/types";
+import type { ShareItemsDto, VideoSummaryDto } from "../api/types";
+import { buildShareTree } from "../lib/share-tree";
 import { describeError, formatDate } from "../lib/format";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { shareItemsOwnedKey, useShareItemsOwned } from "../hooks/use-share-items";
@@ -124,13 +136,13 @@ function ShareDetail({ share }: { share: ShareDto }) {
     });
   }
 
-  /** Freshest member list, deduped against any in-flight refetch.
+  /** Freshest members payload, deduped against any in-flight refetch.
    * `ensureQueryData` (not `getQueryData`) because the cache can be absent
    * or stale at exactly the wrong moments: the add-only dialog drops the
    * entry on save (`removeQueries`) while this page's refetch is starting,
    * and an Undo can outlive navigation away (inactive query, no observer,
    * stale data). Joining the in-flight fetch beats reading around it. */
-  function freshMemberIds(): Promise<VideoSummaryDto[]> {
+  function freshMembers(): Promise<ShareItemsDto> {
     return queryClient.ensureQueryData({
       queryKey: shareItemsOwnedKey(share.id),
       queryFn: () => fetchShareItemsOwned(share.id),
@@ -142,7 +154,7 @@ function ShareDetail({ share }: { share: ShareDto }) {
     index: number;
   }): Promise<void> {
     try {
-      const current = await freshMemberIds();
+      const current = (await freshMembers()).items;
       // Never re-assert an id whose removal is still in flight — an undo
       // racing a newer removal must not resurrect what that removal is
       // taking out (last-writer-wins would otherwise flip either way).
@@ -179,10 +191,10 @@ function ShareDetail({ share }: { share: ShareDto }) {
 
   const remove = useMutation({
     mutationFn: async ({ video }: { video: VideoSummaryDto; index: number }) => {
-      // Freshest list (deduped against any in-flight refetch — see
-      // freshMemberIds) minus in-flight removals. Never the render
+      // Freshest payload (deduped against any in-flight refetch — see
+      // freshMembers) minus in-flight removals. Never the render
       // closure's items.data, which can predate a dialog save.
-      const base = await freshMemberIds();
+      const base = (await freshMembers()).items;
       const ids = base
         .filter(
           (v) => v.id !== video.id && !pendingRemovals.current.has(v.id),
@@ -211,12 +223,12 @@ function ShareDetail({ share }: { share: ShareDto }) {
   });
 
   function handleRemove(video: VideoSummaryDto): void {
-    const index = (items.data ?? []).findIndex((v) => v.id === video.id);
+    const index = (items.data?.items ?? []).findIndex((v) => v.id === video.id);
     remove.mutate({ video, index: Math.max(index, 0) });
   }
 
-  const count = items.data?.length ?? share.item_count;
-  const canRemoveItems = (items.data?.length ?? 0) > 1;
+  const count = items.data?.items.length ?? share.item_count;
+  const canRemoveItems = (items.data?.items.length ?? 0) > 1;
 
   // Task 005: client-side search over the loaded members. Filtering is
   // render-only — removal targets, undo indices, and the last-item guard
@@ -225,9 +237,25 @@ function ShareDetail({ share }: { share: ShareDto }) {
   const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [isAdding, setIsAdding] = useState(false);
   const query = debouncedSearch.trim().toLowerCase();
-  const visibleItems = query
-    ? items.data?.filter((v) => v.name.toLowerCase().includes(query))
-    : items.data;
+
+  // Task 006: tree browse over the wrapped payload — the same helpers
+  // and tile the recipient landing uses, so the owner preview is exact.
+  // The index rebuilds only when the payload identity changes (a
+  // refetch), never per render or per level hop.
+  const [searchParams] = useSearchParams();
+  const tree = useMemo(
+    () => (items.data ? buildShareTree(items.data) : null),
+    [items.data],
+  );
+  const folderId = tree?.resolveFolderId(searchParams.get("folder")) ?? null;
+  const levelFolders = tree?.childFolders(folderId) ?? [];
+  const levelVideos = tree?.childItems(folderId) ?? [];
+  const visibleVideos = query
+    ? levelVideos.filter((v) => v.name.toLowerCase().includes(query))
+    : levelVideos;
+  const crumbs = folderId === null ? [] : tree?.breadcrumbs(folderId) ?? [];
+  const basePath = `/settings/shares/${share.id}`;
+  const nothingVisible = levelFolders.length === 0 && visibleVideos.length === 0;
 
   return (
     <section className="space-y-4">
@@ -267,14 +295,14 @@ function ShareDetail({ share }: { share: ShareDto }) {
 
       {/* Unreachable while the server enforces non-empty lists — kept so
           the page degrades sanely if that ever changes. */}
-      {items.data && items.data.length === 0 && (
+      {items.data && items.data.items.length === 0 && (
         <EmptyState
           title="Nothing in this share."
           body="Add items to make the link useful."
         />
       )}
 
-      {items.data && items.data.length > 0 && (
+      {items.data && items.data.items.length > 0 && (
         <>
           {share.status === "active" && (
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -295,14 +323,60 @@ function ShareDetail({ share }: { share: ShareDto }) {
               </button>
             </div>
           )}
-          {visibleItems && visibleItems.length === 0 && query && (
+          {crumbs.length > 0 && (
+            <nav aria-label="Folders">
+              <ol className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-[var(--color-castify-muted)]">
+                <li>
+                  <Link
+                    to={{ pathname: basePath, search: "" }}
+                    className="hover:text-[var(--color-castify-accent)] hover:underline"
+                  >
+                    {share.title}
+                  </Link>
+                </li>
+                {crumbs.map((crumb, index) => (
+                  <li key={crumb.id} className="flex items-center gap-1.5">
+                    <span aria-hidden>/</span>
+                    {index === crumbs.length - 1 ? (
+                      <span aria-current="page" className="text-[var(--color-castify-foreground)]">
+                        {crumb.name}
+                      </span>
+                    ) : (
+                      <Link
+                        to={{ pathname: basePath, search: `?folder=${encodeURIComponent(crumb.id)}` }}
+                        className="hover:text-[var(--color-castify-accent)] hover:underline"
+                      >
+                        {crumb.name}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </nav>
+          )}
+          {nothingVisible && query && (
             <EmptyState
               title="No videos match."
               body={`Nothing in this share matches “${debouncedSearch.trim()}”.`}
             />
           )}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-            {visibleItems?.map((video) => {
+          {nothingVisible && !query && (
+            <EmptyState
+              title="This folder is empty."
+              body="Nothing was placed in this folder."
+            />
+          )}
+          {!nothingVisible && (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+              {levelFolders.map((folder) => (
+                <ShareFolderTile
+                  key={folder.id}
+                  folder={folder}
+                  to={basePath}
+                  count={tree?.childCount(folder.id) ?? 0}
+                />
+              ))}
+              {visibleVideos.map((video) => {
             // With two removals in flight this dims only the latest's
             // card (mutation.variables holds one); the earlier card's PUT
             // is still protected by pendingRemovals — cosmetic only.
@@ -331,7 +405,8 @@ function ShareDetail({ share }: { share: ShareDto }) {
               </div>
             );
           })}
-          </div>
+            </div>
+          )}
         </>
       )}
 

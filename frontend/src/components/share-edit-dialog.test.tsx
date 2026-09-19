@@ -111,7 +111,12 @@ function editDialogFetch(overrides: EditFetchOverrides = {}): FetchHandler {
     if (url.pathname === "/api/shares/s1/items") {
       if (method === "GET") {
         membersGets += 1;
-        return jsonResponse(overrides.membersByGet?.(membersGets) ?? MEMBERS);
+        // Wrapped tree payload (share-folders task 004 shape) — a flat
+        // share in these fixtures; the dialog reads `.items`.
+        return jsonResponse({
+          folders: [],
+          items: overrides.membersByGet?.(membersGets) ?? MEMBERS,
+        });
       }
       if (method === "PUT")
         return overrides.putResponse?.() ?? new Response(null, { status: 204 });
