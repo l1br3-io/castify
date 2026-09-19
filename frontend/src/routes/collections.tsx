@@ -25,8 +25,14 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import type { CollectionDto, CollectionKind } from "../api/types";
-import { useCollections, useDeleteCollection, useRenameCollection } from "../hooks/use-collections";
+import {
+  useCollections,
+  useCreateCollection,
+  useDeleteCollection,
+  useRenameCollection,
+} from "../hooks/use-collections";
 import { useToast } from "../hooks/use-toast";
+import { describeError } from "../lib/format";
 import { CollectionCard } from "../components/collections/collection-card";
 import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
@@ -118,9 +124,9 @@ function sortCollections(
 
 export function CollectionsPage() {
   const collections = useCollections();
-  const navigate = useNavigate();
   const { kind, setKind } = useCollectionKindFilter();
   const [sort, setSort] = useState<CollectionSortKey>("newest");
+  const [creating, setCreating] = useState(false);
 
   if (collections.isLoading) {
     return (
@@ -161,10 +167,11 @@ export function CollectionsPage() {
         <h1 className="sr-only">Collections</h1>
         <EmptyState
           title="No collections yet"
-          body="Connect a source and run a scan — Castify proposes collections you can review — or gather videos from any watch page."
-          onAction={() => navigate("/connections")}
-          actionLabel="Connect a source"
+          body="Create one now, or connect a source and run a scan — Castify proposes collections you can review."
+          onAction={() => setCreating(true)}
+          actionLabel="New collection"
         />
+        {creating && <NewCollectionDialog onClose={() => setCreating(false)} />}
       </section>
     );
   }
@@ -184,8 +191,15 @@ export function CollectionsPage() {
         <span className="figure text-sm text-[var(--color-castify-muted)]">
           · {data.length}
         </span>
-        {/* "New collection" button lands with task 006. */}
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          className={`${buttonClasses("primary", "sm")} ml-auto`}
+        >
+          New collection
+        </button>
       </div>
+      {creating && <NewCollectionDialog onClose={() => setCreating(false)} />}
 
       {/* Chip row + sort — chips wrap on mobile (no horizontal
           overflow); the FilterPanel chip grammar (preset-active /
@@ -417,6 +431,73 @@ function DeleteCollectionDialog({
         Delete &ldquo;{collection.name}&rdquo; ({countLabel})? The collection
         and its member list are removed — your videos stay in the library.
       </p>
+    </Dialog>
+  );
+}
+
+/** Create dialog (task 006) — same interaction shape as the picker's
+ *  "New collection…" form: single name field, Create/Cancel, Enter
+ *  submits, empty names never POST. On success it navigates to the new
+ *  collection's detail — the natural next step (adding members) lives
+ *  there. API errors surface inline with the draft preserved. */
+function NewCollectionDialog({ onClose }: { onClose: () => void }) {
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const create = useCreateCollection();
+  const navigate = useNavigate();
+
+  function submit(): void {
+    const trimmed = draft.trim();
+    if (trimmed === "") return;
+    create.mutate(trimmed, {
+      onError: (err) => setError(describeError(err)),
+      onSuccess: (created) => {
+        onClose();
+        navigate(`/collections/${created.id}`);
+      },
+    });
+  }
+
+  return (
+    <Dialog open onClose={onClose} title="New collection"
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className={buttonClasses("ghost")}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={draft.trim() === "" || create.isPending}
+            className={buttonClasses("primary")}
+          >
+            {create.isPending ? "Creating…" : "Create"}
+          </button>
+        </>
+      }
+    >
+      <input
+        aria-label="New collection name"
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+        }}
+        placeholder="Collection name"
+        className="w-full rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-canvas)] px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)]"
+      />
+      {error && (
+        <p role="alert" className="text-sm text-[var(--color-danger)]">
+          {error}
+        </p>
+      )}
     </Dialog>
   );
 }

@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { Route, Routes } from "react-router-dom";
+import { Route, Routes, useParams } from "react-router-dom";
 
 import { CollectionsPage } from "./collections";
 import type { CollectionDto } from "../api/types";
@@ -25,14 +25,16 @@ function collection(over: Partial<CollectionDto> = {}): CollectionDto {
   };
 }
 
+function DetailProbe() {
+  const { id = "" } = useParams();
+  return <div data-testid="detail">{id}</div>;
+}
+
 function pageRoutes() {
   return (
     <Routes>
       <Route path="/collections" element={<CollectionsPage />} />
-      <Route
-        path="/collections/:id"
-        element={<div data-testid="detail">detail</div>}
-      />
+      <Route path="/collections/:id" element={<DetailProbe />} />
       <Route
         path="/connections"
         element={<div data-testid="connections">connections</div>}
@@ -141,7 +143,7 @@ describe("CollectionsPage", () => {
   it("truly-empty state points at scans and review", async () => {
     renderWithProviders(pageRoutes(), {
       initialEntries: ["/collections"],
-      fetchImplementation: () => jsonResponse([]),
+      fetchImplementation: createCollectionsApi(),
     });
 
     expect(
@@ -152,11 +154,11 @@ describe("CollectionsPage", () => {
       screen.getByText(/scan/i),
     ).toBeInTheDocument();
 
-    // …and the CTA starts the path to a first scan.
-    fireEvent.click(screen.getByRole("button", { name: "Connect a source" }));
-    await waitFor(() => {
-      expect(screen.getByTestId("connections")).toBeInTheDocument();
-    });
+    // …and the CTA opens the create dialog (spec F1).
+    fireEvent.click(screen.getByRole("button", { name: "New collection" }));
+    expect(
+      await screen.findByRole("dialog", { name: "New collection" }),
+    ).toBeInTheDocument();
   });
 
   // --- task 003: kind filter chips + sort ---
@@ -593,5 +595,168 @@ describe("CollectionsPage", () => {
     ).toBeInTheDocument();
     // The grid itself is gone — no blank cards left behind.
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  });
+
+  // --- task 006: create collection dialog ---
+
+  function createCollectionsApi(
+    initial: CollectionDto[] = [],
+    postStatus: number = 200,
+  ) {
+    // Stateful: a successful POST persists into later GETs.
+    let current = initial;
+    return (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/collections" && method === "GET")
+        return jsonResponse(current);
+      if (url === "/api/collections" && method === "POST") {
+        if (postStatus !== 200)
+          return jsonError(postStatus, "name already exists");
+        const body = JSON.parse(String(init?.body ?? "{}")) as { name: string };
+        const created: CollectionDto = {
+          id: "c9",
+          name: body.name,
+          kind: "manual",
+          created_at: "2026-09-19T00:00:00Z",
+          member_count: 0,
+          preview: [],
+        };
+        current = [...current, created];
+        return jsonResponse(created);
+      }
+      return jsonError(404, "unmocked");
+    };
+  }
+
+  function postUrls(fetchSpy: { mock: { calls: unknown[][] } }): string[] {
+    return fetchSpy.mock.calls
+      .filter(
+        ([url, init]) =>
+          String(url) === "/api/collections" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      )
+      .map(([url]) => String(url));
+  }
+
+  async function openCreateDialog(): Promise<void> {
+    fireEvent.click(
+      screen.getByRole("button", { name: "New collection" }),
+    );
+    await screen.findByRole("dialog", { name: "New collection" });
+  }
+
+  it("the header's New collection button opens the dialog", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: createCollectionsApi([collection()]),
+    });
+
+    await screen.findByText("Breaking Bad");
+    await openCreateDialog();
+    expect(
+      screen.getByLabelText("New collection name"),
+    ).toBeInTheDocument();
+  });
+
+  it("creating POSTs, invalidates the list, and navigates to the new detail", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: createCollectionsApi(),
+    });
+
+    // Truly-empty start: the CTA's New collection opens the same dialog.
+    await screen.findByText("No collections yet");
+    await openCreateDialog();
+
+    fireEvent.change(screen.getByLabelText("New collection name"), {
+      target: { value: "Mixtape" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("detail")).toBeInTheDocument();
+    });
+    // Landed on the new collection's own detail page.
+    expect(screen.getByTestId("detail")).toHaveTextContent("c9");
+    expect(postUrls(fetchSpy)).toHaveLength(1);
+    // The list was invalidated and refetched with the new row.
+    const gets = fetchSpy.mock.calls.filter(
+      ([url, init]) =>
+        String(url) === "/api/collections" &&
+        (init?.method ?? "GET") === "GET",
+    ).length;
+    expect(gets).toBeGreaterThanOrEqual(2);
+  });
+
+  it("rejects empty and whitespace-only names client-side", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: createCollectionsApi([collection()]),
+    });
+
+    await screen.findByText("Breaking Bad");
+    await openCreateDialog();
+
+    const create = screen.getByRole("button", { name: "Create" });
+    expect(create).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("New collection name"), {
+      target: { value: "   " },
+    });
+    expect(create).toBeDisabled();
+
+    // Enter on an empty draft never fires the POST either.
+    fireEvent.keyDown(screen.getByLabelText("New collection name"), {
+      key: "Enter",
+    });
+    expect(postUrls(fetchSpy)).toHaveLength(0);
+  });
+
+  it("surfaces API errors inline with the draft preserved", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: createCollectionsApi([collection()], 409),
+    });
+
+    await screen.findByText("Breaking Bad");
+    await openCreateDialog();
+
+    fireEvent.change(screen.getByLabelText("New collection name"), {
+      target: { value: "Mixtape" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("name already exists");
+    // Draft preserved, dialog still open, no navigation.
+    expect(screen.getByLabelText("New collection name")).toHaveValue("Mixtape");
+    expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+  });
+
+  it("Escape and Cancel abort with nothing sent", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: createCollectionsApi([collection()]),
+    });
+
+    await screen.findByText("Breaking Bad");
+    await openCreateDialog();
+    fireEvent.change(screen.getByLabelText("New collection name"), {
+      target: { value: "Mixtape" },
+    });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("dialog", { name: "New collection" }),
+    ).not.toBeInTheDocument();
+
+    await openCreateDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("dialog", { name: "New collection" }),
+    ).not.toBeInTheDocument();
+
+    expect(postUrls(fetchSpy)).toHaveLength(0);
   });
 });

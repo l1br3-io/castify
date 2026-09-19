@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   collectionsQueryKeys,
+  createCollection,
   deleteCollection,
   fetchCollection,
   fetchCollections,
@@ -32,6 +33,21 @@ export function useCollection(id: string) {
     queryKey: collectionsQueryKeys.detail(id),
     queryFn: () => fetchCollection(id),
     enabled: id !== "",
+  });
+}
+
+/** Manual creation (collections-page task 006). List invalidation on
+ *  settle — the rail and any mounted grid pick the new row up; the
+ *  creator navigates to the returned detail. */
+export function useCreateCollection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => createCollection(name),
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: collectionsQueryKeys.all,
+      });
+    },
   });
 }
 
