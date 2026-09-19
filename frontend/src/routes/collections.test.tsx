@@ -158,4 +158,139 @@ describe("CollectionsPage", () => {
       expect(screen.getByTestId("connections")).toBeInTheDocument();
     });
   });
+
+  // --- task 003: kind filter chips + sort ---
+
+  function cardNames(container: HTMLElement): (string | null)[] {
+    return Array.from(container.querySelectorAll("h3")).map(
+      (h) => h.textContent,
+    );
+  }
+
+  const FILTERABLE = [
+    collection({ id: "c1", name: "Breaking Bad", kind: "show", member_count: 5, created_at: "2026-09-01T00:00:00Z" }),
+    collection({ id: "c2", name: "Alpha Movie", kind: "movie", member_count: 2, created_at: "2026-08-01T00:00:00Z" }),
+    collection({ id: "c3", name: "June 2026", kind: "time", member_count: 9, created_at: "2026-07-01T00:00:00Z" }),
+  ];
+
+  it("kind chips filter the grid client-side without a refetch", async () => {
+    const { fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: () => jsonResponse(FILTERABLE),
+    });
+
+    expect(await screen.findByText("Breaking Bad")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+
+    expect(await screen.findByText("Alpha Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/collections")
+        .length,
+    ).toBe(1);
+  });
+
+  it("deep-links ?kind= and marks the matching chip active", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections?kind=movie"],
+      fetchImplementation: () => jsonResponse(FILTERABLE),
+    });
+
+    expect(await screen.findByText("Alpha Movie")).toBeInTheDocument();
+    expect(screen.queryByText("Breaking Bad")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Movies" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("falls back to All for unknown ?kind= values", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections?kind=bogus"],
+      fetchImplementation: () => jsonResponse(FILTERABLE),
+    });
+
+    expect(await screen.findByText("Breaking Bad")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("sorts newest-first by default and re-orders without a refetch", async () => {
+    const { container, fetchSpy } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: () => jsonResponse(FILTERABLE),
+    });
+
+    await screen.findByText("Breaking Bad");
+    // Default: newest by created_at desc.
+    expect(cardNames(container)).toEqual([
+      "Breaking Bad",
+      "Alpha Movie",
+      "June 2026",
+    ]);
+
+    // Name A–Z.
+    fireEvent.change(screen.getByLabelText("Sort collections"), {
+      target: { value: "name" },
+    });
+    expect(cardNames(container)).toEqual([
+      "Alpha Movie",
+      "Breaking Bad",
+      "June 2026",
+    ]);
+
+    // Largest by member count desc.
+    fireEvent.change(screen.getByLabelText("Sort collections"), {
+      target: { value: "largest" },
+    });
+    expect(cardNames(container)).toEqual([
+      "June 2026",
+      "Breaking Bad",
+      "Alpha Movie",
+    ]);
+
+    expect(
+      fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/collections")
+        .length,
+    ).toBe(1);
+  });
+
+  it("filtered-empty state names the kind and offers a clear action", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: () =>
+        jsonResponse([collection({ kind: "show", name: "Breaking Bad" })]),
+    });
+
+    expect(await screen.findByText("Breaking Bad")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Movies" }));
+
+    expect(
+      await screen.findByText("No collections of this kind"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all kinds" }));
+    expect(await screen.findByText("Breaking Bad")).toBeInTheDocument();
+  });
+
+  it("chip row wraps instead of overflowing horizontally", async () => {
+    const { container } = renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: () => jsonResponse(FILTERABLE),
+    });
+
+    await screen.findByText("Breaking Bad");
+    const chipRow = screen
+      .getByRole("group", { name: "Filter by kind" })
+      .closest("div");
+    expect(chipRow).not.toBeNull();
+    expect(chipRow!.className).toContain("flex-wrap");
+    expect(container.querySelector(".grid")).not.toBeNull();
+  });
 });
