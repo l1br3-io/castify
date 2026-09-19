@@ -380,8 +380,20 @@ function ShareDetail({ share }: { share: ShareDto }) {
 
       {items.data && items.data.items.length > 0 && (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="w-full max-w-xs">
+          {/* The curation rail (design pass, task 005): one bordered unit
+              instead of loose floating controls. Search is the primary
+              affordance — flexible width, left; actions cluster right on
+              the app's button primitives. The accent border in results
+              mode is the mode thread the results readout picks up; it's
+              a color shift only, per the app's motion budget. */}
+          <div
+            className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[var(--radius-card)] border bg-[var(--color-castify-surface)] p-3 transition-colors ${
+              isSearching
+                ? "border-[var(--color-castify-accent)]"
+                : "border-[var(--color-castify-rule)]"
+            }`}
+          >
+            <div className="w-full min-w-0 sm:w-auto sm:flex-1">
               <SearchBar
                 value={raw}
                 onChange={setRaw}
@@ -390,28 +402,27 @@ function ShareDetail({ share }: { share: ShareDto }) {
               />
             </div>
             {share.status === "active" && (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setFolderDialog({ kind: "create" })}
+              <div className="flex items-center gap-2 sm:shrink-0">
+                <Button
+                  variant="secondary"
                   disabled={isSearching}
-                  className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm font-semibold transition hover:border-[var(--color-castify-accent)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[var(--color-castify-rule)]"
+                  aria-describedby={isSearching ? "new-folder-search-hint" : undefined}
+                  onClick={() => setFolderDialog({ kind: "create" })}
                 >
                   New folder
-                </button>
-                {isSearching && (
-                  <span className="text-xs text-[var(--color-castify-muted)]">
-                    Clear search to create a folder
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setIsAdding(true)}
-                  className="rounded-[var(--radius-button)] bg-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-on-accent)] transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
-                >
+                </Button>
+                <Button variant="primary" onClick={() => setIsAdding(true)}>
                   Add items
-                </button>
+                </Button>
               </div>
+            )}
+            {isSearching && share.status === "active" && (
+              <p
+                id="new-folder-search-hint"
+                className="basis-full text-xs text-[var(--color-castify-muted)]"
+              >
+                Clear search to create a folder — folders land in the level you're browsing.
+              </p>
             )}
           </div>
           {results !== null ? (
