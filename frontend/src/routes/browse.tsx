@@ -52,7 +52,6 @@ import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
 import { CollectionsRail } from "../components/collections/collections-rail";
-import { SuggestionPanel } from "../components/collections/suggestion-panel";
 import { AddToCollectionMenu } from "../components/collections/add-to-collection";
 import { FolderOrganizer } from "../components/folder-organizer";
 import { ShareDialog } from "../components/share-dialog";
@@ -210,10 +209,6 @@ export function BrowsePage() {
             results mode); the wrapper above stays mounted. */}
         {!isSearching && (
           <>
-            {/* Library-collections: post-scan review banner (renders
-                nothing without staged suggestions). */}
-            <SuggestionPanel />
-
             {/* T13: continue-watching rail (IndexedDB-backed) */}
             <ContinueWatchingShelf />
 
