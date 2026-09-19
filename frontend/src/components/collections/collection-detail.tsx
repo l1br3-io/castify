@@ -17,6 +17,7 @@ import type { CollectionKind } from "../../api/types";
 import { FavoriteToggle } from "../favorite-toggle";
 import { PosterCard } from "../poster-card";
 import { RatingStars } from "../rating-stars";
+import { ShareDialog } from "../share-dialog";
 import { Dialog } from "../ui/dialog";
 import { EmptyState } from "../ui/empty-state";
 import { ErrorState } from "../ui/error-state";
@@ -45,6 +46,7 @@ export function CollectionDetailPage() {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
 
   if (collection.isPending) {
     return <SkeletonGrid count={8} />;
@@ -144,6 +146,22 @@ export function CollectionDetailPage() {
               Play all
             </Link>
           )}
+          {/* Visible-but-disabled when empty (unlike Play all's
+              conditional render) so removing the last member doesn't
+              shift the header layout. */}
+          <button
+            type="button"
+            disabled={members.length === 0}
+            title={
+              members.length === 0
+                ? "Empty collections can't be shared"
+                : undefined
+            }
+            onClick={() => setShareOpen(true)}
+            className={buttonClasses("secondary", "sm")}
+          >
+            Share
+          </button>
           <button
             type="button"
             onClick={() => setConfirmOpen(true)}
@@ -208,6 +226,14 @@ export function CollectionDetailPage() {
           removed — your videos stay in the library.
         </p>
       </Dialog>
+
+      {shareOpen && (
+        <ShareDialog
+          videoIds={queue}
+          itemLabel={name}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 }
