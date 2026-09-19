@@ -36,6 +36,7 @@ import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
 import { SHARES_QUERY_KEY, useShares } from "../hooks/use-shares";
 import { useToast } from "../hooks/use-toast";
 import { CopyLinkButton } from "./copy-link-button";
+import { ShortLinkButton } from "./short-link-button";
 import { StatusBadge } from "./status-badge";
 import { Button } from "./ui/button";
 import { buttonClasses, FOCUS_RING } from "./ui/button-classes";
@@ -273,7 +274,12 @@ function ShareRow({ share, linkPath }: { share: ShareDto; linkPath: string | nul
       <td className="px-2 py-2.5">
         <div className="flex flex-wrap items-center gap-1.5">
           {share.status === "active" && linkPath && (
-            <CopyLinkButton linkPath={linkPath} />
+            <>
+              {/* Short alias is button-feedback only here (table density);
+                  the dialog's post-creation view is where it shows as text. */}
+              <CopyLinkButton linkPath={linkPath} />
+              <ShortLinkButton shareId={share.id} linkPath={linkPath} />
+            </>
           )}
           {share.status === "active" && (
             <Link
