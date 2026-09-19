@@ -21,6 +21,11 @@
       "type": "local",
       "command": ["npx", "mcp-remote", "https://observability.mcp.cloudflare.com/mcp"],
       "enabled": true
+    },
+    "cloudflare-api": {
+      "type": "remote",
+      "url": "https://mcp.cloudflare.com/mcp",
+      "enabled": true
     }
   }
 }
