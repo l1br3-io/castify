@@ -784,7 +784,8 @@ impl ShareRepository {
     /// the same friendly duplicate the pre-check reports. Every other
     /// database error passes through untouched.
     fn map_folder_write_err(err: sqlx::Error) -> FolderWriteError {
-        use sqlx::error::DatabaseError;
+        // `as_database_error()` hands back `&dyn DatabaseError`, whose
+        // methods are inherent on the trait object — no import needed.
         match err.as_database_error() {
             Some(db) if db.is_unique_violation() => FolderInvalid::DuplicateName.into(),
             _ => err.into(),
