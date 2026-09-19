@@ -733,11 +733,11 @@ pub struct TranscodeCacheEntry {
     pub last_accessed_at: String,
 }
 
-/// The kind of a virtual collection (library-collections, spec F3).
-/// `Show`/`Movie`/`Time` come from the classification cascade
-/// (`classify.rs`); `Manual` only ever originates from explicit user
-/// creation — the suggestion staging CHECK excludes it. Mirrors the
-/// `collections.kind` CHECK in migration 0015.
+/// Collection kind (library-collections, spec F3). `Manual` is the only
+/// kind creatable via the API; `Show`/`Movie`/`Time` appear only on
+/// collections accepted from the retired suggestion pipeline (pre-0016
+/// data) and remain browsable. Mirrors the `collections.kind` CHECK in
+/// migration 0015.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectionKind {
