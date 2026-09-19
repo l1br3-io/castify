@@ -470,7 +470,7 @@ function VideoPlayer({
           {tracking.showResume && (
             <div
               role="status"
-              className="absolute left-3 top-3 z-20 flex items-center gap-3 rounded-lg border border-white/10 bg-[var(--color-castify-surface)]/95 px-4 py-2.5 text-sm text-white shadow-lg backdrop-blur"
+              className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-white/10 bg-[var(--color-castify-surface)]/95 px-3 py-2 text-xs text-white shadow-lg backdrop-blur sm:px-4 sm:py-2.5 sm:text-sm"
             >
               <span>
                 Resume from{" "}
@@ -764,7 +764,7 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
 
   return (
     <div className="space-y-3">
-      <h1 className="text-2xl">{video.name}</h1>
+      <h1 className="text-lg sm:text-2xl">{video.name}</h1>
       <div className="flex flex-wrap items-center gap-2">
         <ProviderBadge provider={video.provider} />
         {others.length > 0 && <DedupBadge providers={others} />}
@@ -820,8 +820,10 @@ function VideoInfo({ video }: { video: VideoDetailDto }) {
       {/* Personalization controls — hero variant. `VideoDetailDto` is a
           structural superset of `VideoSummaryDto`, so both controls accept
           it without adapter code. The Share action (task 012) sits in the
-          same row and opens the creation dialog for this item. */}
-      <div className="flex flex-wrap items-center gap-4 pt-1">
+          same row and opens the creation dialog for this item. The row
+          wraps on narrow viewports — the controls keep working at phone
+          widths instead of overflowing. */}
+      <div className="flex flex-wrap items-center gap-3 pt-1 sm:gap-4">
         <FavoriteToggle video={video} variant="hero" />
         <RatingStars video={video} variant="hero" />
         {/* Library-collections: same picker as the browse cards, hero

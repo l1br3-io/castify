@@ -992,10 +992,11 @@ export function PlayerControls({
           </span>
 
           {/* Quiet quality badge — passive indicator; adjustments live in
-              the Settings menu. */}
+              the Settings menu. Hidden below sm: the transport row is
+              tight at phone widths (the Settings menu still shows quality). */}
           {levels && levels.length > 0 && (
             <span
-              className="ml-1 px-1 text-[0.65rem] uppercase tracking-wide text-white/50"
+              className="ml-1 hidden px-1 text-[0.65rem] uppercase tracking-wide text-white/50 sm:inline"
               aria-label={`Current quality ${
                 (currentLevel ?? -1) < 0
                   ? "Auto"

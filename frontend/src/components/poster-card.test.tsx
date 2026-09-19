@@ -46,11 +46,13 @@ function fireImageEvent(container: HTMLElement, event: "load" | "error"): void {
 }
 
 describe("PosterCard", () => {
-  it("renders the video name, provider badge, and thumbnail src", () => {
+  it("renders the video name, provider mark, and thumbnail src", () => {
     const { container } = renderWithProviders(<PosterCard video={VIDEO} />);
 
     expect(screen.getByText("cat.mp4")).toBeInTheDocument();
-    expect(screen.getByText("Google Drive")).toBeInTheDocument();
+    // Provider identity is the official mark, named for screen readers +
+    // title tooltip (visible text is gone — cards stay quiet).
+    expect(screen.getByTitle("Google Drive")).toBeInTheDocument();
     const img = container.querySelector('img[src="/api/videos/v1/thumbnail"]');
     expect(img).not.toBeNull();
   });
@@ -105,12 +107,12 @@ describe("PosterCard", () => {
 
   it("renders a dedup badge when sources span multiple providers", () => {
     renderWithProviders(<PosterCard video={MULTI_SOURCE_VIDEO} />);
-    expect(screen.getByText(/Also in: Dropbox/)).toBeInTheDocument();
+    expect(screen.getByTitle("Also in Dropbox")).toBeInTheDocument();
   });
 
   it("hides the dedup badge for single-source videos", () => {
     renderWithProviders(<PosterCard video={VIDEO} />);
-    expect(screen.queryByText(/Also in:/)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/Also in/)).not.toBeInTheDocument();
   });
 
   it("renders topRightSlot when provided", () => {

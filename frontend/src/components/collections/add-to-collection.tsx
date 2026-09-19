@@ -87,7 +87,15 @@ export function AddToCollectionMenu({ video, variant = "card" }: Props) {
         triggerClassName={variant === "card" ? DARK_TRIGGER_CLASS : undefined}
         trigger={
           variant === "hero" ? (
-            <span className="whitespace-nowrap">＋ Add to collection</span>
+            // Responsive label: the full phrase on ≥sm, a compact
+            // "Collection" on phones so the watch page's action row wraps
+            // cleanly instead of overflowing. The Menu's aria-label keeps
+            // the full action name either way.
+            <span className="whitespace-nowrap">
+              ＋{" "}
+              <span className="hidden sm:inline">Add to collection</span>
+              <span className="sm:hidden">Collection</span>
+            </span>
           ) : (
             <svg
               viewBox="0 0 16 16"
