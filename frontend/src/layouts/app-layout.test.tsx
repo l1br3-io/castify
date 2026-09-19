@@ -70,13 +70,14 @@ describe("AppLayout (design frame shell: topbar + sidebar + drawer)", () => {
       screen.queryByRole("button", { name: /sign out/i }),
     ).not.toBeInTheDocument();
 
-    // Sidebar nav (design order): Library / Connections / Shares /
-    // Settings — icons are decorative; the link text is the accessible
-    // name.
+    // Sidebar nav (design order): Library / Collections / Connections /
+    // Shares / Settings — icons are decorative; the link text is the
+    // accessible name.
     const nav = screen.getByRole("navigation", { name: "Primary" });
     const links = within(nav).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
       "Library",
+      "Collections",
       "Connections",
       "Shares",
       "Settings",
@@ -85,6 +86,9 @@ describe("AppLayout (design frame shell: topbar + sidebar + drawer)", () => {
       "href",
       "/",
     );
+    expect(
+      within(nav).getByRole("link", { name: "Collections" }),
+    ).toHaveAttribute("href", "/collections");
     expect(
       within(nav).getByRole("link", { name: "Connections" }),
     ).toHaveAttribute("href", "/connections");

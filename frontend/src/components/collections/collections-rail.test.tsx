@@ -38,7 +38,7 @@ describe("CollectionsRail", () => {
   });
 
   it("shows a card per collection with kind label, count, and detail link", async () => {
-    renderWithProviders(
+    const { fetchSpy } = renderWithProviders(
       <Routes>
         <Route path="/" element={<CollectionsRail />} />
         <Route path="/collections/:id" element={<div>detail</div>} />
@@ -65,6 +65,25 @@ describe("CollectionsRail", () => {
 
     const link = screen.getByRole("link", { name: /breaking bad/i });
     expect(link).toHaveAttribute("href", "/collections/c1");
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toContain(
+      "/api/collections",
+    );
+  });
+
+  it("links View all to the /collections index page", async () => {
+    renderWithProviders(
+      <Routes>
+        <Route path="/" element={<CollectionsRail />} />
+        <Route path="/collections" element={<div>index</div>} />
+      </Routes>,
+      {
+        fetchImplementation: () => jsonResponse([collection()]),
+      },
+    );
+
+    expect(await screen.findByText("Breaking Bad"));
+    const viewAll = screen.getByRole("link", { name: "View all" });
+    expect(viewAll).toHaveAttribute("href", "/collections");
   });
 
   it("renders nothing while the query fails", async () => {

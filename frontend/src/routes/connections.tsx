@@ -19,12 +19,16 @@
 //     should disconnect the stale connection and start fresh.
 //
 // Card states:
-//   * Connected — shows account email, video count, scan status, a Disconnect
-//     button (confirm dialog → `DELETE /api/connections/{id}`).
+//   * Connected — one card per active connection (multiple sources on the
+//     same provider — two Google accounts, several S3 buckets — each get
+//     their own card). Shows account email, video count, scan status, a
+//     Disconnect button (confirm dialog → `DELETE /api/connections/{id}`).
 //   * Scanning — shows a live "Found N media…" indicator; the
 //     `['connections']` query refetches every few seconds while any connection
 //     is in the `scanning` state (see `use-connections.ts`).
-//   * Available (not connected) — OAuth providers: Connect button →
+//   * Available — every configured provider renders a connect card even
+//     while connected (copy shifts to "Add another source"), so a second
+//     account/bucket is one click away. OAuth providers: Connect button →
 //     `POST .../start` → navigate to the returned `auth_url` (full page
 //     redirect to the provider). Credentials providers (S3-compatible
 //     storage): Connect button reveals the schema-driven form
@@ -35,7 +39,7 @@
 //
 // Errors from connect/disconnect surface inline on the relevant card.
 
-import { useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
@@ -138,9 +142,16 @@ function ConnectionsGrid() {
     );
   }
 
-  const connectedByProvider = new Map<ProviderKey, ConnectionDto>();
+  // One card per CONNECTION, not per provider. The backend supports
+  // multiple active connections for the same provider (two Google
+  // accounts, several S3 buckets — keyed on `(provider,
+  // provider_account_id)`), so collapsing to one card per provider hid
+  // every connection but the newest.
+  const connectionsByProvider = new Map<ProviderKey, ConnectionDto[]>();
   for (const conn of connections.data ?? []) {
-    connectedByProvider.set(conn.provider, conn);
+    const list = connectionsByProvider.get(conn.provider) ?? [];
+    list.push(conn);
+    connectionsByProvider.set(conn.provider, list);
   }
 
   // The available list is the source of truth for who's connectable and
@@ -153,7 +164,7 @@ function ConnectionsGrid() {
   const visibleProviders = PROVIDERS.filter(
     (provider) =>
       (availableById.get(provider)?.configured ?? false) ||
-      connectedByProvider.has(provider),
+      connectionsByProvider.has(provider),
   );
 
   if (visibleProviders.length === 0) {
@@ -162,34 +173,25 @@ function ConnectionsGrid() {
 
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      {visibleProviders.map((provider) => (
-        <ProviderCard
-          key={provider}
-          entry={availableById.get(provider)}
-          connection={connectedByProvider.get(provider)}
-        />
-      ))}
+      {visibleProviders.map((provider) => {
+        const entry = availableById.get(provider);
+        const connected = connectionsByProvider.get(provider) ?? [];
+        return (
+          <Fragment key={provider}>
+            {connected.map((conn) => (
+              <ConnectedCard key={conn.id} connection={conn} />
+            ))}
+            {/* A configured provider always offers its connect card —
+                with connections present it reads "add another source", the
+                entry point for a second account or bucket. */}
+            {entry?.configured && (
+              <AvailableCard entry={entry} hasConnections={connected.length > 0} />
+            )}
+          </Fragment>
+        );
+      })}
     </div>
   );
-}
-
-function ProviderCard({
-  entry,
-  connection,
-}: {
-  entry: AvailableProviderDto | undefined;
-  connection: ConnectionDto | undefined;
-}) {
-  if (connection) {
-    return <ConnectedCard connection={connection} />;
-  }
-  // Unreachable in practice — visibility requires a configured entry or a
-  // connection — but don't render a mislabeled card if the list and the
-  // connections query ever disagree.
-  if (!entry) {
-    return null;
-  }
-  return <AvailableCard entry={entry} />;
 }
 
 function ConnectedCard({ connection }: { connection: ConnectionDto }) {
@@ -539,7 +541,13 @@ function BrandConnectButton({
   );
 }
 
-function AvailableCardHeader({ provider }: { provider: ProviderKey }) {
+function AvailableCardHeader({
+  provider,
+  subtitle,
+}: {
+  provider: ProviderKey;
+  subtitle: string;
+}) {
   return (
     <div className="flex items-center gap-2.5">
       <span className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-[var(--color-castify-rule)] bg-[var(--color-castify-sunken)]">
@@ -552,15 +560,21 @@ function AvailableCardHeader({ provider }: { provider: ProviderKey }) {
         <h2 className="text-[15px] font-semibold">
           {PROVIDER_LABELS[provider]}
         </h2>
-        <p className="text-xs text-[var(--color-castify-muted)]">
-          Not connected
-        </p>
+        <p className="text-xs text-[var(--color-castify-muted)]">{subtitle}</p>
       </div>
     </div>
   );
 }
 
-function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
+function AvailableCard({
+  entry,
+  hasConnections = false,
+}: {
+  entry: AvailableProviderDto;
+  /** True when this provider already has connected sources — the card's
+   * copy shifts from first-time connect to "add another". */
+  hasConnections?: boolean;
+}) {
   const provider = entry.id;
   const [error, setError] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -575,6 +589,16 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
     onError: (err: unknown) => setError(describeError(err)),
   });
 
+  const subtitle = hasConnections ? "Add another source" : "Not connected";
+
+  // Collapse an open credentials form once this provider gains a
+  // connection (the connect succeeded) — the new ConnectedCard carries the
+  // state from here on, and the available card returns to its resting
+  // "add another" form.
+  useEffect(() => {
+    if (hasConnections && formOpen) setFormOpen(false);
+  }, [hasConnections, formOpen]);
+
   // Credentials providers connect through the schema-driven form
   // (`CredentialsForm`) instead of the OAuth redirect. A missing schema is
   // a wire-contract violation — fall back to the info-only card rather
@@ -582,7 +606,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
   if (entry.authMode === "credentials") {
     return (
       <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
-        <AvailableCardHeader provider={provider} />
+        <AvailableCardHeader provider={provider} subtitle={subtitle} />
         <p className="text-sm text-[var(--color-castify-muted)]">
           Connects with storage credentials — an endpoint, bucket, and access
           keys you already have.
@@ -612,7 +636,7 @@ function AvailableCard({ entry }: { entry: AvailableProviderDto }) {
 
   return (
     <article className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4">
-      <AvailableCardHeader provider={provider} />
+      <AvailableCardHeader provider={provider} subtitle={subtitle} />
       <p className="text-sm text-[var(--color-castify-muted)]">
         Connect to scan your {PROVIDER_LABELS[provider]} for media.
       </p>

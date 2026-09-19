@@ -33,6 +33,9 @@ type DialogProps = {
   children: ReactNode;
   /** Action row rendered at the panel's end. */
   footer?: ReactNode;
+  /** Wider panel (max-w-2xl) for content-heavy dialogs — review rows,
+   * stacked thumbnails. Default max-w-md. */
+  wide?: boolean;
 };
 
 export function Dialog({
@@ -42,6 +45,7 @@ export function Dialog({
   closeable = true,
   children,
   footer,
+  wide = false,
 }: DialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -100,7 +104,7 @@ export function Dialog({
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
-        className="w-full max-w-md rounded-[var(--radius-drawer)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-lg"
+        className={`w-full ${wide ? "max-w-2xl" : "max-w-md"} rounded-[var(--radius-drawer)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-6 shadow-lg`}
       >
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">
           {title}

@@ -412,8 +412,10 @@ describe("WatchPage", () => {
 
     await screen.findByRole("heading", { name: "cat.mp4" });
 
+    // Detail badges carry the provider mark + label; dedup shows the
+    // additional provider's mark with the full sentence as its title.
     expect(screen.getByText("Google Drive")).toBeInTheDocument();
-    expect(screen.getByText(/Also in: Dropbox/)).toBeInTheDocument();
+    expect(screen.getByTitle("Also in Dropbox")).toBeInTheDocument();
   });
 
   it("renders the hero-variant FavoriteToggle and RatingStars (M3 T7)", async () => {

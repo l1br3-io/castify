@@ -52,6 +52,7 @@ import {
   MenuIcon,
   MoonIcon,
   ShareNodesIcon,
+  StackIcon,
   SunIcon,
 } from "../components/icons";
 import { SearchBar } from "../components/search-bar";
@@ -62,6 +63,7 @@ import { OfflineBanner } from "../components/ui/offline-banner";
 
 const NAV_ITEMS = [
   { to: "/", label: "Library", Icon: LibraryIcon, end: true },
+  { to: "/collections", label: "Collections", Icon: StackIcon, end: false },
   { to: "/connections", label: "Connections", Icon: CloudIcon, end: false },
   { to: "/shares", label: "Shares", Icon: ShareNodesIcon, end: false },
   { to: "/settings", label: "Settings", Icon: GearIcon, end: false },

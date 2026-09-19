@@ -125,11 +125,37 @@ type ProviderBadgeProps = {
   provider: ProviderKey;
 };
 
-/** Neutral pill showing the provider display name. */
+/**
+ * Provider identity for detail surfaces (watch/share headers): the official
+ * mark beside its name — quieter than the old bordered pill, still explicit.
+ */
 export function ProviderBadge({ provider }: ProviderBadgeProps) {
+  const label = PROVIDER_LABELS[provider] ?? provider;
   return (
-    <span className="rounded-[var(--radius-pill)] border border-[var(--color-castify-rule)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-muted)]">
-      {PROVIDER_LABELS[provider] ?? provider}
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-castify-muted)]">
+      <ProviderMark provider={provider} className="size-3.5 shrink-0" />
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Compact provider identity for dense surfaces (poster/continue-watching
+ * cards): the official mark alone, named via `title` + screen-reader text —
+ * identity is never conveyed by the mark (or its color) alone.
+ */
+export function ProviderMarkBadge({
+  provider,
+  className,
+}: ProviderBadgeProps & { className?: string }) {
+  const label = PROVIDER_LABELS[provider] ?? provider;
+  return (
+    <span
+      title={label}
+      className={`inline-flex shrink-0 items-center text-[var(--color-castify-muted)] ${className ?? ""}`}
+    >
+      <span className="sr-only">{label}</span>
+      <ProviderMark provider={provider} className="size-3.5" />
     </span>
   );
 }
@@ -139,18 +165,28 @@ type DedupBadgeProps = {
 };
 
 /**
- * Accent pill listing providers *other than* the representative that also
- * hold this video. Pass only the additional providers (filter out the
- * representative's own provider upstream).
+ * Compact dedup indicator: one mark per provider that *also* holds this
+ * video (pass only the additional providers — filter out the
+ * representative's own upstream). The full "Also in: …" sentence stays in
+ * the title tooltip and screen-reader text.
  */
 export function DedupBadge({ providers }: DedupBadgeProps) {
-  const labels = providers.map((p) => PROVIDER_LABELS[p] ?? p).join(", ");
+  const text = `Also in ${providers
+    .map((p) => PROVIDER_LABELS[p] ?? p)
+    .join(", ")}`;
   return (
     <span
-      className="rounded-[var(--radius-pill)] bg-[var(--color-castify-accent-subtle)] px-2 py-0.5 text-xs font-medium text-[var(--color-castify-accent-strong)]"
-      title="This video appears in multiple providers"
+      title={text}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-[var(--radius-pill)] bg-[var(--color-castify-accent-subtle)] px-1.5 py-0.5 text-[var(--color-castify-accent-strong)]"
     >
-      Also in: {labels}
+      <span className="sr-only">{text}</span>
+      {providers.map((provider) => (
+        <ProviderMark
+          key={provider}
+          provider={provider}
+          className="size-3 shrink-0"
+        />
+      ))}
     </span>
   );
 }

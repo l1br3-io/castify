@@ -1,16 +1,18 @@
-// Suggestion review panel (library-collections task 009, spec F2/F5):
-// the post-scan banner over browse.
+// Suggestion review (library-collections task 009, spec F2/F5): the
+// post-scan notification over browse.
 //
+// * One-line notification banner — the library page stays quiet; the
+//   backlog itself lives behind the "Review" button in a modal dialog.
 // * Self-fetching; renders nothing while empty/failed — browse stays
 //   exactly as it was for users without suggestions.
-// * Per-row Accept/Dismiss with optimistic removal and rollback — a
-//   failed action keeps the row and surfaces a Retry.
-// * Accept also invalidates the collections list so the Task 008 rail
+// * Per-row Accept/Dismiss in the dialog with optimistic removal and
+//   rollback — a failed action keeps the row and surfaces a Retry.
+// * Accept also invalidates the collections list so the collections rail
 //   picks up the new collection immediately.
-// * "Review later" snoozes against the staging regeneration timestamp:
-//   the newest `created_at` is stored in localStorage and the banner
-//   stays hidden until a later scan stages newer groups. Nothing ever
-//   enters browse without acceptance — the panel is informational.
+// * "Later" snoozes against the staging regeneration timestamp: the
+//   newest `created_at` is stored in localStorage and the banner stays
+//   hidden until a later scan stages newer groups. Nothing ever enters
+//   browse without acceptance — the panel is informational.
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,7 +28,9 @@ import type {
   CollectionSuggestionDto,
 } from "../../api/types";
 import { Thumbnail } from "../thumbnail";
+import { Button } from "../ui/button";
 import { buttonClasses } from "../ui/button-classes";
+import { Dialog } from "../ui/dialog";
 
 const KIND_LABELS: Record<CollectionKind, string> = {
   show: "Series",
@@ -36,15 +40,16 @@ const KIND_LABELS: Record<CollectionKind, string> = {
 };
 
 /** Rows shown before "Show more" expands the list (spec F2: don't dump a
- *  backlog on first-run users). */
+ * backlog on first-run users). */
 const COLLAPSED_ROWS = 3;
 /** Preview members requested per group (posters for the card). */
 const PREVIEW_MEMBERS = 6;
 const SNOOZE_KEY = "castify.suggestions.snoozedThrough";
 
 export function SuggestionPanel() {
+  const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  // Snooze state is read once at mount and written on "Review later";
+  // Snooze state is read once at mount and written on "Later";
   // the local copy is what hides the banner (localStorage only
   // persists the decision across reloads).
   const [snoozedThrough, setSnoozedThrough] = useState<string | null>(() =>
@@ -56,59 +61,95 @@ export function SuggestionPanel() {
   });
 
   const groups = suggestions.data;
-  if (!groups || groups.length === 0) return null;
+  const hasGroups = !!groups && groups.length > 0;
+  // Hidden when empty — unless the dialog is mid-review and the last row
+  // was just acted on (closing the modal on the user would be jarring;
+  // "Done" dismisses it and the banner is gone on the next render).
+  if (!hasGroups && !open) return null;
 
   // Snooze gate: hidden while no group is newer than what the user
   // already chose to review later.
-  const newest = groups.reduce(
-    (max, g) => (g.created_at > max ? g.created_at : max),
-    groups[0].created_at,
-  );
-  if (snoozedThrough !== null && newest <= snoozedThrough) return null;
+  const newest =
+    groups && groups.length > 0
+      ? groups.reduce(
+          (max, g) => (g.created_at > max ? g.created_at : max),
+          groups[0].created_at,
+        )
+      : "";
+  if (snoozedThrough !== null && newest <= snoozedThrough && !open)
+    return null;
 
-  const visible = expanded ? groups : groups.slice(0, COLLAPSED_ROWS);
-  const hiddenCount = groups.length - COLLAPSED_ROWS;
+  const visible = expanded ? groups : groups?.slice(0, COLLAPSED_ROWS);
+  const hiddenCount = (groups?.length ?? 0) - COLLAPSED_ROWS;
+  const countLabel =
+    groups?.length === 1
+      ? "1 suggested collection"
+      : `${groups?.length ?? 0} suggested collections`;
 
   return (
-    <section
-      aria-label="Review suggestions"
-      className="rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-4"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-xl">Review suggestions</h2>
-          <p className="text-sm text-[var(--color-castify-muted)]">
-            Groups your scans found — nothing is added until you accept.
-          </p>
+    <>
+      <section
+        aria-label="Review suggestions"
+        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-4 py-3"
+      >
+        <p className="text-sm">
+          <span className="font-medium">{countLabel} ready to review.</span>{" "}
+          <span className="text-[var(--color-castify-muted)]">
+            Found by your scans — nothing is added until you accept.
+          </span>
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" onClick={() => setOpen(true)}>
+            Review
+          </Button>
+          <button
+            type="button"
+            onClick={() => {
+              localStorage.setItem(SNOOZE_KEY, newest);
+              setSnoozedThrough(newest);
+            }}
+            className={buttonClasses("ghost", "sm")}
+          >
+            Later
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            localStorage.setItem(SNOOZE_KEY, newest);
-            setSnoozedThrough(newest);
-          }}
-          className={buttonClasses("ghost", "sm")}
-        >
-          Review later
-        </button>
-      </div>
+      </section>
 
-      <ul className="mt-4 space-y-3">
-        {visible.map((group) => (
-          <SuggestionRow key={group.id} group={group} />
-        ))}
-      </ul>
-
-      {!expanded && hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className={`${buttonClasses("ghost", "sm")} mt-3`}
-        >
-          Show more ({hiddenCount})
-        </button>
-      )}
-    </section>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Review suggestions"
+        wide
+        footer={
+          <Button variant="secondary" onClick={() => setOpen(false)}>
+            Done
+          </Button>
+        }
+      >
+        {hasGroups ? (
+          <>
+            <ul className="space-y-3">
+              {visible?.map((group) => (
+                <SuggestionRow key={group.id} group={group} />
+              ))}
+            </ul>
+            {!expanded && hiddenCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setExpanded(true)}
+                className={buttonClasses("ghost", "sm")}
+              >
+                Show more ({hiddenCount})
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-[var(--color-castify-muted)]">
+            All caught up — accepted collections are in your library.
+          </p>
+        )}
+      </Dialog>
+    </>
   );
 }
 

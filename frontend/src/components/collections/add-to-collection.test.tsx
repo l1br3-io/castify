@@ -160,4 +160,43 @@ describe("AddToCollectionMenu", () => {
       ).toBe(true);
     });
   });
+
+  // Hero variant rides the watch page's personalization row (after the
+  // rating stars). Regression: it used to inherit the Menu's default
+  // kebab trigger — a fixed h-7 w-7 square — so the nowrap text label
+  // overflowed the 28px box and the hit area never adapted to the label
+  // or viewport.
+  it("hero variant sizes the trigger to its label, not the kebab square", () => {
+    renderWithProviders(
+      <AddToCollectionMenu video={{ id: "v1", name: "alpha.mp4" }} variant="hero" />,
+      { fetchImplementation: pickerFetch([]) },
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /add alpha\.mp4 to collection/i,
+    });
+
+    // Not the fixed 28×28 kebab square…
+    expect(trigger.className).not.toContain("w-7");
+    expect(trigger.className).not.toContain("h-7");
+    // …but a content-sized button in the row's secondary family (same
+    // affordances as the Share button beside it): border + horizontal
+    // padding so it grows with the label and wraps with the row.
+    expect(trigger.className).toContain("px-3");
+    expect(trigger.className).toContain("border");
+  });
+
+  it("hero label swaps to the compact phrase on phones", () => {
+    renderWithProviders(
+      <AddToCollectionMenu video={{ id: "v1", name: "alpha.mp4" }} variant="hero" />,
+      { fetchImplementation: pickerFetch([]) },
+    );
+
+    // Full phrase ≥sm, compact "Collection" below — the watch row wraps
+    // cleanly at phone widths.
+    const compact = screen.getByText("Collection");
+    expect(compact).toHaveClass("sm:hidden");
+    const full = screen.getByText("Add to collection");
+    expect(full).toHaveClass("hidden", "sm:inline");
+  });
 });

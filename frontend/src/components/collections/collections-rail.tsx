@@ -33,6 +33,15 @@ export function CollectionsRail() {
         <span className="figure text-sm text-[var(--color-castify-muted)]">
           · {data.length}
         </span>
+        {/* Quiet escape hatch to the full grid (collections-page spec
+            F6) — the rail caps at what fits horizontally; this is the
+            rest. */}
+        <Link
+          to="/collections"
+          className="ml-auto rounded-[var(--radius-button)] text-sm text-[var(--color-castify-muted)] transition-colors hover:text-[var(--color-castify-text)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
+        >
+          View all
+        </Link>
       </div>
       <div
         className="no-scrollbar flex gap-3 overflow-x-auto pb-2 pr-4"
