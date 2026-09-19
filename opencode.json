@@ -6,6 +6,21 @@
       "type": "local",
       "command": ["npx", "-y", "chrome-devtools-mcp@latest", "--isolated", "--executable-path", "/home/jpt/.local/bin/google-chrome"],
       "enabled": true
+    },
+    "cloudflare-docs": {
+      "type": "local",
+      "command": ["npx", "mcp-remote", "https://docs.mcp.cloudflare.com/mcp"],
+      "enabled": true
+    },
+    "cloudflare-builds": {
+      "type": "local",
+      "command": ["npx", "mcp-remote@latest", "https://builds.mcp.cloudflare.com/mcp"],
+      "enabled": true
+    },
+    "cloudflare-logs": {
+      "type": "local",
+      "command": ["npx", "mcp-remote", "https://observability.mcp.cloudflare.com/mcp"],
+      "enabled": true
     }
   }
 }
