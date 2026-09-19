@@ -16,6 +16,9 @@
 //     parent walk over a by-id map
 //   * `resolveFolderId(raw)` — stale-id fallback: an id the owner
 //     deleted resolves to root (null), never an error state
+//   * `searchTree(tree, q)` — whole-share search: folder-name matches
+//     as folder entries, video-name matches as video entries carrying
+//     their root→leaf folder-name path (share-search-ux task 001)
 //
 // Scope is `parent_id`/`folder_id`: `null` is the share root. The server
 // guarantees acyclicity (repo depth/cycle checks, cap 8); the walks here
@@ -82,4 +85,50 @@ export function buildShareTree(payload: ShareItemsDto): ShareTree {
     },
     resolveFolderId: (folderId) => (folderId !== null && foldersById.has(folderId) ? folderId : null),
   };
+}
+
+/** A video hit in search results — the tree item plus `folderPath`, its
+ * folder names root → leaf (`[]` = share root). Named `folderPath`
+ * because `ShareTreeItem` already carries the video's own file `path`. */
+export type ShareTreeItemWithPath = ShareTreeItem & { folderPath: string[] };
+
+export interface ShareSearchResults {
+  /** Folders whose name matches, in tree-walk (`position`) order. */
+  folders: ShareFolderDto[];
+  /** Videos whose name matches, shallower scopes first (a folder's own
+   * videos before its subfolders'), each labeled with its folder path. */
+  videos: ShareTreeItemWithPath[];
+}
+
+// Whole-share search over the in-memory tree — synchronous, no network.
+// Folders land in results when their own name matches (their contents
+// are not implicitly included); videos when their name matches, and the
+// DFS from the root spans every reachable scope so a hit three folders
+// deep is found from the top. The visited guard keeps the walk finite
+// on a malformed cyclic payload; cycle members are unreachable from the
+// root scope, so they degrade to "not found" instead of hanging — same
+// stance as `breadcrumbs`. An empty/whitespace query returns empty
+// results; callers use that as the browse-mode signal.
+export function searchTree(tree: ShareTree, query: string): ShareSearchResults {
+  const needle = query.trim().toLowerCase();
+  const results: ShareSearchResults = { folders: [], videos: [] };
+  if (!needle) return results;
+
+  const visited = new Set<string | null>();
+  const walk = (scope: string | null) => {
+    if (visited.has(scope)) return;
+    visited.add(scope);
+    for (const item of tree.childItems(scope)) {
+      if (item.name.toLowerCase().includes(needle)) {
+        const folderPath = scope === null ? [] : tree.breadcrumbs(scope).map((f) => f.name);
+        results.videos.push({ ...item, folderPath });
+      }
+    }
+    for (const folder of tree.childFolders(scope)) {
+      if (folder.name.toLowerCase().includes(needle)) results.folders.push(folder);
+      walk(folder.id);
+    }
+  };
+  walk(null);
+  return results;
 }
