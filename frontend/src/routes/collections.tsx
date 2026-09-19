@@ -23,8 +23,13 @@
 
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 
-import type { CollectionDto, CollectionKind } from "../api/types";
+import type { CollectionDetailDto, CollectionDto, CollectionKind } from "../api/types";
+import {
+  collectionsQueryKeys,
+  fetchCollection,
+} from "../api/collections";
 import {
   useCollections,
   useCreateCollection,
@@ -34,6 +39,7 @@ import {
 import { useToast } from "../hooks/use-toast";
 import { describeError } from "../lib/format";
 import { CollectionCard } from "../components/collections/collection-card";
+import { ShareDialog } from "../components/share-dialog";
 import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
@@ -281,10 +287,41 @@ const KEBAB_TRIGGER_CLASS =
   "hover:text-[var(--color-castify-text)] focus:outline-none focus-visible:ring-2 " +
   "focus-visible:ring-[var(--color-focus)]";
 
-/** Kebab menu riding the card's menuSlot: Rename, then Delete. */
+/** Kebab menu riding the card's menuSlot: Rename, Share, Delete. */
 function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [shareDetail, setShareDetail] = useState<CollectionDetailDto | null>(
+    null,
+  );
+  const queryClient = useQueryClient();
+  const toast = useToast();
+
+  // The grid's CollectionDto has no member ids, so sharing fetches the
+  // detail on demand — through the shared cache key, meaning a visited
+  // detail page serves this with zero requests (app-wide staleTime).
+  function share(): void {
+    void queryClient
+      .fetchQuery({
+        queryKey: collectionsQueryKeys.detail(collection.id),
+        queryFn: () => fetchCollection(collection.id),
+      })
+      .then((detail) => {
+        // Stale member_count guard: never open a dead dialog.
+        if (detail.members.length === 0) {
+          toast.error(
+            `Can't share "${collection.name}" — it's empty now.`,
+          );
+          return;
+        }
+        setShareDetail(detail);
+      })
+      .catch(() => {
+        toast.error(
+          `Couldn't share "${collection.name}". Please try again.`,
+        );
+      });
+  }
 
   return (
     <>
@@ -293,6 +330,17 @@ function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
         triggerClassName={KEBAB_TRIGGER_CLASS}
       >
         <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>
+        <MenuItem
+          onSelect={share}
+          disabled={collection.member_count === 0}
+          title={
+            collection.member_count === 0
+              ? "Empty collections can't be shared"
+              : undefined
+          }
+        >
+          Share
+        </MenuItem>
         <MenuItem onSelect={() => setDeleting(true)}>Delete</MenuItem>
       </Menu>
       {renaming && (
@@ -305,6 +353,13 @@ function CollectionCardMenu({ collection }: { collection: CollectionDto }) {
         <DeleteCollectionDialog
           collection={collection}
           onClose={() => setDeleting(false)}
+        />
+      )}
+      {shareDetail && (
+        <ShareDialog
+          videoIds={shareDetail.members.map((m) => m.id)}
+          itemLabel={shareDetail.name}
+          onClose={() => setShareDetail(null)}
         />
       )}
     </>
