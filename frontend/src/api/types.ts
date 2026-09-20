@@ -278,6 +278,39 @@ export interface FolderContentsPageDto {
   limit: number;
 }
 
+// --- Library folders (library-folders effort) ---
+//
+// Curated (owner-created) folders organizing the whole catalog. The
+// contents listing reuses `FolderContentsPageDto` above — the wire is
+// identical to the provider contents endpoint, so the organizer renders
+// both listings with the same components.
+
+// Mutation-response folder row (create/update). Carries no item_count —
+// mutations invalidate the tree query and the server owns the tree.
+export interface LibraryFolderDto {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+}
+
+// Tree node: the folder row plus its cumulative item count (videos +
+// files over the subtree).
+export interface LibraryTreeFolderDto {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+  item_count: number;
+}
+
+// `GET /api/library-folders/tree` — the flat folder list (the client
+// builds the nested tree) plus the pinned Unfiled node's live count.
+export interface LibraryTreeDto {
+  folders: LibraryTreeFolderDto[];
+  unfiled_count: number;
+}
+
 // Mutation response bodies — the backend echoes the post-mutation state so
 // the client can update its cache without a refetch (M2 T6 deviation #33).
 export interface FavoriteResponseDto {

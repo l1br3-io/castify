@@ -15,7 +15,8 @@
 //   q              search query (synced from BrowsePage's debounced input)
 //   sort           VideoSortKey
 //   provider       ProviderKey (single — backend predicate is single-valued)
-//   folder         top-level folder name
+//   grid-folder    top-level folder name (the grid filter; `folder` belongs
+//                  to curated organizer navigation — library-folders effort)
 //   favorites_only "true" when active (absent = off)
 //   duration       "short" | "medium" | "long" (absent = All)
 //   resolution     "sd" | "hd" | "fhd" | "4k" (absent = All)
@@ -132,10 +133,12 @@ export interface FilterChip {
 const DEFAULT_SORT: VideoSortKey = "date-desc";
 
 // Param keys that `clearAll` resets. Sort + q are preserved (sort is a
-// separate concern; q has its own clear button in SearchBar).
+// separate concern; q has its own clear button in SearchBar). The grid
+// folder filter lives under `grid-folder` — the library-folders effort
+// reassigned `?folder=` to curated organizer navigation on this route.
 const RESETTABLE_PARAMS = [
   "provider",
-  "folder",
+  "grid-folder",
   "favorites_only",
   "duration",
   "resolution",
@@ -165,7 +168,7 @@ export function useBrowseFilters(): UseBrowseFiltersResult {
   const q = searchParams.get("q") ?? "";
   const sort = (searchParams.get("sort") as VideoSortKey) || DEFAULT_SORT;
   const provider = searchParams.get("provider") ?? undefined;
-  const folder = searchParams.get("folder") ?? undefined;
+  const folder = searchParams.get("grid-folder") ?? undefined;
   const favoritesOnly = searchParams.get("favorites_only") === "true";
   const durationKey = searchParams.get("duration") ?? undefined;
   const resolutionKey = searchParams.get("resolution") ?? undefined;
@@ -188,7 +191,8 @@ export function useBrowseFilters(): UseBrowseFiltersResult {
   const setSort = (value: VideoSortKey) => updateParam("sort", value);
   const setProvider = (value: string | undefined) =>
     updateParam("provider", value);
-  const setFolder = (value: string | undefined) => updateParam("folder", value);
+  const setFolder = (value: string | undefined) =>
+    updateParam("grid-folder", value);
   const setFavoritesOnly = (value: boolean) =>
     updateParam("favorites_only", value ? "true" : undefined);
   const setDurationKey = (value: string | undefined) =>

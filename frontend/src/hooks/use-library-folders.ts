@@ -1,0 +1,137 @@
+// `useLibraryFolders` — the curated tree query, placement mutations,
+// contents query, and the `?folder=` URL param (library-folders effort).
+//
+// Invalidation map: every mutation invalidates the tree key AND the
+// contents family — the server owns the tree and the counts, so a
+// settled mutation always reconciles through refetch (no optimistic
+// placement caching to roll back).
+//
+// `useLibraryFolderParam` owns the browse route's `?folder=` state:
+// `?folder=<id>` selects a curated folder; absent, empty, or `none`
+// selects the pinned Unfiled node (the default). Selections PUSH a
+// history entry (file-browser mental model, matching `useFolderDir`);
+// `{ replace: true }` is for corrections (stale-folder fallback).
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+
+import {
+  createLibraryFolder,
+  deleteLibraryFolder,
+  fetchLibraryFolderContents,
+  fetchLibraryFolderTree,
+  moveLibraryItems,
+  updateLibraryFolder,
+} from "../api/library-folders";
+import type { LibraryMoveItem } from "../api/library-folders";
+import type { LibraryContentsParams } from "../api/library-folders";
+
+export const libraryFolderKeys = {
+  all: ["library-folders"] as const,
+  tree: () => [...libraryFolderKeys.all, "tree"] as const,
+  contents: (params: LibraryContentsParams) =>
+    [...libraryFolderKeys.all, "contents", params] as const,
+};
+
+export function useLibraryFolderTree() {
+  return useQuery({
+    queryKey: libraryFolderKeys.tree(),
+    queryFn: fetchLibraryFolderTree,
+  });
+}
+
+export function useLibraryFolderContents(params: LibraryContentsParams) {
+  return useQuery({
+    queryKey: libraryFolderKeys.contents(params),
+    queryFn: () => fetchLibraryFolderContents(params),
+  });
+}
+
+/** Invalidate everything a folder/placement mutation can change. */
+function useInvalidateLibraryFolders() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: libraryFolderKeys.all });
+  };
+}
+
+export function useCreateLibraryFolder() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: ({ name, parentId }: { name: string; parentId?: string }) =>
+      createLibraryFolder(name, parentId),
+    onSettled: invalidate,
+  });
+}
+
+export function useUpdateLibraryFolder() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: ({
+      id,
+      name,
+      parentId,
+    }: {
+      id: string;
+      name?: string;
+      parentId?: string | null;
+    }) => {
+      const patch: { name?: string; parent_id?: string | null } = {};
+      if (name !== undefined) patch.name = name;
+      if (parentId !== undefined) patch.parent_id = parentId;
+      return updateLibraryFolder(id, patch);
+    },
+    onSettled: invalidate,
+  });
+}
+
+export function useDeleteLibraryFolder() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: (id: string) => deleteLibraryFolder(id),
+    onSettled: invalidate,
+  });
+}
+
+export function useMoveLibraryItems() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: ({
+      items,
+      folderId,
+    }: {
+      items: LibraryMoveItem[];
+      folderId: string | null;
+    }) => moveLibraryItems(items, folderId),
+    onSettled: invalidate,
+  });
+}
+
+/**
+ * The organizer's selected curated folder, URL-backed. Returns the
+ * folder id or `null` for the Unfiled selection, plus a setter that
+ * pushes history entries (or replaces, for corrections).
+ */
+export function useLibraryFolderParam(): [
+  string | null,
+  (next: string | null, options?: { replace?: boolean }) => void,
+] {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const raw = searchParams.get("folder");
+  const folder = raw === null || raw === "" || raw === "none" ? null : raw;
+
+  function setFolder(
+    next: string | null,
+    options?: { replace?: boolean },
+  ): void {
+    const params = new URLSearchParams(searchParams);
+    if (next === null) {
+      params.delete("folder");
+    } else {
+      params.set("folder", next);
+    }
+    setSearchParams(params, options?.replace ? { replace: true } : undefined);
+  }
+
+  return [folder, setFolder];
+}
