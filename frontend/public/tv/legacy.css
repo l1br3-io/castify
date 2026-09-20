@@ -87,6 +87,13 @@
   margin: 0 0 20px 0;
 }
 
+#castify-legacy .tv-back {
+  color: #f0a93a;
+  font-size: 14px;
+  text-decoration: none;
+  display: inline-block;
+}
+
 #castify-legacy .tv-button {
   background: #f0a93a;
   color: #10131a;

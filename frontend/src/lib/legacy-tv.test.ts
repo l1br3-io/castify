@@ -138,6 +138,14 @@ function requestedUrls(): string[] {
   return FakeXMLHttpRequest.requests.map((request) => `${request.method} ${request.url}`);
 }
 
+/**
+ * jsdom's canPlayType answers "" for everything; real browsers answer
+ * "probably"/"maybe". Stub the reply to control the legacy gate's branch.
+ */
+function stubCanPlay(reply: "probably" | "maybe" | ""): void {
+  vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue(reply);
+}
+
 /** A share item as the items endpoint returns it (flattened summary). */
 function shareItem(
   overrides: Partial<VideoSummaryDto> = {},
@@ -227,6 +235,7 @@ describe("legacy tv watch happy path (task 003)", () => {
 
   it("renders a <video> with stream src, poster, metadata, and native subtitle tracks", async () => {
     window.history.pushState({}, "", "/share/tok_1/watch/vid_1");
+    stubCanPlay("probably");
     stubShareApi((fake) => {
       fake.get("/api/share/tok_1/items", () => ({
         status: 200,
@@ -279,6 +288,7 @@ describe("legacy tv watch happy path (task 003)", () => {
 
   it("plays proxy and cached strategies the same as direct", async () => {
     window.history.pushState({}, "", "/share/tok_9/watch/vid_9");
+    stubCanPlay("probably");
     stubShareApi((fake) => {
       fake.get("/api/share/tok_9/items", () => ({
         status: 200,
@@ -484,5 +494,254 @@ describe("legacy tv landing + unlock + notice (task 004)", () => {
     await waitFor(() => {
       expect(container?.textContent).toContain(copy);
     });
+  });
+});
+
+describe("legacy tv watch edge states (task 005)", () => {
+  afterEach(resetLegacyDom);
+
+  function stubWatchApi(token: string, options: {
+    itemsStatus?: () => number;
+    streamStatus?: () => number;
+    streamBody?: () => unknown;
+  } = {}): void {
+    stubShareApi((fake) => {
+      const itemsStatus = options.itemsStatus ?? (() => 200);
+      const streamStatus = options.streamStatus ?? (() => 200);
+      fake.get(`/api/share/${token}/items`, () => {
+        const status = itemsStatus();
+        return status === 200
+          ? { status, body: { folders: [], items: [shareItem()] } }
+          : { status, body: { error: "gate" } };
+      });
+      fake.get(`/api/share/${token}/videos/vid_1/stream-url`, () => {
+        const status = streamStatus();
+        return status === 200
+          ? { status, body: options.streamBody?.() ?? { url: "https://cdn.example.com/v.mp4", strategy: "direct", expires_at: null } }
+          : { status, body: { error: "stream" } };
+      });
+      fake.get(`/api/share/${token}/videos/vid_1/subtitles`, () => ({ status: 200, body: [] }));
+    });
+  }
+
+  it("items 401 on a watch URL shows the unlock form, then plays in place after unlock", async () => {
+    window.history.pushState({}, "", "/share/tok_w1/watch/vid_1");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_w1", () => ({
+        status: 200,
+        body: { title: "Locked share", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_w1/items", () => {
+        const unlocked = FakeXMLHttpRequest.requests.some((r) => r.url === "/api/share/tok_w1/unlock");
+        return unlocked
+          ? { status: 200, body: { folders: [], items: [shareItem()] } }
+          : { status: 401, body: { error: "locked" } };
+      });
+      fake.get("/api/share/tok_w1/videos/vid_1/stream-url", () => ({
+        status: 200,
+        body: { url: "https://cdn.example.com/unlocked.mp4", strategy: "direct", expires_at: null },
+      }));
+      fake.get("/api/share/tok_w1/videos/vid_1/subtitles", () => ({ status: 200, body: [] }));
+      fake.post("/api/share/tok_w1/unlock", () => ({ status: 204 }));
+    });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+    expect(container?.querySelector(".tv-title")?.textContent).toBe("Locked share");
+
+    (document.getElementById("tv-password") as HTMLInputElement).value = "pw";
+    fireEvent.submit(document.getElementById("tv-unlock-form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+    expect(container?.querySelector("video")?.getAttribute("src")).toBe("https://cdn.example.com/unlocked.mp4");
+    // In-place recovery: the watch flow re-ran, no landing list rendered.
+    expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(0);
+  });
+
+  it.each([
+    [404, "This share doesn't exist."],
+    [410, "This share is no longer available."],
+  ])("watch items %s renders the terminal copy", async (code, copy) => {
+    window.history.pushState({}, "", "/share/tok_w2/watch/vid_1");
+    stubWatchApi("tok_w2", { itemsStatus: () => code });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain(copy);
+    });
+    expect(container?.querySelector("video")).toBeNull();
+  });
+
+  it("missing member renders the not-in-share block with a back link", async () => {
+    window.history.pushState({}, "", "/share/tok_w3/watch/vid_other");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_w3/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+    });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("This video isn't part of the share.");
+    });
+    const back = container?.querySelector("a.tv-back");
+    expect(back?.getAttribute("href")).toBe("/share/tok_w3");
+  });
+
+  it("stream-url failure renders Couldn't-load with a working Retry", async () => {
+    window.history.pushState({}, "", "/share/tok_w4/watch/vid_1");
+    let failures = 0;
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_w4/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+      fake.get("/api/share/tok_w4/videos/vid_1/stream-url", () => {
+        failures += 1;
+        return failures < 2 ? { status: 500, body: { error: "boom" } } : { status: 200, body: { url: "https://cdn.example.com/ok.mp4", strategy: "direct", expires_at: null } };
+      });
+      fake.get("/api/share/tok_w4/videos/vid_1/subtitles", () => ({ status: 200, body: [] }));
+    });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("Couldn't load this video");
+    });
+
+    fireEvent.click(document.getElementById("tv-retry") as HTMLElement);
+
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+    expect(container?.querySelector("video")?.getAttribute("src")).toBe("https://cdn.example.com/ok.mp4");
+  });
+
+  it("stream-url 404 renders the removed-from-share terminal", async () => {
+    window.history.pushState({}, "", "/share/tok_w5/watch/vid_1");
+    stubWatchApi("tok_w5", { streamStatus: () => 404 });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("This video is no longer available in this share");
+    });
+  });
+
+  it("transcode strategy renders the dedicated unsupported card", async () => {
+    window.history.pushState({}, "", "/share/tok_w6/watch/vid_1");
+    stubWatchApi("tok_w6", {
+      streamBody: () => ({ url: "/api/share/tok_w6/videos/vid_1/master.m3u8", strategy: "transcode", expires_at: null }),
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("Transcoding isn't supported on this TV");
+    });
+    expect(container?.textContent).toContain("MP4 (H.264)");
+    expect(container?.querySelector("video")).toBeNull();
+  });
+
+  it("canPlayType empty renders the can't-play card", async () => {
+    window.history.pushState({}, "", "/share/tok_w7/watch/vid_1");
+    stubWatchApi("tok_w7");
+    stubCanPlay("");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("This format can't be played in-browser");
+    });
+    expect(container?.querySelector("video")).toBeNull();
+  });
+
+  it("recovers once from a CDN-expiry video error, then gives up", async () => {
+    window.history.pushState({}, "", "/share/tok_w8/watch/vid_1");
+    let served = 0;
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_w8/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+      fake.get("/api/share/tok_w8/videos/vid_1/stream-url", () => {
+        served += 1;
+        return { status: 200, body: { url: "https://cdn.example.com/v-" + served + ".mp4", strategy: "direct", expires_at: null } };
+      });
+      fake.get("/api/share/tok_w8/videos/vid_1/subtitles", () => ({ status: 200, body: [] }));
+    });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+
+    const video = container?.querySelector("video") as HTMLVideoElement;
+    video.currentTime = 42;
+    fireEvent.error(video);
+
+    await waitFor(() => {
+      expect(video.getAttribute("src")).toBe("https://cdn.example.com/v-2.mp4");
+    });
+    expect(video.currentTime).toBe(42);
+    expect(
+      FakeXMLHttpRequest.requests.filter((r) => r.url === "/api/share/tok_w8/videos/vid_1/stream-url"),
+    ).toHaveLength(2);
+
+    fireEvent.error(video);
+
+    await waitFor(() => {
+      expect(container?.textContent).toContain("This format can't be played in-browser");
+    });
+    expect(
+      FakeXMLHttpRequest.requests.filter((r) => r.url === "/api/share/tok_w8/videos/vid_1/stream-url"),
+    ).toHaveLength(2);
+  });
+
+  it("subtitle fetch failure is non-fatal — the video still renders", async () => {
+    window.history.pushState({}, "", "/share/tok_w9/watch/vid_1");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_w9/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+      fake.get("/api/share/tok_w9/videos/vid_1/stream-url", () => ({
+        status: 200,
+        body: { url: "https://cdn.example.com/v.mp4", strategy: "direct", expires_at: null },
+      }));
+      fake.get("/api/share/tok_w9/videos/vid_1/subtitles", () => ({ status: 500, body: { error: "boom" } }));
+    });
+    stubCanPlay("probably");
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+    expect(container?.querySelector("video")?.getAttribute("src")).toBe("https://cdn.example.com/v.mp4");
+    expect(container?.querySelectorAll("track")).toHaveLength(0);
   });
 });

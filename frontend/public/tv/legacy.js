@@ -146,10 +146,18 @@
       "</div>";
   }
 
-  function renderRetryableError(container, retry) {
+  function renderMessageWithBack(container, text, backHref) {
     container.innerHTML =
       '<div class="tv-message">' +
-      '<p class="tv-message-title">Something went wrong.</p>' +
+      '<p class="tv-message-title">' + escapeHtml(text) + "</p>" +
+      '<a class="tv-back" href="' + escapeHtml(backHref) + '">Back to the share</a>' +
+      "</div>";
+  }
+
+  function renderRetryableError(container, retry, title) {
+    container.innerHTML =
+      '<div class="tv-message">' +
+      '<p class="tv-message-title">' + escapeHtml(title || "Something went wrong.") + "</p>" +
       '<p class="tv-message-body">Check the TV\'s connection and try again.</p>' +
       '<button type="button" class="tv-button" id="tv-retry">Retry</button>' +
       "</div>";
@@ -159,6 +167,28 @@
         retry();
       };
     }
+  }
+
+  /*
+   * Unplayable-format card — shared by the canPlayType gate, the burned
+   * CDN-expiry retry, and failed recovery refetches. Same spirit as the
+   * modern page's ShareUnsupportedFormat.
+   */
+  function renderUnsupportedFormat(container) {
+    renderMessage(container, "This format can't be played in-browser.");
+  }
+
+  /*
+   * Transcode terminal card. The modern page resolves transcode through
+   * hls.js; the legacy page must not (module syntax + ~500 KB) — the
+   * card is terminal by design (spec FR-4.1).
+   */
+  function renderTranscodeCard(container) {
+    container.innerHTML =
+      '<div class="tv-message">' +
+      '<p class="tv-message-title">Transcoding isn\'t supported on this TV.</p>' +
+      '<p class="tv-message-body">Shared videos should be MP4 (H.264) to play here.</p>' +
+      "</div>";
   }
 
   /* Terminal share errors — copy mirrors the modern page. Anything else
@@ -189,6 +219,20 @@
 
   /* ── watch page ────────────────────────────────────────────────────── */
 
+  /* Mirrors the modern page's optimistic gate: null mime plays (the
+   * error path catches failed decodes); otherwise canPlayType must not
+   * answer "". */
+  function canPlayMime(mime) {
+    if (!mime) {
+      return true;
+    }
+    var probe = document.createElement("video");
+    if (!probe.canPlayType) {
+      return true;
+    }
+    return probe.canPlayType(mime) !== "";
+  }
+
   function findVideo(items, videoId) {
     for (var i = 0; i < items.length; i++) {
       if (items[i].id === videoId) {
@@ -204,13 +248,19 @@
       ok: function (data) {
         var video = findVideo(data && data.items ? data.items : [], videoId);
         if (!video) {
-          renderMessage(container, "This video isn't part of the share.");
+          renderMessageWithBack(container, "This video isn't part of the share.", "/share/" + token);
           return;
         }
-        renderStream(container, token, video);
+        renderStream(container, token, video, videoId);
       },
-      status: function () {
-        renderRetryableError(container, function () {
+      status: function (code) {
+        if (code === 401) {
+          renderUnlockGate(container, token, function () {
+            renderWatch(container, token, videoId);
+          });
+          return;
+        }
+        renderShareError(container, code, function () {
           renderWatch(container, token, videoId);
         });
       },
@@ -222,32 +272,40 @@
     });
   }
 
-  function renderStream(container, token, video) {
+  function renderStream(container, token, video, videoId) {
     var videoPath = "/api/share/" + token + "/videos/" + encodeURIComponent(video.id);
     renderLoading(container);
     getJson(videoPath + "/stream-url", {
       ok: function (stream) {
         if (!stream || !stream.url) {
           renderRetryableError(container, function () {
-            renderStream(container, token, video);
-          });
+            renderStream(container, token, video, videoId);
+          }, "Couldn't load this video.");
           return;
         }
         if (stream.strategy === "transcode") {
-          renderMessage(container, "Transcoding isn't supported on this TV.");
+          renderTranscodeCard(container);
+          return;
+        }
+        if (!canPlayMime(video.mime_type)) {
+          renderUnsupportedFormat(container);
           return;
         }
         renderPlayer(container, token, video, stream.url);
       },
-      status: function () {
+      status: function (code) {
+        if (code === 404) {
+          renderMessage(container, "This video is no longer available in this share.");
+          return;
+        }
         renderRetryableError(container, function () {
-          renderStream(container, token, video);
-        });
+          renderStream(container, token, video, videoId);
+        }, "Couldn't load this video.");
       },
       error: function () {
         renderRetryableError(container, function () {
-          renderStream(container, token, video);
-        });
+          renderStream(container, token, video, videoId);
+        }, "Couldn't load this video.");
       },
     });
   }
@@ -270,14 +328,61 @@
       '" poster="' + escapeHtml(videoPath + "/thumbnail") + '"></video>' +
       (meta.length ? '<p class="tv-meta">' + meta.join(" &#183; ") + "</p>" : "") +
       "</div>";
-    attachSubtitles(videoPath, container.getElementsByTagName("video")[0]);
+    var videoEl = container.getElementsByTagName("video")[0];
+    wireExpiryRecovery(container, videoPath, videoEl);
+    attachSubtitles(videoPath, videoEl);
+  }
+
+  /*
+   * CDN-expiry recovery (direct URLs are short-lived preauthenticated
+   * links). On a <video> error, refetch /stream-url (a fresh URL — not
+   * the same one), swap src, and restore currentTime best-effort. Hard
+   * one-retry bound: a loop here would hammer the backend on a genuinely
+   * broken file; the second error is terminal (mirrors the modern
+   * player's retriedStreamUrlRef).
+   */
+  function wireExpiryRecovery(container, videoPath, videoEl) {
+    if (!videoEl) {
+      return;
+    }
+    var recovered = false;
+    videoEl.onerror = function () {
+      if (recovered) {
+        renderUnsupportedFormat(container);
+        return;
+      }
+      recovered = true;
+      var time = videoEl.currentTime;
+      getJson(videoPath + "/stream-url", {
+        ok: function (stream) {
+          if (!stream || !stream.url) {
+            renderUnsupportedFormat(container);
+            return;
+          }
+          videoEl.setAttribute("src", stream.url);
+          videoEl.load();
+          try {
+            videoEl.currentTime = time;
+          } catch (e) {
+            /* Best-effort — some engines need loadedmetadata first. */
+          }
+        },
+        status: function () {
+          renderUnsupportedFormat(container);
+        },
+        error: function () {
+          renderUnsupportedFormat(container);
+        },
+      });
+    };
   }
 
   /*
    * Native <track> elements consume WebVTT; the server converts text
    * formats on the fly. ASS/SSA tracks are served raw for libass (modern
    * bundle only) and image-family tracks need burn-in — neither can run
-   * on this engine, so both are skipped (spec: ASS ignored).
+   * on this engine, so both are skipped (spec: ASS ignored). Failure is
+   * non-fatal: the video plays, tracks are simply absent.
    */
   function attachSubtitles(videoPath, videoEl) {
     if (!videoEl) {
@@ -307,6 +412,12 @@
           el.setAttribute("src", videoPath + "/subtitles/" + encodeURIComponent(track.id));
           videoEl.appendChild(el);
         }
+      },
+      status: function () {
+        /* Non-fatal by design. */
+      },
+      error: function () {
+        /* Non-fatal by design. */
       },
     });
   }
@@ -410,7 +521,32 @@
 
   /* ── unlock form ───────────────────────────────────────────────────── */
 
-  function renderUnlockForm(container, token, title) {
+  /*
+   * Resolve the share title (the one endpoint that answers while
+   * locked), then render the unlock form. `onUnlocked` re-runs the
+   * calling flow in place — the landing re-fetches the list, the watch
+   * page re-fetches the stream. Omit it for the landing default.
+   */
+  function renderUnlockGate(container, token, onUnlocked) {
+    getJson("/api/share/" + token, {
+      ok: function (share) {
+        var title = share && share.title ? share.title : "Shared videos";
+        renderUnlockForm(container, token, title, onUnlocked);
+      },
+      status: function (code) {
+        renderShareError(container, code, function () {
+          renderUnlockGate(container, token, onUnlocked);
+        });
+      },
+      error: function () {
+        renderRetryableError(container, function () {
+          renderUnlockGate(container, token, onUnlocked);
+        });
+      },
+    });
+  }
+
+  function renderUnlockForm(container, token, title, onUnlocked) {
     container.innerHTML =
       '<div class="tv-message tv-unlock">' +
       '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
@@ -428,13 +564,13 @@
         if (event && event.preventDefault) {
           event.preventDefault();
         }
-        submitUnlock(container, token);
+        submitUnlock(container, token, onUnlocked);
         return false;
       };
     }
   }
 
-  function submitUnlock(container, token) {
+  function submitUnlock(container, token, onUnlocked) {
     var input = document.getElementById("tv-password");
     var errorEl = document.getElementById("tv-unlock-error");
     var button = document.getElementById("tv-unlock-submit");
@@ -450,6 +586,10 @@
     }
     postJson("/api/share/" + token + "/unlock", { password: password }, {
       ok: function () {
+        if (onUnlocked) {
+          onUnlocked();
+          return;
+        }
         renderLanding(container, token);
       },
       status: function (code) {
