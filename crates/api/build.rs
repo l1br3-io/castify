@@ -39,6 +39,9 @@ fn declare_watch(frontend_dir: &Path) {
         "tailwind.config.js",
         "postcss.config.js",
         "src",
+        // Legacy TV player assets (public/tv/*) ship verbatim through the
+        // embed — edits must retrigger the frontend build.
+        "public",
         // Tracking the build output too: if dist/index.html is missing (e.g.
         // after `cargo clean` or a fresh clone), cargo will rerun build.rs and
         // regenerate it. Without this, rust-embed's macro fails to compile.

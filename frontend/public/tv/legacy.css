@@ -1,0 +1,206 @@
+/*
+ * Castify legacy TV player styles.
+ *
+ * GOTCHA: every selector must stay scoped under #castify-legacy (the modern
+ * app also renders in forced ?legacy=1 mode — neither tree may style the
+ * other), and no CSS custom properties, oklch, color-mix, @layer, or
+ * @property may appear — the Tizen engine predates all of them. Hex colors
+ * mirror the modern dark theme (index.css) so the pages read as one product.
+ * The ban is enforced by the gate in src/lib/legacy-tv.test.ts.
+ */
+
+#castify-legacy {
+  margin: 0;
+  min-height: 100vh;
+  background: #10131a;
+  color: #e7e9ee;
+  font-family: sans-serif;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+#castify-legacy .tv-loading {
+  color: #9096a5;
+  font-size: 18px;
+  margin: 0;
+}
+
+/* GOTCHA: no `gap` anywhere — flexbox gap is Chromium 84+ and silently
+ * no-ops on the Tizen engine; spacing is margins. */
+#castify-legacy .tv-watch {
+  width: 100%;
+  max-width: 960px;
+}
+
+#castify-legacy .tv-watch .tv-title {
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-video {
+  width: 100%;
+  background: #000000;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-title {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0;
+  word-wrap: break-word;
+}
+
+#castify-legacy .tv-video {
+  width: 100%;
+  background: #000000;
+  border-radius: 8px;
+}
+
+#castify-legacy .tv-meta {
+  color: #9096a5;
+  font-size: 14px;
+  margin: 0;
+}
+
+#castify-legacy .tv-message {
+  text-align: center;
+  max-width: 480px;
+}
+
+#castify-legacy .tv-message-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+}
+
+#castify-legacy .tv-message-body {
+  color: #9096a5;
+  font-size: 14px;
+  margin: 0 0 20px 0;
+}
+
+#castify-legacy .tv-back {
+  color: #f0a93a;
+  font-size: 14px;
+  text-decoration: none;
+  display: inline-block;
+}
+
+#castify-legacy .tv-button {
+  background: #f0a93a;
+  color: #10131a;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 10px 24px;
+  cursor: pointer;
+}
+
+#castify-legacy .tv-button[disabled] {
+  background: #3a2e13;
+  color: #9096a5;
+  cursor: default;
+}
+
+#castify-legacy .tv-landing {
+  width: 100%;
+  max-width: 720px;
+}
+
+#castify-legacy .tv-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#castify-legacy .tv-item {
+  margin: 0 0 8px 0;
+}
+
+/* One anchor per row wraps the thumbnail AND the name — click parity by
+ * construction (FR-3.1). */
+#castify-legacy .tv-item-link {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px;
+  text-decoration: none;
+  color: #e7e9ee;
+}
+
+#castify-legacy .tv-item-thumb {
+  width: 160px;
+  height: 90px;
+  border-radius: 4px;
+  background: #0c0e13;
+  object-fit: cover;
+  flex-shrink: 0;
+  -webkit-flex-shrink: 0;
+}
+
+#castify-legacy .tv-item-body {
+  display: block;
+  min-width: 0;
+  margin-left: 12px;
+}
+
+#castify-legacy .tv-item-name {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  word-wrap: break-word;
+}
+
+#castify-legacy .tv-item-meta {
+  display: block;
+  color: #9096a5;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+#castify-legacy .tv-unlock-form {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-align-items: center;
+  align-items: center;
+}
+
+#castify-legacy .tv-label {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-input {
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  color: #e7e9ee;
+  font-size: 16px;
+  padding: 10px 12px;
+  width: 240px;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-unlock-error {
+  color: #f0a93a;
+  font-size: 14px;
+  min-height: 20px;
+  margin: 12px 0 0 0;
+}
