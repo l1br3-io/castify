@@ -32,7 +32,10 @@
 
 pub mod repository;
 
-pub use repository::{FolderInvalid, FolderWriteError, LibraryFolderRepository, LibraryFolderRow};
+pub use repository::{
+    FolderInvalid, FolderWriteError, ItemKind, LibraryContentsFilter, LibraryFolderRepository,
+    LibraryFolderRow, LibraryFolderTree, LibraryTreeFolder, MoveItem,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LibraryFolderError {

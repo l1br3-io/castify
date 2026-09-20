@@ -8,10 +8,23 @@
 //! only ownership. Writes happen only on owner actions (create, rename,
 //! reparent, delete, batch move); scans never write placement.
 
+use castify_catalog::{
+    FileEntry, FileKind, FolderContentsFilter, FolderContentsPage, FolderEntry, FolderFileEntry,
+    FolderVideoEntry, VideoSource, VideoSummary,
+};
 use chrono::Utc;
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+use crate::library_folders::LibraryFolderResult;
+
+/// Active-connection gate, inlined from the catalog repository's
+/// (module-private) `ACTIVE_CONNECTION_FILTER` — this module must not
+/// reach into catalog internals, and the catalog crate stays untouched
+/// by this effort. Same predicate, kept in sync by the tests below.
+const ACTIVE_CONNECTIONS: &str =
+    "connection_id IN (SELECT id FROM provider_connections WHERE disconnected_at IS NULL)";
 
 /// A curated folder row. `parent_id: None` = tree root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +36,65 @@ pub struct LibraryFolderRow {
     /// Order within the folder's scope (its sibling group).
     pub position: i64,
     pub created_at: String,
+}
+
+/// One flat node of the curated tree, as `GET /api/library-folders/tree`
+/// serves it: the folder row plus its **cumulative** item count (videos
+/// dedup-aware + files raw, rolled up over the subtree). The client
+/// builds the nested tree from this list — one fetch, no per-node
+/// requests.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryTreeFolder {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub position: i64,
+    pub created_at: String,
+    /// Items in this folder's subtree (videos + files). Cumulative so
+    /// tiles read the same as the provider tree's counts.
+    pub item_count: i64,
+}
+
+/// The tree payload: flat folders ordered `(parent_id, position)` plus
+/// the pinned Unfiled node's live count (NULL placements, videos + files).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryFolderTree {
+    pub folders: Vec<LibraryTreeFolder>,
+    pub unfiled_count: i64,
+}
+
+/// Filters for [`LibraryFolderRepository::fetch_contents`] — the curated
+/// twin of `castify_catalog::FolderContentsFilter`: placement takes the
+/// place of `path`, everything else (`kind`, `q`, pagination, owner
+/// enrichment) matches the provider contents contract.
+#[derive(Debug, Clone)]
+pub struct LibraryContentsFilter {
+    /// `None` = the Unfiled bucket (NULL placement).
+    pub folder_id: Option<String>,
+    pub page: i64,
+    pub limit: i64,
+    /// Owner for the video-half enrichment joins (favorites/ratings/
+    /// progress).
+    pub owner_id: String,
+    /// `video` or one of the six file kinds (validated upstream).
+    pub kind: Option<String>,
+    /// Name contains, case-insensitive.
+    pub q: Option<String>,
+}
+
+/// The id namespace an item id belongs to — `kind` guards the batch move:
+/// a video id and a file id are only distinguishable by this tag.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum ItemKind {
+    Video,
+    File,
+}
+
+/// One entry of a batch-move request.
+#[derive(Clone, Copy, Debug)]
+pub struct MoveItem<'a> {
+    pub kind: ItemKind,
+    pub id: &'a str,
 }
 
 /// Folder-depth cap: root folders sit at depth 1; the deepest legal
@@ -57,6 +129,10 @@ pub enum FolderInvalid {
 pub enum FolderWriteError {
     #[error(transparent)]
     Invalid(#[from] FolderInvalid),
+    /// A batch-move item id that doesn't exist under its declared kind.
+    /// Fails the whole batch (all-or-nothing); routes map it to 404.
+    #[error("batch contains an unknown item id")]
+    UnknownItem,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -440,8 +516,420 @@ impl LibraryFolderRepository {
         Ok(Some(folder))
     }
 
+    /// The curated tree read behind `GET /api/library-folders/tree`: the
+    /// owner's folders as one flat `(parent_id, position)`-ordered list,
+    /// each carrying its **cumulative** item count, plus the Unfiled
+    /// bucket's live count. The client builds the nested tree from the
+    /// flat list — one fetch, no per-node requests.
+    ///
+    /// Cumulative counts roll up in Rust, not SQL (plan § Architecture
+    /// Decisions): one grouped dedup-aware count query per table over
+    /// placements, then an ancestor walk over the flat folder list —
+    /// folder cardinality is small, the shape is unit-testable, and it
+    /// avoids fighting recursive-CTE aggregation semantics. Video counts
+    /// are dedup-aware **per placement scope** (the provider tree's
+    /// `MIN(id) GROUP BY dedup_group` representative trick, scoped to
+    /// the folder): copies of one dedup group placed in the same folder
+    /// count once, while copies split across folders each count for the
+    /// scope they sit in. File counts are raw (files don't dedup).
+    pub async fn fetch_tree(&self, owner_id: &str) -> LibraryFolderResult<LibraryFolderTree> {
+        let folders: Vec<LibraryFolderRow> = sqlx::query(
+            "SELECT id, owner_id, parent_id, name, position, created_at \
+             FROM library_folders WHERE owner_id = ? ORDER BY parent_id, position",
+        )
+        .bind(owner_id)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(row_to_folder)
+        .collect();
+
+        // Direct (per-folder) counts: videos dedup-aware per placement
+        // scope (the provider tree's representative trick, scoped to the
+        // folder — copies of one dedup group in the same folder collapse;
+        // copies split across folders each count for their scope), files
+        // raw. Two grouped queries total.
+        let video_counts: Vec<(String, i64)> = sqlx::query(&format!(
+            "SELECT fid, COUNT(*) AS n FROM ( \
+                 SELECT library_folder_id AS fid FROM videos \
+                     WHERE library_folder_id IS NOT NULL AND dedup_group IS NOT NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+                     GROUP BY dedup_group, library_folder_id \
+                 UNION ALL \
+                 SELECT library_folder_id FROM videos \
+                     WHERE library_folder_id IS NOT NULL AND dedup_group IS NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+             ) GROUP BY fid",
+        ))
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|r: sqlx::sqlite::SqliteRow| (sqlx::Row::get(&r, "fid"), sqlx::Row::get(&r, "n")))
+        .collect();
+        let file_counts: Vec<(String, i64)> = sqlx::query(
+            "SELECT library_folder_id AS fid, COUNT(*) AS n FROM files \
+             WHERE library_folder_id IS NOT NULL \
+               AND connection_id IN (SELECT id FROM provider_connections \
+                                     WHERE disconnected_at IS NULL) \
+             GROUP BY library_folder_id",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|r: sqlx::sqlite::SqliteRow| (sqlx::Row::get(&r, "fid"), sqlx::Row::get(&r, "n")))
+        .collect();
+
+        // Unfiled: NULL placements, same dedup-awareness over videos.
+        let unfiled_videos: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM ( \
+                 SELECT dedup_group FROM videos \
+                     WHERE library_folder_id IS NULL AND dedup_group IS NOT NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+                     GROUP BY dedup_group \
+                 UNION ALL \
+                 SELECT 1 FROM videos \
+                     WHERE library_folder_id IS NULL AND dedup_group IS NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+             )",
+        ))
+        .fetch_one(&self.pool)
+        .await?;
+        let unfiled_files: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM files WHERE library_folder_id IS NULL \
+             AND connection_id IN (SELECT id FROM provider_connections \
+                                   WHERE disconnected_at IS NULL)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Ancestor roll-up over the flat list in memory — folder
+        // cardinality is small and the math is unit-testable (see the
+        // tests above); no recursive-CTE aggregation to fight.
+        let mut direct: HashMap<&str, i64> = HashMap::new();
+        for (fid, n) in video_counts.iter().chain(file_counts.iter()) {
+            *direct.entry(fid.as_str()).or_insert(0) += *n;
+        }
+        let parent_of: HashMap<&str, Option<&str>> = folders
+            .iter()
+            .map(|f| (f.id.as_str(), f.parent_id.as_deref()))
+            .collect();
+        let mut cumulative: HashMap<String, i64> =
+            folders.iter().map(|f| (f.id.clone(), 0i64)).collect();
+        for f in &folders {
+            let d = direct.get(f.id.as_str()).copied().unwrap_or(0);
+            let mut cursor = Some(f.id.as_str());
+            while let Some(id) = cursor {
+                if let Some(slot) = cumulative.get_mut(id) {
+                    *slot += d;
+                }
+                cursor = parent_of.get(id).copied().flatten();
+            }
+        }
+
+        Ok(LibraryFolderTree {
+            folders: folders
+                .into_iter()
+                .map(|f| LibraryTreeFolder {
+                    item_count: cumulative.remove(&f.id).unwrap_or(0),
+                    id: f.id,
+                    parent_id: f.parent_id,
+                    name: f.name,
+                    position: f.position,
+                    created_at: f.created_at,
+                })
+                .collect(),
+            unfiled_count: unfiled_videos + unfiled_files,
+        })
+    }
+
+    /// The curated contents read behind `GET /api/library-folders/
+    /// contents`: the mixed, paginated listing of items **directly** in
+    /// one folder (or the Unfiled bucket when `folder_id` is `None`).
+    /// Items only — subfolder tiles derive from the tree query, so
+    /// pagination never drops a folder off a page boundary. The wire
+    /// reuses the provider contents shapes (`FolderContentsPage`) so the
+    /// organizer renders both listings with the same components.
+    ///
+    /// `Ok(None)` = guard rejection: the folder id is unknown or owned
+    /// by another owner (no existence leak).
+    pub async fn fetch_contents(
+        &self,
+        owner_id: &str,
+        filter: &LibraryContentsFilter,
+    ) -> LibraryFolderResult<Option<FolderContentsPage>> {
+        if let Some(fid) = filter.folder_id.as_deref() {
+            let mut tx = self.pool.begin().await?;
+            if Self::fetch_folder(&mut tx, owner_id, fid).await?.is_none() {
+                return Ok(None);
+            }
+        }
+
+        let page = filter.page.max(1);
+        let limit = filter.limit.clamp(1, 200);
+        let offset = (page - 1) * limit;
+
+        // One builder produces the shared UNION body plus its binds, in
+        // order — the count and page queries wrap it identically, so the
+        // positional `?`s always line up (same shape as the catalog's
+        // provider contents query). A kind filter is applied at the
+        // wrapper level — the video half must be excluded for file
+        // kinds, not just the file half restricted.
+        let (union_sql, binds) = Self::contents_union(filter);
+        let kind_entry_frag = match filter.kind.as_deref() {
+            Some(k) if FolderContentsFilter::is_valid_kind(k) => {
+                format!(" WHERE entry_kind = '{k}'")
+            }
+            _ => String::new(),
+        };
+
+        // ── Count ─────────────────────────────────────────────────────
+        let count_sql = format!("SELECT COUNT(*) FROM ({union_sql}){kind_entry_frag}");
+        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+        for b in &binds {
+            count_q = count_q.bind(b);
+        }
+        let total: i64 = count_q.fetch_one(&self.pool).await?;
+
+        // ── Page ──────────────────────────────────────────────────────
+        let page_sql = format!(
+            "SELECT * FROM ({union_sql}){kind_entry_frag} \
+             ORDER BY name COLLATE NOCASE, entry_kind, id LIMIT {limit} OFFSET {offset}"
+        );
+        let mut page_q = sqlx::query(&page_sql);
+        for b in &binds {
+            page_q = page_q.bind(b);
+        }
+        let rows = page_q.fetch_all(&self.pool).await?;
+
+        // ── Hydrate video sources (dedup groups on this page) ─────────
+        let dedup_groups: Vec<String> = rows
+            .iter()
+            .filter(|r| sqlx::Row::get::<String, _>(*r, "entry_kind") == "video")
+            .filter_map(|r| sqlx::Row::get::<Option<String>, _>(r, "dedup_group"))
+            .collect();
+        let sources_by_group = if dedup_groups.is_empty() {
+            HashMap::new()
+        } else {
+            Self::sources_by_groups(&self.pool, &dedup_groups).await?
+        };
+
+        let entries = rows
+            .iter()
+            .map(|row| {
+                let entry_kind: String = sqlx::Row::get(row, "entry_kind");
+                if entry_kind == "video" {
+                    let dedup_group: Option<String> = sqlx::Row::get(row, "dedup_group");
+                    let own_source = VideoSource {
+                        connection_id: sqlx::Row::get(row, "connection_id"),
+                        provider: sqlx::Row::get::<String, _>(row, "provider"),
+                        provider_file_id: sqlx::Row::get(row, "provider_file_id"),
+                    };
+                    let sources = match &dedup_group {
+                        Some(group) => sources_by_group
+                            .get(group)
+                            .cloned()
+                            .unwrap_or_else(|| vec![own_source.clone()]),
+                        None => vec![own_source],
+                    };
+                    FolderEntry::Video(FolderVideoEntry {
+                        kind: "video",
+                        video: VideoSummary {
+                            id: sqlx::Row::get(row, "id"),
+                            name: sqlx::Row::get(row, "name"),
+                            provider: sqlx::Row::get(row, "provider"),
+                            size_bytes: sqlx::Row::get(row, "size_bytes"),
+                            mime_type: sqlx::Row::get(row, "mime_type"),
+                            duration_ms: sqlx::Row::get(row, "duration_ms"),
+                            width: sqlx::Row::get(row, "width"),
+                            height: sqlx::Row::get(row, "height"),
+                            sources,
+                            created_at: sqlx::Row::get(row, "created_at"),
+                            path: sqlx::Row::get(row, "path"),
+                            is_favorite: sqlx::Row::get(row, "is_favorite"),
+                            my_rating: sqlx::Row::get(row, "my_rating"),
+                            thumbnail_status: sqlx::Row::get(row, "thumbnail_status"),
+                            position_seconds: sqlx::Row::get(row, "position_seconds"),
+                            completed: sqlx::Row::get(row, "completed"),
+                        },
+                    })
+                } else {
+                    FolderEntry::File(FolderFileEntry {
+                        kind: FileKind::parse(&entry_kind),
+                        file: FileEntry {
+                            id: sqlx::Row::get(row, "id"),
+                            name: sqlx::Row::get(row, "name"),
+                            provider: sqlx::Row::get(row, "provider"),
+                            path: sqlx::Row::get(row, "path"),
+                            size_bytes: sqlx::Row::get(row, "size_bytes"),
+                            mime_type: sqlx::Row::get(row, "mime_type"),
+                            modified_at: sqlx::Row::get(row, "provider_modified_at"),
+                        },
+                    })
+                }
+            })
+            .collect();
+
+        Ok(Some(FolderContentsPage {
+            entries,
+            total,
+            page,
+            limit,
+        }))
+    }
+
+    /// The batch placement write behind `PATCH /api/library-folders/
+    /// items` — the primitive move op. One transaction for the whole
+    /// batch (data-storage rule #5: one user action, one transaction):
+    /// every listed item lands in `folder_id` (null → Unfiled) or the
+    /// request fails whole — an item id that doesn't exist under its
+    /// declared `kind` aborts with [`FolderWriteError::UnknownItem`]
+    /// and nothing moves. A single-item move is the degenerate
+    /// `items: [one]`. Folders are organization, never authorization —
+    /// playback and shares never read this column.
+    ///
+    /// `Ok(None)` = guard rejection: the target folder is unknown or
+    /// foreign. `Ok(Some(n))` = `n` item rows rewritten.
+    pub async fn move_items(
+        &self,
+        owner_id: &str,
+        items: &[MoveItem<'_>],
+        folder_id: Option<&str>,
+    ) -> Result<Option<u64>, FolderWriteError> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(fid) = folder_id {
+            if Self::fetch_folder(&mut tx, owner_id, fid).await?.is_none() {
+                // Dropping the tx rolls back — nothing was written.
+                return Ok(None);
+            }
+        }
+        let mut written = 0u64;
+        let mut seen: HashSet<(ItemKind, &str)> = HashSet::new();
+        for item in items {
+            if !seen.insert((item.kind, item.id)) {
+                continue; // in-batch duplicate — skip
+            }
+            let result = match item.kind {
+                ItemKind::Video => {
+                    sqlx::query("UPDATE videos SET library_folder_id = ? WHERE id = ?")
+                }
+                ItemKind::File => {
+                    sqlx::query("UPDATE files SET library_folder_id = ? WHERE id = ?")
+                }
+            }
+            .bind(folder_id)
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() == 0 {
+                // All-or-nothing: dropping the tx rolls every earlier
+                // update in this batch back.
+                return Err(FolderWriteError::UnknownItem);
+            }
+            written += 1;
+        }
+        tx.commit().await?;
+        Ok(Some(written))
+    }
+
     // -- Folder helpers: owner-scoped fetch and the single-CTE walks that
     // keep every tree check O(depth) statements.
+
+    /// Build the shared UNION body for the curated contents queries and
+    /// its bind values, in positional order — the placement-scoped twin
+    /// of the catalog's `folder_contents_union`: the video half selects
+    /// dedup representatives *within the placement scope* (so copies
+    /// split across folders surface in each), the file half joins the
+    /// provider name the same way. The caller wraps the body in
+    /// `SELECT COUNT(*)` or `SELECT * … LIMIT`.
+    fn contents_union(filter: &LibraryContentsFilter) -> (String, Vec<Option<String>>) {
+        let mut sql = String::new();
+        let mut binds: Vec<Option<String>> = Vec::new();
+
+        // ── Video half ────────────────────────────────────────────────
+        sql.push_str(&format!(
+            "SELECT 'video' AS entry_kind, v.id, v.name, v.provider, v.size_bytes, \
+                    v.mime_type, v.duration_ms, v.width, v.height, v.dedup_group, \
+                    v.connection_id, v.provider_file_id, v.created_at, v.path, \
+                    v.thumbnail_status, v.provider_modified_at, \
+                    (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
+                    pp.position_seconds AS position_seconds, \
+                    COALESCE(pp.completed, 0) AS completed \
+             FROM videos v \
+             LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
+             LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
+             LEFT JOIN playback_progress pp ON pp.video_id = v.id AND pp.owner_id = ? \
+             WHERE v.id IN ( \
+                 SELECT MIN(id) FROM videos \
+                     WHERE library_folder_id IS ? AND dedup_group IS NOT NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+                     GROUP BY dedup_group \
+                 UNION ALL \
+                 SELECT id FROM videos \
+                     WHERE library_folder_id IS ? AND dedup_group IS NULL \
+                       AND {ACTIVE_CONNECTIONS} \
+             )",
+        ));
+        binds.push(Some(filter.owner_id.clone()));
+        binds.push(Some(filter.owner_id.clone()));
+        binds.push(Some(filter.owner_id.clone()));
+        binds.push(filter.folder_id.clone());
+        binds.push(filter.folder_id.clone());
+        if let Some(q) = like_escape(filter.q.as_deref()) {
+            sql.push_str(" AND v.name LIKE ? ESCAPE '\\'");
+            binds.push(Some(q));
+        }
+
+        // ── File half ─────────────────────────────────────────────────
+        sql.push_str(
+            " UNION ALL \
+             SELECT f.kind AS entry_kind, f.id, f.name, pc.provider, f.size_bytes, \
+                    f.mime_type, NULL, NULL, NULL, NULL, f.connection_id, \
+                    f.provider_file_id, f.created_at, f.path, NULL, \
+                    f.provider_modified_at, 0, NULL, NULL, 0 \
+             FROM files f \
+             JOIN provider_connections pc ON pc.id = f.connection_id \
+                    AND pc.disconnected_at IS NULL \
+             WHERE f.library_folder_id IS ?",
+        );
+        binds.push(filter.folder_id.clone());
+        if let Some(q) = like_escape(filter.q.as_deref()) {
+            sql.push_str(" AND f.name LIKE ? ESCAPE '\\'");
+            binds.push(Some(q));
+        }
+
+        (sql, binds)
+    }
+
+    /// Dedup-group source hydration — the local twin of the catalog
+    /// repository's private `fetch_sources_by_groups` (the catalog crate
+    /// stays untouched by this effort).
+    async fn sources_by_groups(
+        pool: &SqlitePool,
+        groups: &[String],
+    ) -> sqlx::Result<HashMap<String, Vec<VideoSource>>> {
+        let placeholders = vec!["?"; groups.len()].join(", ");
+        let sql = format!(
+            "SELECT connection_id, provider, provider_file_id, dedup_group \
+             FROM videos WHERE dedup_group IN ({placeholders}) AND {ACTIVE_CONNECTIONS}"
+        );
+        let mut query = sqlx::query(&sql);
+        for g in groups {
+            query = query.bind(g);
+        }
+        let rows = query.fetch_all(pool).await?;
+
+        let mut map: HashMap<String, Vec<VideoSource>> = HashMap::new();
+        for row in &rows {
+            let group: String = sqlx::Row::get(row, "dedup_group");
+            let source = VideoSource {
+                connection_id: sqlx::Row::get(row, "connection_id"),
+                provider: sqlx::Row::get(row, "provider"),
+                provider_file_id: sqlx::Row::get(row, "provider_file_id"),
+            };
+            map.entry(group).or_default().push(source);
+        }
+        Ok(map)
+    }
 
     /// Owner-scoped folder fetch — a folder id owned by another owner is
     /// indistinguishable from an unknown one.
@@ -635,6 +1123,21 @@ fn valid_folder_name(name: &str) -> Option<&str> {
 /// timestamp convention (`session::iso_now`).
 fn iso_now() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// `q` → a LIKE pattern with `%`/`_`/`\` escaped — the same escaping
+/// rule as `FolderContentsFilter::q_filter` (catalog), inlined so the
+/// catalog crate stays untouched.
+fn like_escape(q: Option<&str>) -> Option<String> {
+    let q = q?.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let escaped = q
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    Some(format!("%{escaped}%"))
 }
 
 #[cfg(test)]
@@ -1314,5 +1817,465 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(theirs, 1, "other owners' trees are untouched");
+    }
+
+    /// A dedup pair: two `videos` rows sharing one `dedup_group` — the
+    /// counting lens the provider tree also uses.
+    async fn seed_dedup_pair(pool: &SqlitePool, names: &[&str], group: &str) -> Vec<String> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO provider_connections (id, provider, token_bundle, connected_at) \
+             VALUES ('c1', 'google_drive', x'00', '2026-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let mut ids = Vec::new();
+        for name in names {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO videos (id, connection_id, provider, provider_file_id, name, \
+                 size_bytes, dedup_group, scanned_at, created_at) \
+                 VALUES (?, 'c1', 'google_drive', ?, ?, 1, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            )
+            .bind(&id)
+            .bind(name)
+            .bind(name)
+            .bind(group)
+            .execute(pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        ids
+    }
+
+    fn contents_filter(folder: Option<&str>, owner: &str) -> LibraryContentsFilter {
+        LibraryContentsFilter {
+            folder_id: folder.map(str::to_string),
+            page: 1,
+            limit: 50,
+            owner_id: owner.to_string(),
+            kind: None,
+            q: None,
+        }
+    }
+
+    fn entry_names(page: &FolderContentsPage) -> Vec<String> {
+        page.entries
+            .iter()
+            .map(|e| match e {
+                FolderEntry::Video(v) => v.video.name.clone(),
+                FolderEntry::File(f) => f.file.name.clone(),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn fetch_tree_rolls_up_cumulative_counts_and_unfiled() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+
+        // Tree: A{ A1{ A2 } }, B — videos and files spread over it.
+        let a = repo
+            .create_folder(&owner, None, "A")
+            .await
+            .unwrap()
+            .unwrap();
+        let a1 = repo
+            .create_folder(&owner, Some(&a.id), "A1")
+            .await
+            .unwrap()
+            .unwrap();
+        let a2 = repo
+            .create_folder(&owner, Some(&a1.id), "A2")
+            .await
+            .unwrap()
+            .unwrap();
+        let b = repo
+            .create_folder(&owner, None, "B")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let videos =
+            seed_videos(&pool, &["in-a.mp4", "in-a2.mp4", "in-b.mp4", "unfiled.mp4"]).await;
+        let files = seed_files(&pool, &["in-a1.jpg", "unfiled.pdf"]).await;
+
+        place(&pool, "videos", &videos[0], Some(&a.id)).await;
+        place(&pool, "videos", &videos[1], Some(&a2.id)).await;
+        place(&pool, "videos", &videos[2], Some(&b.id)).await;
+        place(&pool, "files", &files[0], Some(&a1.id)).await;
+
+        // A dedup pair in B: two rows, one group — B (and every ancestor)
+        // counts the item once.
+        let pair = seed_dedup_pair(&pool, &["dup-1.mp4", "dup-2.mp4"], "g1").await;
+        place(&pool, "videos", &pair[0], Some(&b.id)).await;
+        place(&pool, "videos", &pair[1], Some(&b.id)).await;
+
+        // A split pair: one copy unfiled, one in A — both scopes count it.
+        let split = seed_dedup_pair(&pool, &["split-1.mp4", "split-2.mp4"], "g2").await;
+        place(&pool, "videos", &split[0], None).await;
+        place(&pool, "videos", &split[1], Some(&a.id)).await;
+
+        let tree = repo.fetch_tree(&owner).await.unwrap();
+
+        // Flat order: roots first (NULL parent sorts first) in position
+        // order; nested groups follow grouped by parent (their relative
+        // order rides the parent UUIDs — the client builds the tree from
+        // parent_id refs, so only the roots-first contract matters).
+        let names: Vec<&str> = tree.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(&names[..2], &["A", "B"], "roots lead, in position order");
+        assert_eq!(
+            tree.folders
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["A", "A1", "A2", "B"]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            "the flat list carries every folder exactly once"
+        );
+        let count = |id: &str| tree.folders.iter().find(|f| f.id == id).unwrap().item_count;
+        assert_eq!(count(&a2.id), 1, "leaf: one video");
+        assert_eq!(
+            count(&a1.id),
+            2,
+            "A1's file + A2's video (cumulative subtree)"
+        );
+        assert_eq!(
+            count(&a.id),
+            4,
+            "A = in-a.mp4 + A2's video + A1's file + the split pair's copy"
+        );
+        assert_eq!(count(&b.id), 2, "B = in-b.mp4 + the dedup pair (once)");
+        // Unfiled = loose.mp4 + unfiled.pdf + the split pair's unfiled
+        // copy (one item despite two rows).
+        assert_eq!(tree.unfiled_count, 3);
+    }
+
+    #[tokio::test]
+    async fn fetch_contents_lists_direct_mixed_children_paginated_and_filtered() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+
+        let outer = repo
+            .create_folder(&owner, None, "outer")
+            .await
+            .unwrap()
+            .unwrap();
+        let inner = repo
+            .create_folder(&owner, Some(&outer.id), "inner")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let videos = seed_videos(
+            &pool,
+            &["zeta.mp4", "alpha.mp4", "inner-only.mp4", "loose.mp4"],
+        )
+        .await;
+        let files = seed_files(&pool, &["beta.jpg", "gamma.pdf"]).await;
+        place(&pool, "videos", &videos[0], Some(&outer.id)).await;
+        place(&pool, "videos", &videos[1], Some(&outer.id)).await;
+        place(&pool, "videos", &videos[2], Some(&inner.id)).await;
+        place(&pool, "files", &files[0], Some(&outer.id)).await;
+        place(&pool, "files", &files[1], None).await;
+
+        // Full listing: direct children only, name-ascending, mixed.
+        let page = repo
+            .fetch_contents(&owner, &contents_filter(Some(&outer.id), &owner))
+            .await
+            .unwrap()
+            .expect("owned folder lists");
+        assert_eq!(
+            entry_names(&page),
+            vec!["alpha.mp4", "beta.jpg", "zeta.mp4"],
+            "mixed kinds, name-ascending, no nested or foreign items"
+        );
+        assert_eq!(page.total, 3);
+        assert_eq!((page.page, page.limit), (1, 50));
+
+        // kind filter.
+        let mut video_only = contents_filter(Some(&outer.id), &owner);
+        video_only.kind = Some("video".into());
+        let page = repo
+            .fetch_contents(&owner, &video_only)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry_names(&page), vec!["alpha.mp4", "zeta.mp4"]);
+
+        let mut image_only = contents_filter(Some(&outer.id), &owner);
+        image_only.kind = Some("image".into());
+        let page = repo
+            .fetch_contents(&owner, &image_only)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry_names(&page), vec!["beta.jpg"]);
+
+        // q filter (name contains).
+        let mut q = contents_filter(Some(&outer.id), &owner);
+        q.q = Some("eta".into());
+        let page = repo.fetch_contents(&owner, &q).await.unwrap().unwrap();
+        assert_eq!(entry_names(&page), vec!["beta.jpg", "zeta.mp4"]);
+
+        // Pagination: page 2 with limit 2 → the tail entry.
+        let mut p2 = contents_filter(Some(&outer.id), &owner);
+        p2.page = 2;
+        p2.limit = 2;
+        let page = repo.fetch_contents(&owner, &p2).await.unwrap().unwrap();
+        assert_eq!(entry_names(&page), vec!["zeta.mp4"]);
+        assert_eq!(page.total, 3, "total is unpaginated");
+
+        // Unfiled bucket (folder_id None): loose.mp4 + gamma.pdf.
+        let page = repo
+            .fetch_contents(&owner, &contents_filter(None, &owner))
+            .await
+            .unwrap()
+            .expect("unfiled always lists");
+        assert_eq!(entry_names(&page), vec!["gamma.pdf", "loose.mp4"]);
+        assert_eq!(page.total, 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_contents_hydrates_video_sources_and_enrichment() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+
+        let folder = repo
+            .create_folder(&owner, None, "f")
+            .await
+            .unwrap()
+            .unwrap();
+        let pair = seed_dedup_pair(&pool, &["dup-1.mp4", "dup-2.mp4"], "g1").await;
+        place(&pool, "videos", &pair[0], Some(&folder.id)).await;
+        place(&pool, "videos", &pair[1], Some(&folder.id)).await;
+
+        let page = repo
+            .fetch_contents(&owner, &contents_filter(Some(&folder.id), &owner))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.entries.len(), 1, "dedup pair surfaces once");
+        let FolderEntry::Video(v) = &page.entries[0] else {
+            panic!("expected a video entry");
+        };
+        assert_eq!(v.kind, "video");
+        assert_eq!(
+            v.video.sources.len(),
+            2,
+            "both dedup copies hydrate as sources"
+        );
+        assert!(!v.video.is_favorite);
+        assert!(v.video.my_rating.is_none());
+        assert!(v.video.position_seconds.is_none());
+        assert!(!v.video.completed);
+    }
+
+    #[tokio::test]
+    async fn fetch_contents_on_foreign_or_unknown_folder_is_none() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner_a = seed_owner(&pool).await;
+        let owner_a = owner_a.to_string();
+        let owner_b = seed_owner(&pool).await;
+        let owner_b = owner_b.to_string();
+
+        let folder = repo
+            .create_folder(&owner_a, None, "mine")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(repo
+            .fetch_contents(&owner_a, &contents_filter(Some("missing"), &owner_a))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .fetch_contents(&owner_b, &contents_filter(Some(&folder.id), &owner_b))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn move_items_rewrites_a_mixed_batch_in_one_transaction() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let videos = seed_videos(&pool, &["v1.mp4", "v2.mp4"]).await;
+        let files = seed_files(&pool, &["f1.jpg"]).await;
+        let folder = repo
+            .create_folder(&owner, None, "Trip")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let batch = [
+            MoveItem {
+                kind: ItemKind::Video,
+                id: &videos[0],
+            },
+            MoveItem {
+                kind: ItemKind::Video,
+                id: &videos[1],
+            },
+            MoveItem {
+                kind: ItemKind::File,
+                id: &files[0],
+            },
+        ];
+        let written = repo
+            .move_items(&owner, &batch, Some(&folder.id))
+            .await
+            .unwrap()
+            .expect("owned target folder accepts the batch");
+        assert_eq!(written, 3);
+
+        assert_eq!(
+            placement_of(&pool, "videos", &videos[0]).await,
+            Some(folder.id.clone())
+        );
+        assert_eq!(
+            placement_of(&pool, "videos", &videos[1]).await,
+            Some(folder.id.clone())
+        );
+        assert_eq!(
+            placement_of(&pool, "files", &files[0]).await,
+            Some(folder.id.clone())
+        );
+
+        // Counts shift: folder +1 cumulative per item, unfiled drains.
+        let tree = repo.fetch_tree(&owner).await.unwrap();
+        assert_eq!(tree.folders[0].item_count, 3);
+        assert_eq!(tree.unfiled_count, 0);
+
+        // Back to Unfiled: folder_id null files items as unfiled.
+        let written = repo
+            .move_items(&owner, &batch, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, 3);
+        assert_eq!(placement_of(&pool, "videos", &videos[0]).await, None);
+        let tree = repo.fetch_tree(&owner).await.unwrap();
+        assert_eq!(tree.folders[0].item_count, 0);
+        assert_eq!(tree.unfiled_count, 3);
+
+        // A repeated id in one batch is a no-op beyond the first write.
+        let twice = [
+            MoveItem {
+                kind: ItemKind::Video,
+                id: &videos[0],
+            },
+            MoveItem {
+                kind: ItemKind::Video,
+                id: &videos[0],
+            },
+        ];
+        let written = repo
+            .move_items(&owner, &twice, Some(&folder.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(written, 1, "in-batch duplicates collapse");
+    }
+
+    #[tokio::test]
+    async fn move_items_with_one_unknown_id_fails_atomically() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let videos = seed_videos(&pool, &["v1.mp4"]).await;
+        let folder = repo
+            .create_folder(&owner, None, "Trip")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The bogus id sits in the middle — the valid item before it must
+        // not survive (all-or-nothing).
+        let batch = [
+            MoveItem {
+                kind: ItemKind::Video,
+                id: &videos[0],
+            },
+            MoveItem {
+                kind: ItemKind::Video,
+                id: "not-a-video",
+            },
+        ];
+        let err = repo
+            .move_items(&owner, &batch, Some(&folder.id))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, FolderWriteError::UnknownItem),
+            "unknown id must fail the batch, got {err:?}"
+        );
+        assert_eq!(
+            placement_of(&pool, "videos", &videos[0]).await,
+            None,
+            "nothing moved — the batch is atomic"
+        );
+
+        // A video id declared as a file (wrong namespace) is equally
+        // unknown.
+        let batch = [MoveItem {
+            kind: ItemKind::File,
+            id: &videos[0],
+        }];
+        assert!(matches!(
+            repo.move_items(&owner, &batch, Some(&folder.id))
+                .await
+                .unwrap_err(),
+            FolderWriteError::UnknownItem
+        ));
+        assert_eq!(placement_of(&pool, "videos", &videos[0]).await, None);
+    }
+
+    #[tokio::test]
+    async fn move_items_to_a_foreign_folder_is_a_guard_rejection() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = LibraryFolderRepository::new(pool.clone());
+        let owner_a = seed_owner(&pool).await;
+        let owner_a = owner_a.to_string();
+        let owner_b = seed_owner(&pool).await;
+        let owner_b = owner_b.to_string();
+        let videos = seed_videos(&pool, &["v1.mp4"]).await;
+        let theirs = repo
+            .create_folder(&owner_b, None, "theirs")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let batch = [MoveItem {
+            kind: ItemKind::Video,
+            id: &videos[0],
+        }];
+        assert!(repo
+            .move_items(&owner_a, &batch, Some(&theirs.id))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .move_items(&owner_a, &batch, Some("missing"))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            placement_of(&pool, "videos", &videos[0]).await,
+            None,
+            "guard rejection writes nothing"
+        );
     }
 }
