@@ -1,0 +1,34 @@
+/*
+ * Castify legacy TV player styles.
+ *
+ * GOTCHA: every selector must stay scoped under #castify-legacy (the modern
+ * app also renders in forced ?legacy=1 mode — neither tree may style the
+ * other), and no CSS custom properties, oklch, color-mix, @layer, or
+ * @property may appear — the Tizen engine predates all of them. Hex colors
+ * mirror the modern dark theme (index.css) so the pages read as one product.
+ * The ban is enforced by the gate in src/lib/legacy-tv.test.ts.
+ */
+
+#castify-legacy {
+  margin: 0;
+  min-height: 100vh;
+  background: #10131a;
+  color: #e7e9ee;
+  font-family: sans-serif;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-justify-content: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+#castify-legacy .tv-loading {
+  color: #9096a5;
+  font-size: 18px;
+  margin: 0;
+}
