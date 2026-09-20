@@ -745,3 +745,55 @@ describe("legacy tv watch edge states (task 005)", () => {
     expect(container?.querySelectorAll("track")).toHaveLength(0);
   });
 });
+
+describe("legacy tv forced-mode link continuity (FR-1.4)", () => {
+  afterEach(resetLegacyDom);
+
+  it("preserves ?legacy=1 on item links when the page was forced", async () => {
+    window.history.pushState({}, "", "/share/tok_fl?legacy=1");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fl", () => ({
+        status: 200,
+        body: { title: "Forced", item_count: 1, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_fl/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(1);
+    });
+    expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_fl/watch/vid_1?legacy=1",
+    );
+  });
+
+  it("keeps clean URLs when not forced (real TVs)", async () => {
+    window.history.pushState({}, "", "/share/tok_clean");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_clean", () => ({
+        status: 200,
+        body: { title: "Clean", item_count: 1, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_clean/items", () => ({
+        status: 200,
+        body: { folders: [], items: [shareItem()] },
+      }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(1);
+    });
+    expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_clean/watch/vid_1",
+    );
+  });
+});

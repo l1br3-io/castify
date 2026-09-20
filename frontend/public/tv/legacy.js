@@ -150,7 +150,7 @@
     container.innerHTML =
       '<div class="tv-message">' +
       '<p class="tv-message-title">' + escapeHtml(text) + "</p>" +
-      '<a class="tv-back" href="' + escapeHtml(backHref) + '">Back to the share</a>' +
+      '<a class="tv-back" href="' + escapeHtml(backHref + legacyParam()) + '">Back to the share</a>' +
       "</div>";
   }
 
@@ -215,6 +215,17 @@
       return null;
     }
     return { token: m[1], videoId: m[2] || null };
+  }
+
+  /*
+   * Forced mode (?legacy=1) must survive the legacy page's own
+   * navigations: a modern browser following a legacy link would
+   * otherwise drop the flag, pass the loader's probes, and render the
+   * modern app mid-journey (e2e/dev only — real TVs probe into legacy
+   * and carry no flag to preserve).
+   */
+  function legacyParam() {
+    return window.location.search.indexOf("legacy=1") !== -1 ? "?legacy=1" : "";
   }
 
   /* ── watch page ────────────────────────────────────────────────────── */
@@ -503,7 +514,7 @@
       rows +=
         '<li class="tv-item">' +
         '<a class="tv-item-link" href="/share/' + escapeHtml(token) +
-        "/watch/" + escapeHtml(encodeURIComponent(item.id)) + '">' +
+        "/watch/" + escapeHtml(encodeURIComponent(item.id)) + escapeHtml(legacyParam()) + '">' +
         '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
         '<span class="tv-item-body">' +
         '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
