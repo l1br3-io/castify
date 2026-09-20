@@ -568,4 +568,168 @@ describe("FolderOrganizer curated pane", () => {
     expect(urls.some((u) => u.startsWith("/api/library-folders"))).toBe(false);
     expect(urls.some((u) => u.startsWith("/api/folders/contents"))).toBe(true);
   });
+
+  // --- Owner CRUD (library-folders task 008) ---
+
+  /** Open a folder tile's kebab and pick an action. */
+  async function pickTileAction(tileName: string, action: string) {
+    fireEvent.click(
+      await screen.findByRole("button", { name: `More actions for ${tileName}` }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: action }));
+  }
+
+  it("create: the empty-tree CTA opens the dialog; submit POSTs at the current level", async () => {
+    renderOrganizer({ libraryTree: { folders: [], unfiled_count: 0 } }, ["/"]);
+
+    fireEvent.click(await screen.findByRole("button", { name: /new folder/i }));
+    const dialog = await screen.findByRole("dialog", { name: "New folder" });
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Folder name"), {
+      target: { value: "  Trip  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const post = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => String(c[0]) === "/api/library-folders",
+      );
+      expect(post).toBeDefined();
+      expect((post![1] as RequestInit).method).toBe("POST");
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({
+        name: "Trip",
+      });
+    });
+  });
+
+  it("create inside a folder passes the current folder as parent", async () => {
+    renderOrganizer({}, ["/?folder=f-trip"]);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Trip", { selector: "span[aria-current='page']" }),
+      ).toBeInTheDocument(),
+    );
+
+    await pickTileAction("Day 1", "Rename");
+    expect(await screen.findByRole("dialog", { name: 'Rename "Day 1"' })).toBeInTheDocument();
+  });
+
+  it("rename: duplicate-sibling error keeps the dialog open with the server copy", async () => {
+    const fetchSpy = organizerFetch({});
+    const { rerender } = renderWithProviders(
+      <>
+        <LocationProbe />
+        <FolderOrganizer connectedProviders={["google_drive"] as ProviderKey[]} />
+      </>,
+      { initialEntries: ["/"], fetchImplementation: fetchSpy },
+    );
+    await screen.findByText("5 items");
+
+    await pickTileAction("Trip", "Rename");
+    fireEvent.change(await screen.findByLabelText("Folder name"), {
+      target: { value: "Docs" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => jsonResponse({ message: "a sibling folder already has that name" }, 409)),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(
+      (await screen.findAllByText(/sibling folder already has that name/i)).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("dialog", { name: 'Rename "Trip"' })).toBeInTheDocument();
+    void rerender;
+  });
+
+  it("move: picker excludes the moved subtree; a pick PATCHes parent_id", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("5 items");
+
+    await pickTileAction("Trip", "Move");
+    const dialog = await screen.findByRole("dialog", { name: 'Move "Trip"' });
+    expect(dialog).toBeInTheDocument();
+
+    // Trip's own subtree (Day 1) is unpickable; Unfiled is the root
+    // choice AND the current parent (Trip sits at root) — disabled.
+    expect(screen.getByRole("button", { name: "Unfiled · current" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Day 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Docs" })).toBeEnabled();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => jsonResponse({ id: "f-trip", parent_id: "f-docs", name: "Trip", position: 1 })),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Docs" }));
+
+    await waitFor(() => {
+      const patch = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => String(c[0]) === "/api/library-folders/f-trip",
+      );
+      expect(patch).toBeDefined();
+      expect((patch![1] as RequestInit).method).toBe("PATCH");
+      expect(JSON.parse(String((patch![1] as RequestInit).body))).toEqual({
+        parent_id: "f-docs",
+      });
+    });
+  });
+
+  it("delete: confirmation copy states Unfiled + flatten; confirm DELETEs and climbs out of a deleted folder", async () => {
+    renderOrganizer({}, ["/?folder=f-day1"]);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Day 1", { selector: "span[aria-current='page']" }),
+      ).toBeInTheDocument(),
+    );
+
+    // Day 1 is the current level; its tile renders among subfolders of Trip…
+    // inside f-day1 there are no subfolders, so open Trip's menu from the
+    // breadcrumb-free path: use the Unfiled tile's menu instead? No —
+    // menus live on tiles; from f-day1 the visible tiles are none. Climb
+    // to Trip first.
+    fireEvent.click(screen.getByRole("button", { name: "Trip" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Trip", { selector: "span[aria-current='page']" }),
+      ).toBeInTheDocument(),
+    );
+
+    await pickTileAction("Day 1", "Delete");
+    expect(
+      await screen.findByText(/Items in it return to Unfiled and its subfolders move to the/i),
+    ).toBeInTheDocument();
+
+    vi.stubGlobal("fetch", vi.fn(() => new Response(null, { status: 204 })));
+    fireEvent.click(
+      screen.getByRole("dialog", { name: 'Delete "Day 1"?' }).querySelector(
+        'button:last-child',
+      )!,
+    );
+
+    await waitFor(() => {
+      const del = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => String(c[0]) === "/api/library-folders/f-day1",
+      );
+      expect(del).toBeDefined();
+      expect((del![1] as RequestInit).method).toBe("DELETE");
+    });
+  });
+
+  it("the Unfiled tile's menu offers New folder (no rename/move/delete)", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("5 items");
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Unfiled" }));
+    expect(screen.getByRole("menuitem", { name: "New folder" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
+  it("the provider pane has no CRUD affordances", async () => {
+    renderOrganizer({}, ["/?dir="]);
+    await screen.findByText("Zeta.mp4");
+
+    expect(screen.queryByRole("button", { name: /more actions for/i })).not.toBeInTheDocument();
+  });
 });

@@ -37,25 +37,35 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { FileCard, FileRow } from "./file-card";
+import { FolderNameDialog } from "./folder-name-dialog";
+import { FolderPickerDialog } from "./folder-picker-dialog";
 import { FolderTile } from "./folder-tile";
+import { LibraryFolderMenu } from "./library-folder-menu";
 import { PosterCard } from "./poster-card";
 import { FavoriteToggle } from "./favorite-toggle";
+import { Button } from "./ui/button";
+import { Dialog } from "./ui/dialog";
 import {
   PROVIDER_LABELS,
   type FileEntryDto,
   type FolderEntryDto,
   type LibraryTreeDto,
+  type LibraryTreeFolderDto,
   type ProviderKey,
 } from "../api/types";
 import { useFolderContents } from "../hooks/use-folder-contents";
 import { useFolderDir } from "../hooks/use-folder-dir";
 import {
+  useCreateLibraryFolder,
+  useDeleteLibraryFolder,
   useLibraryFolderContents,
   useLibraryFolderNav,
   useLibraryFolderTree,
+  useUpdateLibraryFolder,
 } from "../hooks/use-library-folders";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { describeError } from "../lib/format";
+import { onNewFolder as onNewFolderSignal } from "../lib/new-folder-event";
 import { Skeleton } from "./ui/skeleton";
 import { ErrorState } from "./ui/error-state";
 
@@ -63,17 +73,14 @@ type FolderOrganizerProps = {
   /** Connected providers, in display order — drives the provider pane's
    *  chip row. */
   connectedProviders: ProviderKey[];
-  /** Wired to the create flow by the organizer CRUD task; the curated
-   *  pane's empty-tree CTA calls it when present. */
-  onNewFolder?: () => void;
 };
 
-export function FolderOrganizer({ connectedProviders, onNewFolder }: FolderOrganizerProps) {
+export function FolderOrganizer({ connectedProviders }: FolderOrganizerProps) {
   const providerMode = useSearchParams()[0].has("dir");
   return providerMode ? (
     <ProviderPane connectedProviders={connectedProviders} />
   ) : (
-    <CuratedPane onNewFolder={onNewFolder} />
+    <CuratedPane />
   );
 }
 
@@ -405,15 +412,36 @@ function curatedCrumbs(tree: LibraryTreeDto, folderId: string | null) {
   return crumbs;
 }
 
-function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
+/** Owner CRUD dialog state — one slot, four kinds, like share-manage. */
+type FolderDialog =
+  | { kind: "create" }
+  | { kind: "rename"; folder: LibraryTreeFolderDto }
+  | { kind: "move"; folder: LibraryTreeFolderDto }
+  | { kind: "delete"; folder: LibraryTreeFolderDto }
+  | null;
+
+function CuratedPane() {
   const { selectedFolder, selectCurated } = useLibraryFolderNav();
   const tree = useLibraryFolderTree();
   const [page, setPage] = useState(1);
   const [kindFilter, setKindFilter] = useState<string | undefined>();
   const [nameQuery, setNameQuery] = useState("");
+  const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
   const debouncedNameQuery = useDebouncedValue(nameQuery, 300);
 
-  // Folder/kind/filter switches always land on page 1.
+  const createFolder = useCreateLibraryFolder();
+  const updateFolder = useUpdateLibraryFolder();
+  const deleteFolder = useDeleteLibraryFolder();
+
+  // The sidebar's "New folder" entry points open the create dialog here
+  // (open dialogs are ephemeral client state — the DOM event keeps the
+  // siblings decoupled without URL or server involvement).
+  useEffect(
+    () => onNewFolderSignal(() => setFolderDialog({ kind: "create" })),
+    [],
+  );
+
+  // Folder switches always land on page 1.
   useEffect(() => {
     setPage(1);
   }, [selectedFolder, kindFilter, debouncedNameQuery]);
@@ -534,7 +562,7 @@ function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
               <article className="group relative flex flex-col gap-2">
                 <div
                   aria-current="page"
-                  className="flex aspect-video items-center justify-center rounded-[var(--radius-card)]
+                  className="relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
                              border border-[var(--color-castify-accent)] bg-[var(--color-castify-surface)]
                              text-[var(--color-castify-muted)]"
                 >
@@ -553,6 +581,12 @@ function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
                       strokeLinejoin="round"
                     />
                   </svg>
+                  <span className="absolute right-2 top-2 z-10">
+                    <LibraryFolderMenu
+                      label="Unfiled"
+                      onNewFolder={() => setFolderDialog({ kind: "create" })}
+                    />
+                  </span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <h3 className="line-clamp-2 text-[13px] font-semibold leading-snug" title="Unfiled">
@@ -572,6 +606,14 @@ function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
                 folderId={folder.id}
                 to="/"
                 count={folder.item_count}
+                topRightSlot={
+                  <LibraryFolderMenu
+                    label={folder.name}
+                    onRename={() => setFolderDialog({ kind: "rename", folder })}
+                    onMove={() => setFolderDialog({ kind: "move", folder })}
+                    onDelete={() => setFolderDialog({ kind: "delete", folder })}
+                  />
+                }
               />
             ))}
           </div>
@@ -586,7 +628,7 @@ function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
             </p>
             <button
               type="button"
-              onClick={() => onNewFolder?.()}
+              onClick={() => setFolderDialog({ kind: "create" })}
               className="mt-4 rounded-[var(--radius-button)] border border-[var(--color-castify-accent)] px-4 py-2 text-sm font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
             >
               New folder
@@ -601,6 +643,103 @@ function CuratedPane({ onNewFolder }: { onNewFolder?: () => void }) {
           filtersActive={filtersActive}
         />
       </div>
+
+      {/* Owner CRUD dialogs — mutations invalidate the tree + contents
+          families (the task-004 hooks); a success closes the dialog, an
+          error keeps it open with the server's copy under the field. */}
+      {folderDialog?.kind === "create" && (
+        <FolderNameDialog
+          title="New folder"
+          initialName=""
+          pending={createFolder.isPending}
+          error={createFolder.isError ? describeError(createFolder.error) : undefined}
+          onSubmit={(name) =>
+            createFolder.mutate(
+              { name, parentId: selectedFolder ?? undefined },
+              { onSuccess: () => setFolderDialog(null) },
+            )
+          }
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+      {folderDialog?.kind === "rename" && (
+        <FolderNameDialog
+          title={`Rename "${folderDialog.folder.name}"`}
+          initialName={folderDialog.folder.name}
+          pending={updateFolder.isPending}
+          error={updateFolder.isError ? describeError(updateFolder.error) : undefined}
+          onSubmit={(name) =>
+            updateFolder.mutate(
+              { id: folderDialog.folder.id, name },
+              { onSuccess: () => setFolderDialog(null) },
+            )
+          }
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+      {folderDialog?.kind === "move" && (
+        <FolderPickerDialog
+          title={`Move "${folderDialog.folder.name}"`}
+          rootLabel="Unfiled"
+          folders={tree.data?.folders ?? []}
+          excludeSubtreeOf={folderDialog.folder.id}
+          currentFolderId={folderDialog.folder.parent_id}
+          pending={updateFolder.isPending}
+          onPick={(target) =>
+            updateFolder.mutate(
+              { id: folderDialog.folder.id, parentId: target },
+              { onSuccess: () => setFolderDialog(null) },
+            )
+          }
+          onClose={() => setFolderDialog(null)}
+        />
+      )}
+      {folderDialog?.kind === "delete" && (
+        <Dialog
+          open
+          onClose={() => setFolderDialog(null)}
+          closeable={!deleteFolder.isPending}
+          title={`Delete "${folderDialog.folder.name}"?`}
+        >
+          <div className="space-y-4">
+            <p className="text-sm text-[var(--color-castify-muted)]">
+              Items in it return to Unfiled and its subfolders move to the
+              top level — nothing is deleted from your library.
+            </p>
+            {deleteFolder.isError && (
+              <p className="text-sm text-[var(--color-castify-danger,inherit)]">
+                {describeError(deleteFolder.error)}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setFolderDialog(null)}
+                disabled={deleteFolder.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                pending={deleteFolder.isPending}
+                onClick={() =>
+                  deleteFolder.mutate(folderDialog.folder.id, {
+                    onSuccess: () => {
+                      setFolderDialog(null);
+                      // Deleting the folder we're standing in strands
+                      // the view — climb to the root (Unfiled).
+                      if (folderDialog.folder.id === selectedFolder) {
+                        selectCurated(null);
+                      }
+                    },
+                  })
+                }
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
     </section>
   );
 }

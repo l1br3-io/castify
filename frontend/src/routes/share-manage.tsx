@@ -33,7 +33,7 @@
 
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PosterCard } from "../components/poster-card";
 import { SearchBar } from "../components/search-bar";
@@ -41,6 +41,7 @@ import { ShareEditDialog } from "../components/share-edit-dialog";
 import { ShareFolderMenu } from "../components/share-folder-menu";
 import { FolderTile } from "../components/folder-tile";
 import { ShareItemMenu } from "../components/share-item-menu";
+import { FolderNameDialog } from "../components/folder-name-dialog";
 import { FolderPickerDialog } from "../components/folder-picker-dialog";
 import { ShareResultPathLabel, ShareSearchResults } from "../components/share-search-results";
 import { StatusBadge } from "../components/status-badge";
@@ -48,7 +49,6 @@ import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { ErrorState } from "../components/ui/error-state";
-import { Field, Input } from "../components/ui/field";
 import { Skeleton } from "../components/ui/skeleton";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
 import {
@@ -683,53 +683,4 @@ function ShareDetail({ share }: { share: ShareDto }) {
 // Client-side empty/whitespace pre-check mirrors the server's 400 (same
 // rule, friendlier timing); every other rejection (duplicate sibling
 // name 409, oversize 400) surfaces inline from the server's message.
-function FolderNameDialog({
-  title,
-  initialName,
-  pending,
-  error,
-  onSubmit,
-  onClose,
-}: {
-  title: string;
-  initialName: string;
-  pending: boolean;
-  error?: string;
-  onSubmit: (name: string) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const trimmed = name.trim();
-
-  function handleSubmit(e: FormEvent): void {
-    e.preventDefault();
-    if (trimmed === "" || pending) return;
-    onSubmit(trimmed);
-  }
-
-  return (
-    <Dialog open onClose={onClose} closeable={!pending} title={title}>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Field
-          label="Folder name"
-          error={trimmed === "" && name !== "" ? "Name can't be only whitespace." : error}
-        >
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-          />
-        </Field>
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={trimmed === ""} pending={pending}>
-            Save
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
 

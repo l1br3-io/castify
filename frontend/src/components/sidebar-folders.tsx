@@ -30,6 +30,7 @@ import { useFolderTree } from "../hooks/use-folder-tree";
 import { useLibraryFolderNav, useLibraryFolderTree } from "../hooks/use-library-folders";
 import { FolderTree, type TreeNode } from "./folder-tree";
 import { buildLibraryTree } from "../lib/library-tree";
+import { signalNewFolder } from "../lib/new-folder-event";
 import { Skeleton } from "./ui/skeleton";
 
 /** Every node path in the provider tree, recursively ("" root included). */
@@ -62,12 +63,14 @@ function toProviderNodes(nodes: FolderNodeDto[]): TreeNode[] {
 }
 
 type SidebarFoldersProps = {
-  /** Wired to the create flow by the organizer CRUD task; the empty
-   *  tree's "New folder" entry point calls it when present. */
+  /** Opens the organizer's create dialog; defaults to the new-folder
+   *  DOM signal (the layout mounts this component prop-less, and open
+   *  dialogs are ephemeral client state — never URL, never server). */
   onNewFolder?: () => void;
 };
 
 export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
+  const openCreateDialog = onNewFolder ?? signalNewFolder;
   const {
     selectedFolder,
     providerMode,
@@ -145,7 +148,7 @@ export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
             <div className="px-2 pt-1.5">
               <button
                 type="button"
-                onClick={() => onNewFolder?.()}
+                onClick={openCreateDialog}
                 className="w-full rounded border border-dashed border-[var(--color-castify-rule)] px-2 py-1.5 text-left text-[13px] text-[var(--color-castify-muted)] transition hover:border-[var(--color-castify-accent)] hover:text-[var(--color-castify-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
               >
                 + New folder
