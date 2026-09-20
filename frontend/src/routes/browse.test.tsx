@@ -290,7 +290,13 @@ describe("BrowsePage", () => {
     fireEvent.change(screen.getByLabelText("Search videos"), {
       target: { value: "concert" },
     });
-    expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
+    // The input writes ?q= through a 300ms debounce, then the grid query
+    // resolves — under full-suite parallel load that chain can outlast the
+    // default 1s finder timeout, so poll with headroom (findBy returns
+    // as soon as the element appears).
+    expect(
+      await screen.findByText("concert-footage.mp4", {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
 
     // Clear search — rails reappear inside the same wrapper node.
     fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
@@ -627,8 +633,11 @@ describe("BrowsePage", () => {
     // Wait for the search-result video to render in the grid. The grid uses
     // keepPreviousData so the old cards (cat.mp4) are briefly visible while
     // the new query resolves — we must wait for the new data before asserting
-    // the old card is gone.
-    expect(await screen.findByText("concert-footage.mp4")).toBeInTheDocument();
+    // the old card is gone. Headroom beyond the default: the 300ms debounce
+    // plus fetch can exceed 1s when the suite runs hot.
+    expect(
+      await screen.findByText("concert-footage.mp4", {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
 
     // Rails are gone (the poster cards + their headings).
     expect(
