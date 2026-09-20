@@ -255,13 +255,16 @@
    * append-style could not carry more than one param — anything else in
    * the URL got clobbered.
    */
-  function buildQueryString(folderId) {
+  function buildQueryString(folderId, q) {
     var parts = [];
     if (isForced()) {
       parts.push("legacy=1");
     }
     if (folderId) {
       parts.push("folder=" + encodeURIComponent(folderId));
+    }
+    if (q) {
+      parts.push("q=" + encodeURIComponent(q));
     }
     return parts.length ? "?" + parts.join("&") : "";
   }
@@ -270,8 +273,8 @@
     return "/share/" + token + buildQueryString(folderId);
   }
 
-  function buildWatchUrl(token, videoId, folderId) {
-    return "/share/" + token + "/watch/" + encodeURIComponent(videoId) + buildQueryString(folderId);
+  function buildWatchUrl(token, videoId, folderId, q) {
+    return "/share/" + token + "/watch/" + encodeURIComponent(videoId) + buildQueryString(folderId, q);
   }
 
   /* ── watch page ────────────────────────────────────────────────────── */
@@ -654,7 +657,7 @@
     );
   }
 
-  function renderItemRow(state, item, folderId) {
+  function renderItemRow(state, item, folderId, q) {
     var videoPath = "/api/share/" + state.token + "/videos/" + encodeURIComponent(item.id);
     var meta = [];
     var duration = formatDuration(item.duration_ms);
@@ -665,12 +668,16 @@
     if (size) {
       meta.push(escapeHtml(size));
     }
+    /* Search results name where the hit lives; browse rows are already
+     * "in" that place, so the label would be noise. */
+    var path = q ? folderPath(state.tree, item.folder_id || "") : "";
     return (
       '<li class="tv-item">' +
-      '<a class="tv-item-link" href="' + escapeHtml(buildWatchUrl(state.token, item.id, folderId)) + '">' +
+      '<a class="tv-item-link" href="' + escapeHtml(buildWatchUrl(state.token, item.id, folderId, q)) + '">' +
       '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
       '<span class="tv-item-body">' +
       '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
+      (path ? '<span class="tv-item-path">' + escapeHtml(path) + "</span>" : "") +
       (meta.length ? '<span class="tv-item-meta">' + meta.join(" &#183; ") + "</span>" : "") +
       "</span>" +
       "</a>" +
@@ -678,28 +685,89 @@
     );
   }
 
-  /*
-   * Folder-first browse at the level the URL names. Cold loads and
-   * pushState/popstate re-entry all land here; the level is read fresh
-   * from location.search each render.
-   */
-  function renderBrowse() {
-    var state = landingData;
-    if (!state) {
-      return;
-    }
-    var container = state.container;
+  /* The validated folder param — a stale id (folder since deleted)
+   * means the root level, not a bricked page. */
+  function currentFolderId(tree) {
     var folderId = getQueryParam("folder");
-    if (folderId && !state.tree.folderById[folderId]) {
-      /* Stale deep-link (folder since deleted) — the root level, not a
-       * bricked page. */
-      folderId = "";
+    if (folderId && !tree.folderById[folderId]) {
+      return "";
     }
+    return folderId;
+  }
+
+  /* ── whole-share search (legacy-tv-nav-search task 002) ────────────── */
+
+  /* One pending debounce at a time; explicit navigation (folder rows,
+   * crumbs, clear button) cancels it so a stale timer can't re-append
+   * ?q= after the user has already gone somewhere else. */
+  var searchTimer = null;
+
+  function clearSearchTimer() {
+    if (searchTimer !== null) {
+      window.clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+  }
+
+  /* Flat whole-share sweep, deterministic order: root videos first, then
+   * a position-ordered depth walk — folders (matching ones collected en
+   * route) before their own contents, ancestors before descendants. */
+  function searchShare(tree, query) {
+    var q = query.toLowerCase();
+    var folders = [];
+    var items = [];
+    function walk(folderId) {
+      var levelItems = itemsAt(tree, folderId);
+      var i;
+      for (i = 0; i < levelItems.length; i++) {
+        if (levelItems[i].name.toLowerCase().indexOf(q) !== -1) {
+          items.push(levelItems[i]);
+        }
+      }
+      var kids = foldersAt(tree, folderId);
+      for (i = 0; i < kids.length; i++) {
+        if (kids[i].name.toLowerCase().indexOf(q) !== -1) {
+          folders.push(kids[i]);
+        }
+        walk(kids[i].id);
+      }
+    }
+    walk("");
+    return { folders: folders, items: items };
+  }
+
+  /* Folder path for a search hit: chain names, root omitted, " › "
+   * separators — the same voice as the breadcrumb trail. */
+  function folderPath(tree, folderId) {
+    var chain = folderChain(tree, folderId);
+    var names = [];
+    for (var i = 0; i < chain.length; i++) {
+      names.push(chain[i].name);
+    }
+    return names.join(" \u203A ");
+  }
+
+  /* The signature band: title and search share one row — search is a
+   * first-class citizen of the landing, not a bolt-on. */
+  function renderHeaderBand(state, q) {
+    return (
+      '<div class="tv-header-band">' +
+      '<h1 class="tv-title">' + escapeHtml(state.title) + "</h1>" +
+      '<input type="search" class="tv-search" id="tv-search" placeholder="Search videos" value="' +
+      escapeHtml(q || "") +
+      '">' +
+      "</div>"
+    );
+  }
+
+  function renderFolderLevel(state) {
+    var container = state.container;
+    var folderId = currentFolderId(state.tree);
     var folders = foldersAt(state.tree, folderId);
     var items = itemsAt(state.tree, folderId);
     var html =
       '<div class="tv-landing">' +
-      '<h1 class="tv-title">' + escapeHtml(state.title) + "</h1>" +
+      renderHeaderBand(state, "") +
       renderCrumbs(state, folderId);
     if (!folders.length && !items.length) {
       html += '<p class="tv-empty-level">Nothing in this folder.</p>';
@@ -713,11 +781,73 @@
         html += renderFolderRow(state, folders[i]);
       }
       for (i = 0; i < items.length; i++) {
-        html += renderItemRow(state, items[i], folderId);
+        html += renderItemRow(state, items[i], folderId, "");
       }
       html += "</ul></div>";
       container.innerHTML = html;
       wireFolderNav(container);
+    }
+  }
+
+  function renderSearch(state, query) {
+    var container = state.container;
+    var results = searchShare(state.tree, query);
+    var total = results.folders.length + results.items.length;
+    var html =
+      '<div class="tv-landing">' +
+      renderHeaderBand(state, query) +
+      '<p class="tv-results-count">' + total + (total === 1 ? " result" : " results") + "</p>";
+    if (!total) {
+      html += '<p class="tv-empty-level">No videos match.</p>' +
+        '<button type="button" class="tv-button tv-clear" id="tv-clear-search">Clear search</button>';
+    } else {
+      html += '<ul class="tv-items">';
+      var i;
+      for (i = 0; i < results.folders.length; i++) {
+        html += renderFolderRow(state, results.folders[i]);
+      }
+      for (i = 0; i < results.items.length; i++) {
+        var item = results.items[i];
+        html += renderItemRow(state, item, item.folder_id || "", query);
+      }
+      html += "</ul>";
+    }
+    html += "</div>";
+    container.innerHTML = html;
+    wireFolderNav(container);
+    wireClearSearch();
+  }
+
+  /*
+   * Folder-first browse at the level the URL names — or search results
+   * when ?q= is set (search mode ignores folder; the param stays in the
+   * URL so clearing the query restores the folder view). Cold loads and
+   * pushState/popstate re-entry all land here; the mode is read fresh
+   * from location.search each render.
+   */
+  function renderBrowse() {
+    var state = landingData;
+    if (!state) {
+      return;
+    }
+    /* GOTCHA: the innerHTML swap below destroys the old input — capture
+     * focus first and restore it after, so a mid-typing re-render doesn't
+     * drop the on-screen keyboard. A cold load with ?q= never focuses
+     * (same rule as browse: no autofocus on TVs). */
+    var searchEl = document.getElementById("tv-search");
+    var searchHadFocus = !!(searchEl && document.activeElement === searchEl);
+    var query = getQueryParam("q");
+    if (query) {
+      renderSearch(state, query);
+    } else {
+      renderFolderLevel(state);
+    }
+    wireSearch();
+    if (searchHadFocus) {
+      var fresh = document.getElementById("tv-search");
+      if (fresh) {
+        fresh.focus();
+      }
     }
     /* GOTCHA: entering a folder is history.pushState, which never
      * re-runs this script — the remote's Return button only fires
@@ -730,6 +860,54 @@
         renderBrowse();
       });
     }
+  }
+
+  function wireClearSearch() {
+    var button = document.getElementById("tv-clear-search");
+    if (!button) {
+      return;
+    }
+    button.onclick = function () {
+      clearSearchTimer();
+      var state = landingData;
+      if (!state) {
+        return;
+      }
+      window.history.replaceState({}, "", "/share/" + state.token + buildQueryString(currentFolderId(state.tree), ""));
+      renderBrowse();
+    };
+  }
+
+  function wireSearch() {
+    var input = document.getElementById("tv-search");
+    if (!input) {
+      return;
+    }
+    input.oninput = function () {
+      var value = this.value;
+      clearSearchTimer();
+      /* GOTCHA: the TV CPU is weak — a synchronous whole-list re-render
+       * per keystroke stutters the on-screen keyboard. oninput is the
+       * ES5-safe event; the re-render happens ~250ms after the last
+       * keystroke, and the URL write is replaceState, NOT pushState —
+       * back must not step through every keystroke. Zero XHRs here: the
+       * payload is already in memory. */
+      searchTimer = window.setTimeout(function () {
+        searchTimer = null;
+        var state = landingData;
+        if (!state) {
+          return;
+        }
+        if (value === getQueryParam("q")) {
+          return;
+        }
+        window.history.replaceState(
+          {}, "",
+          "/share/" + state.token + buildQueryString(currentFolderId(state.tree), value)
+        );
+        renderBrowse();
+      }, 250);
+    };
   }
 
   /*
@@ -746,6 +924,7 @@
         if (event && event.preventDefault) {
           event.preventDefault();
         }
+        clearSearchTimer();
         var state = landingData;
         var folderId = this.getAttribute("data-folder") || "";
         if (state) {

@@ -287,6 +287,69 @@
   margin: 0;
 }
 
+/* ── header band + search (legacy-tv-nav-search task 002) ─────────── */
+
+/* The signature band: title and search share one row — search is a
+ * first-class citizen of the landing, not a bolt-on. The title flexes
+ * and shrinks (min-width: 0 so long names wrap instead of pushing the
+ * field out); the field keeps its width. */
+#castify-legacy .tv-header-band {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  -webkit-justify-content: space-between;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+#castify-legacy .tv-header-band .tv-title {
+  -webkit-flex: 1 1 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#castify-legacy .tv-search {
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  color: #e7e9ee;
+  font-size: 16px;
+  padding: 10px 12px;
+  width: 240px;
+  box-sizing: border-box;
+  margin-left: 24px;
+  flex-shrink: 0;
+  -webkit-flex-shrink: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+#castify-legacy .tv-search:focus {
+  outline: none;
+  border-color: #f0a93a;
+}
+
+/* Search chrome: a quiet count header, and result rows that say where
+ * each hit lives (same muted voice as the crumb trail). */
+#castify-legacy .tv-results-count {
+  color: #9096a5;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+}
+
+#castify-legacy .tv-item-path {
+  display: block;
+  color: #9096a5;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+#castify-legacy .tv-clear {
+  margin-top: 12px;
+}
+
 #castify-legacy .tv-unlock-form {
   display: -webkit-flex;
   display: flex;

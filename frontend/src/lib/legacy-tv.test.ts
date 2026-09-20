@@ -1023,3 +1023,288 @@ describe("legacy tv folder browse (nav-search task 001)", () => {
     expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe("/share/tok_flat/watch/v1");
   });
 });
+
+describe("legacy tv search (nav-search task 002)", () => {
+  afterEach(resetLegacyDom);
+
+  /** Landing at `path` against the canonical nested fixture (tok_fb). */
+  function stubNestedShare(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fb", () => ({
+        status: 200,
+        body: { title: "Trip videos", item_count: 4, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_fb/items", () => ({
+        status: 200,
+        body: { folders: NAV_SEARCH_FOLDERS, items: NAV_SEARCH_ITEMS },
+      }));
+    });
+  }
+
+  async function renderLanding(): Promise<HTMLElement> {
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link, a.tv-folder-link").length).toBeGreaterThan(0);
+    });
+    return container as HTMLElement;
+  }
+
+  function searchInput(container: HTMLElement): HTMLInputElement {
+    return container.querySelector("#tv-search") as HTMLInputElement;
+  }
+
+  async function type(container: HTMLElement, query: string): Promise<void> {
+    const input = searchInput(container);
+    input.value = query;
+    fireEvent.input(input);
+    // The debounced callback rewrites the URL and re-renders in the same
+    // tick — settle on the URL so the helper never resolves against a
+    // stale render (a results count from the previous query, say).
+    await waitFor(() => {
+      const search = window.location.search;
+      const settled = query === ""
+        ? !search.includes("q=")
+        : search.includes("q=" + encodeURIComponent(query));
+      expect(settled).toBe(true);
+    });
+  }
+
+  function resultPaths(container: HTMLElement): string[] {
+    return [...container.querySelectorAll(".tv-item-path")].map((el) => el.textContent);
+  }
+
+  it("renders the header band — title + search field in one row, no autofocus", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    const band = container.querySelector(".tv-header-band");
+    expect(band).not.toBeNull();
+    expect(band?.querySelector(".tv-title")?.textContent).toBe("Trip videos");
+    const input = searchInput(container);
+    expect(input.getAttribute("type")).toBe("search");
+    expect(input.getAttribute("placeholder")).toBe("Search videos");
+    // No autofocus: some TVs pop the on-screen keyboard on focus — rude on load.
+    expect(document.activeElement).not.toBe(input);
+  });
+
+  it("typing filters the whole share after the debounce — not synchronously, zero XHRs", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+
+    const input = searchInput(container);
+    input.value = "episode";
+    fireEvent.input(input);
+    // Debounced: the same tick must not have re-rendered or touched the URL.
+    expect(container.querySelector(".tv-results-count")).toBeNull();
+    expect(window.location.search).toBe("");
+
+    await waitFor(() => {
+      expect(container.querySelector(".tv-results-count")?.textContent).toBe("2 results");
+    });
+    expect(window.location.search).toBe("?q=episode");
+    // Search mode hides browse chrome and flattens results across folders.
+    expect(container.querySelector(".tv-crumbs")).toBeNull();
+    expect(container.querySelector("a.tv-folder-link")).toBeNull();
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+  });
+
+  it("labels each result with its folder path, root omitted", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    await type(container, "episode");
+
+    const names = [...container.querySelectorAll(".tv-item-name")].map((el) => el.textContent);
+    expect(names).toEqual(["Episode 1.mp4", "Episode 2.mp4"]);
+    expect(resultPaths(container)).toEqual(["Season 1", "Season 1 › Day 1"]);
+
+    await type(container, "trailer");
+    expect(container.querySelectorAll(".tv-item-name")).toHaveLength(1);
+    // Root-level hits carry no path label — there is no folder to name.
+    expect(resultPaths(container)).toEqual([]);
+  });
+
+  it("folder-name matches surface as folder rows; clicking one clears q and enters it", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    await type(container, "season");
+
+    expect(container.querySelector(".tv-results-count")?.textContent).toBe("2 results");
+    const folderRows = [...container.querySelectorAll("a.tv-folder-link")];
+    expect(folderRows).toHaveLength(2);
+    expect(folderRows[0].querySelector(".tv-folder-name")?.textContent).toBe("Season 1");
+    expect(folderRows[1].querySelector(".tv-folder-name")?.textContent).toBe("Season 2");
+
+    fireEvent.click(folderRows[0]);
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(container.querySelector(".tv-results-count")).toBeNull();
+    expect(container.querySelectorAll(".tv-item-name")).toHaveLength(1); // Episode 1
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+  });
+
+  it("writes ?q= via replaceState — back never steps through keystrokes", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    await type(container, "epi");
+    expect(window.location.search).toBe("?q=epi");
+
+    await type(container, "episode");
+    expect(window.location.search).toBe("?q=episode");
+
+    // replaceState never pushed an entry: back lands on whatever preceded
+    // the landing (the harness's reset entry, "/") — NOT on the mid-search
+    // "?q=epi" a push-per-keystroke implementation would have produced.
+    window.history.back();
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/");
+    });
+    expect(window.location.search).toBe("");
+  });
+
+  it("clearing the input restores the previous folder view, folder param intact", async () => {
+    stubNestedShare("/share/tok_fb?folder=f_s1");
+    const container = await renderLanding();
+
+    await type(container, "episode");
+    expect(window.location.search).toBe("?folder=f_s1&q=episode");
+
+    const input = searchInput(container);
+    input.value = "";
+    fireEvent.input(input);
+    await waitFor(() => {
+      expect(container.querySelector(".tv-results-count")).toBeNull();
+    });
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect([...container.querySelectorAll(".tv-folder-name")].map((el) => el.textContent)).toEqual(["Day 1"]);
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+  });
+
+  it("zero results shows No-videos-match with a working clear-search button", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    await type(container, "zzz");
+
+    expect(container.textContent).toContain("No videos match.");
+    const clear = container.querySelector("#tv-clear-search");
+    expect(clear).not.toBeNull();
+
+    fireEvent.click(clear as HTMLElement);
+
+    await waitFor(() => {
+      expect([...container.querySelectorAll(".tv-folder-name")].map((el) => el.textContent)).toEqual([
+        "Season 1",
+        "Season 2",
+        "Empty",
+      ]);
+    });
+    expect(window.location.search).toBe("");
+    expect(searchInput(container).value).toBe("");
+  });
+
+  it("keeps the input focused across the debounced re-render (keyboard stays open)", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    const input = searchInput(container);
+    input.focus();
+    input.value = "episode";
+    fireEvent.input(input);
+
+    await waitFor(() => {
+      expect(container.querySelector(".tv-results-count")).not.toBeNull();
+    });
+    expect(document.activeElement).toBe(searchInput(container));
+
+    // Cold load with ?q= must NOT autofocus — same on-screen-keyboard rule.
+    stubNestedShare("/share/tok_fb?q=episode");
+    document.getElementById("castify-legacy")?.remove();
+    delete (window as LegacyWindow).__castifyLegacyLoaded;
+    delete (window as LegacyWindow).__castifyLegacyInit;
+    loadLegacyScript();
+    const cold = document.getElementById("castify-legacy") as HTMLElement;
+    await waitFor(() => {
+      expect(cold.querySelector(".tv-results-count")).not.toBeNull();
+    });
+    expect(document.activeElement).not.toBe(cold.querySelector("#tv-search"));
+  });
+
+  it("escapes the query — markup in the box is data, not tags", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    await type(container, "<b>x");
+
+    expect(container.querySelector(".tv-results-count")?.textContent).toBe("0 results");
+    expect(container.textContent).toContain("No videos match.");
+    expect(container.querySelector("b")).toBeNull();
+    expect(searchInput(container).value).toBe("<b>x");
+  });
+
+  it("folder navigation cancels a pending debounce", async () => {
+    stubNestedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    const input = searchInput(container);
+    input.value = "epi";
+    fireEvent.input(input);
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    // If the pending timer survived the click it would re-append q later —
+    // sleep past the debounce window and prove it stays gone.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(container.querySelector(".tv-results-count")).toBeNull();
+  });
+
+  it("searches a folder-free share and works after unlock in one page life", async () => {
+    window.history.pushState({}, "", "/share/tok_un");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_un", () => ({
+        status: 200,
+        body: { title: "Private", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_un/items", () => {
+        const unlocked = FakeXMLHttpRequest.requests.some((r) => r.url === "/api/share/tok_un/unlock");
+        return unlocked
+          ? { status: 200, body: { folders: [], items: [shareItem({ id: "vid_x", name: "Secret.mp4" })] } }
+          : { status: 401, body: { error: "locked" } };
+      });
+      fake.post("/api/share/tok_un/unlock", () => ({ status: 204 }));
+    });
+
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+
+    (document.getElementById("tv-password") as HTMLInputElement).value = "hunter2";
+    fireEvent.submit(document.getElementById("tv-unlock-form") as HTMLFormElement);
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(1);
+    });
+
+    await type(container as HTMLElement, "secret");
+
+    expect(container?.querySelector(".tv-results-count")?.textContent).toBe("1 result");
+    expect(container?.querySelector(".tv-item-name")?.textContent).toBe("Secret.mp4");
+    expect(resultPaths(container as HTMLElement)).toEqual([]);
+    expect(requestedUrls()).toEqual([
+      "GET /api/share/tok_un",
+      "GET /api/share/tok_un/items",
+      "POST /api/share/tok_un/unlock",
+      // Unlock re-runs the landing flow: resolve + items again, in place.
+      "GET /api/share/tok_un",
+      "GET /api/share/tok_un/items",
+    ]);
+  });
+});
