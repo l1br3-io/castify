@@ -59,7 +59,7 @@ test.describe("Folder organizer (e2e mock)", () => {
     // root contents listing shows files directly at "/", i.e. none from the
     // mock). Select Movies via the tree instead.
     // Movies is a top-level folder in the mock's path layout (/Movies/…).
-    await page.locator("button[data-tree-path='/Movies']").click();
+    await page.locator("button[data-tree-key='/Movies']").click();
 
     // Contents pane narrows to /Media/Movies: vacation.mp4 (video) +
     // concert.mp4 (video) + shared-doc.mp4 (video) + vacation.en.srt
@@ -86,7 +86,7 @@ test.describe("Folder organizer (e2e mock)", () => {
 
     // Navigate deeper: Media → Music holds song.mp3 (audio tile).
     await page.getByRole("button", { name: "Expand Media" }).click();
-    await page.locator("button[data-tree-path='/Media/Music']").click();
+    await page.locator("button[data-tree-key='/Media/Music']").click();
     await expect(
       organizer.getByRole("link", { name: "Download song.mp3" }).first(),
     ).toBeVisible();
