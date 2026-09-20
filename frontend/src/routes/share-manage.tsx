@@ -39,9 +39,9 @@ import { PosterCard } from "../components/poster-card";
 import { SearchBar } from "../components/search-bar";
 import { ShareEditDialog } from "../components/share-edit-dialog";
 import { ShareFolderMenu } from "../components/share-folder-menu";
-import { ShareFolderTile } from "../components/share-folder-tile";
+import { FolderTile } from "../components/folder-tile";
 import { ShareItemMenu } from "../components/share-item-menu";
-import { ShareMoveDialog } from "../components/share-move-dialog";
+import { FolderPickerDialog } from "../components/folder-picker-dialog";
 import { ShareResultPathLabel, ShareSearchResults } from "../components/share-search-results";
 import { StatusBadge } from "../components/status-badge";
 import { Button } from "../components/ui/button";
@@ -429,9 +429,10 @@ function ShareDetail({ share }: { share: ShareDto }) {
             <ShareSearchResults query={query} results={results} onClear={handleClearSearch}>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
                 {results.folders.map((folder) => (
-                  <ShareFolderTile
+                  <FolderTile
                     key={folder.id}
-                    folder={folder}
+                    name={folder.name}
+                    folderId={folder.id}
                     to={basePath}
                     count={tree?.childCount(folder.id) ?? 0}
                     topRightSlot={
@@ -521,9 +522,10 @@ function ShareDetail({ share }: { share: ShareDto }) {
               {!nothingVisible && (
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
                   {levelFolders.map((folder) => (
-                    <ShareFolderTile
+                    <FolderTile
                       key={folder.id}
-                      folder={folder}
+                      name={folder.name}
+                      folderId={folder.id}
                       to={basePath}
                       count={tree?.childCount(folder.id) ?? 0}
                       topRightSlot={
@@ -604,8 +606,9 @@ function ShareDetail({ share }: { share: ShareDto }) {
       )}
 
       {folderDialog?.kind === "move" && (
-        <ShareMoveDialog
+        <FolderPickerDialog
           title={`Move "${folderDialog.folder.name}"`}
+          rootLabel="Share root"
           folders={items.data?.folders ?? []}
           excludeSubtreeOf={folderDialog.folder.id}
           currentFolderId={folderDialog.folder.parent_id}
@@ -618,8 +621,9 @@ function ShareDetail({ share }: { share: ShareDto }) {
       )}
 
       {movingVideo && (
-        <ShareMoveDialog
+        <FolderPickerDialog
           title={`Move "${movingVideo.name}"`}
+          rootLabel="Share root"
           folders={items.data?.folders ?? []}
           currentFolderId={movingVideo.folder_id}
           pending={moveItem.isPending}

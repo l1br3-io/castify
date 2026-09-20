@@ -1,22 +1,35 @@
-// ShareMoveDialog (share-folders task 007) — the folder picker behind
-// "Move", shared by folder moves (task 7) and item moves (task 8).
+// FolderPickerDialog — the shared folder picker behind "Move"
+// (library-folders task 006), extracted from ShareMoveDialog. One
+// component, two consumers: share pages pass the share's folders with
+// `rootLabel="Share root"`, the library organizer passes the curated
+// tree with `rootLabel="Unfiled"`. Behavior is frozen from the share
+// original.
 //
-// Renders the share's whole folder tree (DFS from root, indented by
-// depth) plus a "Share root" choice; a pick reports the target scope
-// (`null` = root). When moving a folder, the caller passes
-// `excludeSubtreeOf` so the folder's own subtree is unpickable — a
-// client-side pre-check for the obvious cycle; the server's cycle/depth
-// walk remains the enforcement.
+// Renders the whole folder tree (DFS from root, indented by depth) plus
+// the root choice; a pick reports the target scope (`null` = root).
+// When moving a folder, the caller passes `excludeSubtreeOf` so the
+// folder's own subtree is unpickable — a client-side pre-check for the
+// obvious cycle; the server's cycle/depth walk remains the enforcement.
 
-import type { ShareFolderDto } from "../api/types";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 
-type ShareMoveDialogProps = {
+/** The minimal folder shape the picker walks — shared by share folders
+ *  and curated library folders. */
+export interface PickerFolder {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  position: number;
+}
+
+type FolderPickerDialogProps = {
   /** Dialog heading, e.g. `Move "Trip"` — names the thing being moved. */
   title: string;
-  /** The share's full flat folder list (the wrapped payload's `folders`). */
-  folders: ShareFolderDto[];
+  /** Label for the root choice — "Share root" or "Unfiled". */
+  rootLabel: string;
+  /** The full flat folder list (the tree payload's `folders`). */
+  folders: PickerFolder[];
   /** Folder id whose subtree is unpickable (self + descendants). */
   excludeSubtreeOf?: string;
   /** The mover's current scope: that choice renders disabled with a
@@ -31,10 +44,10 @@ type ShareMoveDialogProps = {
 /** Depth-first walk from the root, skipping the excluded subtree.
  * `depth` starts at 0 for root-level folders (root choice is separate). */
 function walkTree(
-  folders: ShareFolderDto[],
+  folders: PickerFolder[],
   excludeSubtreeOf: string | undefined,
-): Array<{ folder: ShareFolderDto; depth: number }> {
-  const byParent = new Map<string | null, ShareFolderDto[]>();
+): Array<{ folder: PickerFolder; depth: number }> {
+  const byParent = new Map<string | null, PickerFolder[]>();
   for (const folder of folders) {
     const siblings = byParent.get(folder.parent_id) ?? [];
     siblings.push(folder);
@@ -44,7 +57,7 @@ function walkTree(
     siblings.sort((a, b) => a.position - b.position);
   }
 
-  const rows: Array<{ folder: ShareFolderDto; depth: number }> = [];
+  const rows: Array<{ folder: PickerFolder; depth: number }> = [];
   const visit = (parentId: string | null, depth: number): void => {
     for (const folder of byParent.get(parentId) ?? []) {
       if (folder.id === excludeSubtreeOf) continue;
@@ -61,15 +74,16 @@ const CHOICE_CLASS =
   "hover:bg-[var(--color-castify-accent-subtle)] focus:outline-none " +
   "focus-visible:bg-[var(--color-castify-accent-subtle)] disabled:cursor-not-allowed disabled:opacity-50";
 
-export function ShareMoveDialog({
+export function FolderPickerDialog({
   title,
+  rootLabel,
   folders,
   excludeSubtreeOf,
   currentFolderId,
   pending = false,
   onPick,
   onClose,
-}: ShareMoveDialogProps) {
+}: FolderPickerDialogProps) {
   const rows = walkTree(folders, excludeSubtreeOf);
   // `currentFolderId` is optional: undefined = caller doesn't track a
   // current scope (no marker); null = the mover currently sits at root.
@@ -90,7 +104,8 @@ export function ShareMoveDialog({
             onClick={() => onPick(null)}
             className={CHOICE_CLASS}
           >
-            Share root{rootIsCurrent ? " · current" : ""}
+            {rootLabel}
+            {rootIsCurrent ? " · current" : ""}
           </button>
           {rows.map(({ folder, depth }) => {
             const isCurrent = folder.id === currentFolderId;

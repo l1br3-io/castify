@@ -57,7 +57,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { PosterCard } from "../components/poster-card";
 import { SearchBar } from "../components/search-bar";
-import { ShareFolderTile } from "../components/share-folder-tile";
+import { FolderTile } from "../components/folder-tile";
 import { ShareResultPathLabel, ShareSearchResults } from "../components/share-search-results";
 import { EmptyState } from "../components/ui/empty-state";
 import { SkeletonGrid } from "../components/ui/skeleton-grid";
@@ -272,9 +272,10 @@ function ShareBrowse({
         <ShareSearchResults query={query} results={results} onClear={handleClearSearch}>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {results.folders.map((folder) => (
-              <ShareFolderTile
+              <FolderTile
                 key={folder.id}
-                folder={folder}
+                name={folder.name}
+                folderId={folder.id}
                 to={basePath}
                 count={tree.childCount(folder.id)}
               />
@@ -333,9 +334,10 @@ function ShareBrowse({
           ) : (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {levelFolders.map((folder) => (
-                <ShareFolderTile
+                <FolderTile
                   key={folder.id}
-                  folder={folder}
+                  name={folder.name}
+                  folderId={folder.id}
                   to={basePath}
                   count={tree.childCount(folder.id)}
                 />

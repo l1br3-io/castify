@@ -12,7 +12,7 @@
 // the accent border the toolbar rail shifts to while searching. Paths
 // ride the same mono data voice.
 //
-// Matching folder tiles are rendered by the pages via ShareFolderTile
+// Matching folder tiles are rendered by the pages via FolderTile
 // directly; its link shape (`?folder=<id>`, query dropped) implements
 // the spec's OQ2 default — a folder hit browse-intos the folder with
 // the search cleared.
