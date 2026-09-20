@@ -19,7 +19,7 @@ COMPOSE_E2E := "docker compose --progress quiet -f docker-compose.yml -f docker-
 # Strip libtest per-binary boilerplate ("running N tests" / blanks / ok lines).
 # sed (unlike grep -v) always exits 0, so pipefail still yields cargo's status;
 # FAILED results, panics and failures lists pass through untouched.
-QUIET_TEST := "sed -E '/^running [0-9]+ tests$/d; /^$/d; /^test result: ok[.]/d'"
+QUIET_TEST := "sed -E '/^running [0-9]+ tests?$/d; /^$/d; /^test result: ok[.]/d'"
 
 # Default: list available recipes.
 default:
@@ -215,6 +215,36 @@ e2e-one filter:
     echo "== playwright: running e2e filter: {{filter}} =="
     ( cd e2e && npx playwright test --reporter=dot {{filter}} )
 
+# Run ONE unit test (or a filtered subset) — the unit-test counterpart to
+# `e2e-one`; stack auto-detected from the filter. A vitest path (file,
+# file:line, or dir) runs frontend tests, with an optional 2nd arg matching
+# test names (-t); anything else is a cargo name filter across the workspace
+# (module test path or substring). Examples:
+#   just test-one src/lib/format.test.ts "uses KB just above 1024" · src/routes/browse.test.ts:64 · catalog::prune::tests::marks_tombstone
+test-one filter name="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    f="{{filter}}"
+    case "$f" in frontend/*) f="${f#frontend/}" ;; esac
+    case "$f" in
+        # vitest's positional is a path filter; `-t` matches test names.
+        *.test.ts*|*.test.js*|src/*)
+            echo "== frontend: vitest $f {{name}} =="
+            args=("$f")
+            [ -n "{{name}}" ] && args+=(-t "{{name}}")
+            ( cd frontend && npx vitest run --reporter=dot "${args[@]}" )
+            ;;
+        *)
+            if [ -n "{{name}}" ]; then
+                echo "error: the name arg only applies to frontend filters; for Rust, put the name in the filter itself (cargo matches module::path::to::test)" >&2
+                exit 1
+            fi
+            echo "== backend: unit filter: $f =="
+            cargo test --all --quiet "$f" 2>&1 | {{QUIET_TEST}}
+            ;;
+    esac
+
 # --- Performance benchmark (T13) ---
 
 # Full performance benchmark: build release, boot API, seed 10K videos,
@@ -316,6 +346,22 @@ logs:
 # Show Docker stack container status.
 ps:
     {{COMPOSE}} ps
+
+# Reset the owner's password (locked-out recovery, crates/api/src/cli.rs):
+# installs a one-time 20-char temp password (printed to stdout) and revokes
+# every session. Targets the Docker stack when it's up, else the local data
+# dir (CASTIFY_DATA_DIR via .env) with a debug build of the API.
+reset-pwd:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if {{COMPOSE}} ps --status running --quiet castify 2>/dev/null | grep -q .; then
+        echo "== reset-pwd: docker stack =="
+        # Absolute path: the distroless image has no shell / PATH resolution.
+        {{COMPOSE}} exec -T castify /castify reset-password
+    else
+        echo "== reset-pwd: local data dir =="
+        cargo run -p castify-api --quiet -- reset-password
+    fi
 
 # --- Remote deploy (ship image over SSH; docs/deploy-do-r2.md § 9) ---
 
