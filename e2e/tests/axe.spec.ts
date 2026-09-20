@@ -135,7 +135,7 @@ test.describe("A11y (axe) — redesigned screens", () => {
       expect(videos.length).toBeGreaterThan(0);
 
       await page.goto("/");
-      await page.getByRole("button", { name: "Select" }).click();
+      await page.getByRole("button", { name: "Select", exact: true }).click();
       await page
         .getByRole("checkbox", { name: `Select ${videos[0].name}` })
         .click();

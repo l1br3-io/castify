@@ -15,7 +15,8 @@ All recipes via [`just`](./justfile). Key ones:
 - `just preflight` — format/clippy/typecheck sweep before committing
 - `just test` — workspace tests + frontend tests
 - `just dev` — boot backend + frontend locally
-- `just e2e` — Playwright suite against the docker stack
+- `just e2e` — Playwright suite against the docker stack (**manual only**: the user
+  triggers this; never run it on your own)
 - `just bench` — catalog/stream benchmarks
 
 Commands must be quiet on success — output only for errors/failures (token

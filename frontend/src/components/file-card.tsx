@@ -23,6 +23,13 @@
 // Download is a plain <a href={fileDownloadUrl(id)}> — real navigation, the
 // session cookie rides along, and the server sets
 // Content-Disposition: attachment.
+//
+// Selection mode (library-folders task 009) mirrors PosterCard's
+// contract: when `selection` is set, clicking anywhere toggles the item
+// and the download link disappears (a click must select, not navigate).
+// `menuSlot` carries the per-item kebab outside select mode.
+
+import { type ReactNode } from "react";
 
 import { FILE_KIND_LABELS, type FileEntryDto, type FileKindKey } from "../api/types";
 import { fileDownloadUrl } from "../api/folders";
@@ -35,6 +42,14 @@ import {
   ImageIcon,
   SubtitleIcon,
 } from "./icons";
+
+type SelectionProps = {
+  selection?: {
+    isSelected: boolean;
+    onToggle: () => void;
+  };
+  menuSlot?: ReactNode;
+};
 
 // Kind → hue utilities. Static literal strings (one per kind) so the
 // Tailwind scanner emits every arbitrary value; per-theme resolution comes
@@ -76,10 +91,13 @@ function formatModifiedDate(iso: string | null): string {
   return Number.isFinite(year) ? String(year) : "";
 }
 
-export function FileCard({ file }: { file: FileEntryDto }) {
+export function FileCard({ file, selection, menuSlot }: { file: FileEntryDto } & SelectionProps) {
   return (
     <article
-      className="group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none"
+      onClick={selection ? selection.onToggle : undefined}
+      className={`group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none
+        ${selection ? "cursor-pointer" : ""}
+        ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}
     >
       <div className="relative flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-[var(--radius-card)] bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-muted)]">
@@ -92,6 +110,9 @@ export function FileCard({ file }: { file: FileEntryDto }) {
         <span className="text-xs font-medium uppercase tracking-wide">
           {FILE_KIND_LABELS[file.kind]}
         </span>
+        {!selection && menuSlot && (
+          <span className="absolute right-1.5 top-1.5 z-10">{menuSlot}</span>
+        )}
       </div>
       <div className="flex flex-col gap-1 px-1 pb-1">
         <h3 className="line-clamp-2 text-sm font-medium leading-tight" title={file.name}>
@@ -99,25 +120,30 @@ export function FileCard({ file }: { file: FileEntryDto }) {
         </h3>
         <div className="flex items-center justify-between gap-2 text-xs text-[var(--color-castify-muted)]">
           <span>{formatSize(file.size_bytes)}</span>
-          <a
-            href={downloadHref(file.id)}
-            className="rounded-[var(--radius-button)] px-2 py-1 font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-castify-accent)]"
-            aria-label={`Download ${file.name}`}
-            download
-          >
-            Download
-          </a>
+          {!selection && (
+            <a
+              href={downloadHref(file.id)}
+              className="rounded-[var(--radius-button)] px-2 py-1 font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-castify-accent)]"
+              aria-label={`Download ${file.name}`}
+              download
+            >
+              Download
+            </a>
+          )}
         </div>
       </div>
     </article>
   );
 }
 
-export function FileRow({ file }: { file: FileEntryDto }) {
+export function FileRow({ file, selection, menuSlot }: { file: FileEntryDto } & SelectionProps) {
   const modified = formatModifiedDate(file.modified_at);
   return (
     <div
-      className="relative flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40"
+      onClick={selection ? selection.onToggle : undefined}
+      className={`relative flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40
+        ${selection ? "cursor-pointer" : ""}
+        ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}
     >
       {/* 4px kind-hue tab down the left edge — the row's take on the
@@ -133,14 +159,17 @@ export function FileRow({ file }: { file: FileEntryDto }) {
       <span className="hidden flex-shrink-0 text-xs text-[var(--color-castify-muted)] sm:inline">
         {[formatSize(file.size_bytes), modified].filter(Boolean).join(" · ")}
       </span>
-      <a
-        href={downloadHref(file.id)}
-        className="flex-shrink-0 rounded-[var(--radius-button)] px-2.5 py-1 text-xs font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-castify-accent)]"
-        aria-label={`Download ${file.name}`}
-        download
-      >
-        Download
-      </a>
+      {!selection && menuSlot}
+      {!selection && (
+        <a
+          href={downloadHref(file.id)}
+          className="flex-shrink-0 rounded-[var(--radius-button)] px-2.5 py-1 text-xs font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-castify-accent)]"
+          aria-label={`Download ${file.name}`}
+          download
+        >
+          Download
+        </a>
+      )}
     </div>
   );
 }

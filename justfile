@@ -165,6 +165,56 @@ e2e:
     echo "== playwright: running e2e tests =="
     ( cd e2e && npx playwright test --reporter=dot )
 
+# Run ONE e2e test (or a filtered subset) instead of the whole suite —
+# the fast inner loop when debugging a failing spec. Same lifecycle as
+# `e2e` (cold boot → health gate → run → teardown, CASTIFY_E2E_REUSE=1
+# keeps the stack). The filter is Playwright's positional argument: a
+# file path (`tests/browse.spec.ts`), file:line (`tests/play.spec.ts:164`),
+# or a path regex (`library-folders`).
+e2e-one filter:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    cleanup() {
+        if [ -n "${CASTIFY_E2E_REUSE:-}" ]; then
+            echo "== teardown skipped (CASTIFY_E2E_REUSE=1) =="
+        else
+            echo "== docker: teardown =="
+            {{COMPOSE_E2E}} down -v --remove-orphans 2>/dev/null || true
+        fi
+    }
+    trap cleanup EXIT
+
+    echo "== e2e: install deps =="
+    ( cd e2e && npm ci --silent --no-fund --no-audit )
+    echo "== e2e: install chromium =="
+    if ! ( cd e2e && npx playwright install --with-deps chromium >/dev/null ); then
+        echo "note: --with-deps failed (no sudo?); installing browser only" >&2
+        ( cd e2e && npx playwright install chromium >/dev/null )
+    fi
+
+    echo "== docker: cold boot (fresh volume, e2e build) =="
+    {{COMPOSE_E2E}} down -v --remove-orphans 2>/dev/null || true
+    {{COMPOSE_E2E}} up --build -d
+
+    echo "== waiting for health on :8427 =="
+    ready=0
+    for _ in $(seq 1 120); do
+        if curl -sf http://localhost:8427/api/health >/dev/null 2>&1; then
+            ready=1; break
+        fi
+        sleep 1
+    done
+    if [ "$ready" = 0 ]; then
+        echo "error: stack did not become healthy within 120s" >&2
+        {{COMPOSE_E2E}} logs --tail=50
+        exit 1
+    fi
+    echo "stack healthy"
+
+    echo "== playwright: running e2e filter: {{filter}} =="
+    ( cd e2e && npx playwright test --reporter=dot {{filter}} )
+
 # --- Performance benchmark (T13) ---
 
 # Full performance benchmark: build release, boot API, seed 10K videos,

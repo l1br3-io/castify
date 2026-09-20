@@ -28,6 +28,21 @@ function LocationProbe() {
   return <output data-testid="location">{location.search}</output>;
 }
 
+/** Route-aware mutation mock: keeps the curated tree + contents queries
+ *  fed with faithful payloads while the mutation URLs answer whatever
+ *  the test needs (a starved refetch used to crash the panes with a
+ *  wrong-shaped payload). */
+function mutationFetch(
+  mutate: (input: RequestInfo | URL, init?: RequestInit) => Response,
+) {
+  return (input: RequestInfo | URL, init?: RequestInit): Response => {
+    const url = String(input);
+    if (url.startsWith("/api/library-folders/tree")) return jsonResponse(LIBRARY_TREE);
+    if (url.startsWith("/api/library-folders/contents")) return jsonResponse(UNFILED_PAGE);
+    return mutate(input, init);
+  };
+}
+
 const locationSearch = () => screen.getByTestId("location").textContent ?? "";
 
 const TREE: FolderNodeDto[] = [
@@ -550,7 +565,9 @@ describe("FolderOrganizer curated pane", () => {
       ["/"],
     );
 
-    expect(await screen.findByRole("button", { name: /new folder/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "New folder" }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Unfiled").length).toBeGreaterThan(0);
     expect(screen.getByText("2 items")).toBeInTheDocument();
   });
@@ -582,7 +599,7 @@ describe("FolderOrganizer curated pane", () => {
   it("create: the empty-tree CTA opens the dialog; submit POSTs at the current level", async () => {
     renderOrganizer({ libraryTree: { folders: [], unfiled_count: 0 } }, ["/"]);
 
-    fireEvent.click(await screen.findByRole("button", { name: /new folder/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "New folder" }));
     const dialog = await screen.findByRole("dialog", { name: "New folder" });
     expect(dialog).toBeInTheDocument();
 
@@ -611,8 +628,36 @@ describe("FolderOrganizer curated pane", () => {
       ).toBeInTheDocument(),
     );
 
-    await pickTileAction("Day 1", "Rename");
-    expect(await screen.findByRole("dialog", { name: 'Rename "Day 1"' })).toBeInTheDocument();
+    // The always-present header chip creates at the CURRENT level.
+    fireEvent.click(screen.getByRole("button", { name: "+ New folder" }));
+    expect(await screen.findByRole("dialog", { name: "New folder" })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Folder name"), {
+      target: { value: "Day 1" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        mutationFetch(() =>
+          jsonResponse(
+            { id: "f-day1", parent_id: "f-trip", name: "Day 1", position: 0 },
+            201,
+          ),
+        ),
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const post = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        (c) => String(c[0]) === "/api/library-folders",
+      );
+      expect(post).toBeDefined();
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({
+        name: "Day 1",
+        parent_id: "f-trip",
+      });
+    });
   });
 
   it("rename: duplicate-sibling error keeps the dialog open with the server copy", async () => {
@@ -659,7 +704,11 @@ describe("FolderOrganizer curated pane", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(() => jsonResponse({ id: "f-trip", parent_id: "f-docs", name: "Trip", position: 1 })),
+      vi.fn(
+        mutationFetch(() =>
+          jsonResponse({ id: "f-trip", parent_id: "f-docs", name: "Trip", position: 1 }),
+        ),
+      ),
     );
     fireEvent.click(screen.getByRole("button", { name: "Docs" }));
 
@@ -731,5 +780,132 @@ describe("FolderOrganizer curated pane", () => {
     await screen.findByText("Zeta.mp4");
 
     expect(screen.queryByRole("button", { name: /more actions for/i })).not.toBeInTheDocument();
+  });
+
+  // --- Multi-select + batch move (library-folders task 009) ---
+
+  it("Select mode: mixed selection counts; cards toggle instead of navigating; Escape clears", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    // Outside select mode, the video card navigates.
+    expect(screen.getByRole("link", { name: "Play Loose.mp4" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    expect(screen.getByRole("group", { name: "Selection actions" })).toBeInTheDocument();
+    expect(screen.getByText("0 items selected")).toBeInTheDocument();
+    // Navigation suppressed in select mode.
+    expect(screen.queryByRole("link", { name: "Play Loose.mp4" })).not.toBeInTheDocument();
+
+    // Mixed toggle: video + file, in click order.
+    fireEvent.click(screen.getByText("Loose.mp4").closest("article")!);
+    fireEvent.click(screen.getByText("Photo.jpg").closest("article")!);
+    expect(screen.getByText("2 items selected")).toBeInTheDocument();
+
+    // Escape cancels select mode and clears.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Selection actions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Play Loose.mp4" })).toBeInTheDocument();
+  });
+
+  it("Move N items opens the picker once and fires exactly one PATCH with every pair", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(screen.getByText("Loose.mp4").closest("article")!);
+    fireEvent.click(screen.getByText("Photo.jpg").closest("article")!);
+
+    fireEvent.click(screen.getByRole("button", { name: "Move to folder" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Move 2 items" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Trip" })).toBeEnabled();
+
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.click(screen.getByRole("button", { name: "Trip" }));
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect((patches[0]![1] as RequestInit).method).toBe("PATCH");
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [
+          { kind: "video", id: "u1" },
+          { kind: "file", id: "u2" },
+        ],
+        folder_id: "f-trip",
+      });
+    });
+  });
+
+  it("a failed batch keeps the selection and surfaces the error", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(screen.getByText("Loose.mp4").closest("article")!);
+    fireEvent.click(screen.getByRole("button", { name: "Move to folder" }));
+    await screen.findByRole("dialog", { name: "Move 1 item" });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => jsonResponse({ message: "batch contains an unknown item id" }, 404)),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Trip" }));
+
+    expect(
+      (await screen.findAllByText(/unknown item id/i)).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("1 item selected")).toBeInTheDocument();
+  });
+
+  it("per-item Move to folder outside select mode fires a batch of one; Unfiled un-files", async () => {
+    renderOrganizer({}, ["/?folder=f-trip"]);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Trip", { selector: "span[aria-current='page']" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Day 1" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move" }));
+    const dialog = await screen.findByRole("dialog", { name: 'Move "Day 1"' });
+    expect(dialog).toBeInTheDocument();
+
+    // Per-ITEM menu is on contents entries, not folder tiles — use an
+    // item entry instead for the single-move assertion.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "More actions for Loose.mp4" }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Loose.mp4" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move to folder" }));
+    await screen.findByRole("dialog", { name: "Move to folder" });
+
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.click(screen.getByRole("button", { name: "Unfiled" }));
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [{ kind: "video", id: "u1" }],
+        folder_id: null,
+      });
+    });
   });
 });

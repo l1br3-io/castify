@@ -49,8 +49,13 @@ test.describe("Folder organizer (e2e mock)", () => {
 
     await page.goto("/");
 
-    // Organizer renders with the library loaded.
-    const tree = page.getByRole("tree", { name: "Folders" });
+    // The sidebar's curated tree is primary; the provider tree sits
+    // behind the Cloud toggle (library-folders effort).
+    await expect(
+      page.getByRole("tree", { name: "Library folders" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Cloud", exact: true }).click();
+    const tree = page.getByRole("tree", { name: "Cloud folders" });
     await expect(tree).toBeVisible();
 
     // Root contents: mixed kinds — video poster (vacation.mp4 lives under

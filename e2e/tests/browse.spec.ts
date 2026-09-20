@@ -66,16 +66,24 @@ test.describe("Browse page (e2e mock)", () => {
       page.getByRole("heading", { level: 1, name: /Your library/ }),
     ).toBeVisible();
 
-    // ── Organizer (M9): folder tree + provider chips ────────────────
+    // ── Organizer (library-folders effort): curated default ─────────
+    // The curated tree is primary (Unfiled pinned); the provider tree
+    // sits behind the Cloud toggle and drives the provider pane.
     await expect(
-      page.getByRole("tree", { name: "Folders" }),
+      page.getByRole("tree", { name: "Library folders" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("treeitem", { name: /Movies/ }),
+      page.getByRole("treeitem", { name: /Unfiled/ }).first(),
     ).toBeVisible();
-    // Provider chips replaced the old By Provider shelves. Both the
-    // organizer and the grid's FilterPanel render a chip group — .first()
-    // scopes to the organizer's.
+    await page.getByRole("button", { name: "Cloud", exact: true }).click();
+    await expect(
+      page.getByRole("tree", { name: "Cloud folders" }),
+    ).toBeVisible();
+    await page.locator("button[data-tree-key='/Movies']").click();
+    // Selecting a provider node switches the organizer to the provider
+    // pane: provider chips replaced the old By Provider shelves. Both
+    // the organizer and the grid's FilterPanel render a chip group —
+    // .first() scopes to the organizer's.
     const organizerChips = page
       .getByRole("group", { name: "Filter by provider" })
       .first();
@@ -115,12 +123,12 @@ test.describe("Browse page (e2e mock)", () => {
     await expect(page.getByText("screenshots.mp4")).toHaveCount(0);
     await expect(page.getByText("shared-doc.mp4")).toHaveCount(0);
     // Rails + organizer are hidden during active search; the sidebar's
-    // folder tree persists (it is app chrome, not page content).
+    // folder trees persist (they are app chrome, not page content).
     await expect(
       page.getByRole("heading", { name: "Recently added" }),
     ).not.toBeVisible();
     await expect(
-      page.getByRole("tree", { name: "Folders" }),
+      page.getByRole("tree", { name: "Library folders" }),
     ).toBeVisible();
     await expect(page.getByTestId("contents-full-path")).not.toBeVisible();
 

@@ -42,9 +42,11 @@ function renderLayout(fetchImpl: FetchHandler) {
       initialEntries: ["/"],
       fetchImplementation: (input, init) => {
         const url = String(input);
-        // The shell answers the Library sidebar's folder tree; individual
-        // tests mock everything else.
+        // The shell answers the Library sidebar's folder trees (provider
+        // + curated); individual tests mock everything else.
         if (url === "/api/folders/tree") return jsonResponse([]);
+        if (url === "/api/library-folders/tree")
+          return jsonResponse({ folders: [], unfiled_count: 0 });
         return fetchImpl(input, init);
       },
     },
@@ -214,6 +216,8 @@ describe("AppLayout (design frame shell: topbar + sidebar + drawer)", () => {
           fetchImplementation: (input) => {
             const url = String(input);
             if (url === "/api/folders/tree") return jsonResponse([]);
+            if (url === "/api/library-folders/tree")
+              return jsonResponse({ folders: [], unfiled_count: 0 });
             return jsonResponse({ owner: { id: "u1", display_name: "Alex" } });
           },
         },

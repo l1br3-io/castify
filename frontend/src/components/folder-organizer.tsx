@@ -41,6 +41,7 @@ import { FolderNameDialog } from "./folder-name-dialog";
 import { FolderPickerDialog } from "./folder-picker-dialog";
 import { FolderTile } from "./folder-tile";
 import { LibraryFolderMenu } from "./library-folder-menu";
+import { LibraryItemMenu } from "./library-item-menu";
 import { PosterCard } from "./poster-card";
 import { FavoriteToggle } from "./favorite-toggle";
 import { Button } from "./ui/button";
@@ -61,8 +62,10 @@ import {
   useLibraryFolderContents,
   useLibraryFolderNav,
   useLibraryFolderTree,
+  useMoveLibraryItems,
   useUpdateLibraryFolder,
 } from "../hooks/use-library-folders";
+import type { LibraryMoveItem } from "../api/library-folders";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
 import { describeError } from "../lib/format";
 import { onNewFolder as onNewFolderSignal } from "../lib/new-folder-event";
@@ -141,12 +144,27 @@ type ContentsBodyProps = {
   page: number;
   onPageChange: (updater: (p: number) => number) => void;
   filtersActive: boolean;
+  /** Select mode (curated pane): when set, cards toggle instead of
+   *  navigating and per-item menus hide. */
+  selection?: {
+    selectedIds: Set<string>;
+    onToggle: (entry: FolderEntryDto) => void;
+  };
+  /** Per-item kebab factory (curated pane, outside select mode). */
+  itemMenu?: (entry: FolderEntryDto) => ReactNode;
 };
 
 /** The shared contents rendering: grid tiles + list rows + pagination +
  *  loading/error/empty states. Both panes render items through this —
  *  one rendering rule set, per the spec's "no forked siblings". */
-function ContentsBody({ contents, page, onPageChange, filtersActive }: ContentsBodyProps) {
+function ContentsBody({
+  contents,
+  page,
+  onPageChange,
+  filtersActive,
+  selection,
+  itemMenu,
+}: ContentsBodyProps) {
   const gridEntries = contents.data?.entries.filter(isTileEntry) ?? [];
   const listEntries = contents.data?.entries.filter(isListRowEntry) ?? [];
   const videoQueue =
@@ -186,17 +204,48 @@ function ContentsBody({ contents, page, onPageChange, filtersActive }: ContentsB
                   video={entry}
                   href={`/watch/${entry.id}`}
                   queue={videoQueue}
-                  topRightSlot={<FavoriteToggle video={entry} />}
+                  topRightSlot={
+                    <>
+                      <FavoriteToggle video={entry} />
+                      {itemMenu?.(entry)}
+                    </>
+                  }
+                  selection={
+                    selection && {
+                      isSelected: selection.selectedIds.has(entry.id),
+                      onToggle: () => selection.onToggle(entry),
+                    }
+                  }
                 />
               ) : (
-                <FileCard key={entry.id} file={entry} />
+                <FileCard
+                  key={entry.id}
+                  file={entry}
+                  selection={
+                    selection && {
+                      isSelected: selection.selectedIds.has(entry.id),
+                      onToggle: () => selection.onToggle(entry),
+                    }
+                  }
+                  menuSlot={itemMenu?.(entry)}
+                />
               ),
             )}
           </div>
           {/* List children: documents/archives/subtitles/other. */}
           <div className="space-y-2">
             {listEntries.map((entry) => (
-              <FileRow key={entry.id} file={entry} />
+              <FileRow
+                key={entry.id}
+                file={entry}
+                selection={
+                  selection && {
+                    isSelected: selection.selectedIds.has(entry.id),
+                    onToggle: () => selection.onToggle(entry),
+                  }
+                }
+                menuSlot={itemMenu?.(entry)}
+              />
             ))}
           </div>
 
@@ -429,9 +478,17 @@ function CuratedPane() {
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
   const debouncedNameQuery = useDebouncedValue(nameQuery, 300);
 
+  // Select mode (task 009, the browse grid's pattern): mixed selection
+  // in click order; one batch mutation per action. Selection is client
+  // state — cleared on folder change, Escape, and successful moves.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<LibraryMoveItem[]>([]);
+  const [moveTarget, setMoveTarget] = useState<"batch" | LibraryMoveItem | null>(null);
+
   const createFolder = useCreateLibraryFolder();
   const updateFolder = useUpdateLibraryFolder();
   const deleteFolder = useDeleteLibraryFolder();
+  const moveItems = useMoveLibraryItems();
 
   // The sidebar's "New folder" entry points open the create dialog here
   // (open dialogs are ephemeral client state — the DOM event keeps the
@@ -445,6 +502,25 @@ function CuratedPane() {
   useEffect(() => {
     setPage(1);
   }, [selectedFolder, kindFilter, debouncedNameQuery]);
+
+  // A different level's listing must not carry the old selection.
+  useEffect(() => {
+    setSelected([]);
+  }, [selectedFolder]);
+
+  // Escape cancels select mode — the grid's Cancel affordance for
+  // keyboard users.
+  useEffect(() => {
+    if (!selectMode) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setSelectMode(false);
+        setSelected([]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectMode]);
 
   const contents = useLibraryFolderContents({
     folder_id: selectedFolder ?? undefined,
@@ -472,6 +548,37 @@ function CuratedPane() {
     setKindFilter(value);
     setPage(1);
   }
+
+  function toggleSelected(entry: FolderEntryDto): void {
+    setSelected((prev) => {
+      const index = prev.findIndex((item) => item.id === entry.id);
+      if (index >= 0) return prev.filter((_, i) => i !== index);
+      return [
+        ...prev,
+        { kind: entry.kind === "video" ? "video" : "file", id: entry.id },
+      ];
+    });
+  }
+
+  /** The picker's submit: one mutation for the whole batch (or the
+   *  single degenerate one). Success clears the selection; failure
+   *  keeps it and surfaces the error in the action bar. */
+  function handleMovePick(target: string | null): void {
+    if (moveTarget === null) return;
+    const items: LibraryMoveItem[] =
+      moveTarget === "batch" ? selected : [moveTarget];
+    moveItems.mutate(
+      { items, folderId: target },
+      {
+        onSuccess: () => {
+          setMoveTarget(null);
+          if (moveTarget === "batch") setSelected([]);
+        },
+      },
+    );
+  }
+
+  const selectedIds = new Set(selected.map((item) => item.id));
 
   const filtersActive = kindFilter !== undefined || nameQuery.trim() !== "";
 
@@ -550,8 +657,65 @@ function CuratedPane() {
               }}
               className="w-44 rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 font-mono text-sm placeholder:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-castify-accent)]"
             />
+            <button
+              type="button"
+              aria-pressed={selectMode}
+              onClick={() => {
+                setSelectMode((mode) => !mode);
+                setSelected([]);
+              }}
+              className={`keycap transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)] ${
+                selectMode ? "keycap-active" : "keycap-inactive"
+              }`}
+            >
+              {selectMode ? "Done" : "Select items"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setFolderDialog({ kind: "create" })}
+              className="keycap keycap-inactive transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-castify-accent)]"
+            >
+              + New folder
+            </button>
           </div>
         </div>
+
+        {/* Select-mode action bar — the count plus the one move action
+            that fires a single batch mutation. */}
+        {selectMode && (
+          <div
+            role="group"
+            aria-label="Selection actions"
+            className="flex flex-wrap items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)] px-3 py-2 text-sm"
+          >
+            <span className="font-semibold">
+              {selected.length} {selected.length === 1 ? "item" : "items"} selected
+            </span>
+            <button
+              type="button"
+              disabled={selected.length === 0 || moveItems.isPending}
+              onClick={() => setMoveTarget("batch")}
+              className="rounded-[var(--radius-button)] border border-[var(--color-castify-accent)] px-3 py-1.5 font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-canvas)] disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
+            >
+              Move to folder
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectMode(false);
+                setSelected([]);
+              }}
+              className="rounded-[var(--radius-button)] px-3 py-1.5 text-[var(--color-castify-muted)] transition hover:text-[var(--color-castify-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
+            >
+              Cancel
+            </button>
+            {moveItems.isError && (
+              <span className="text-sm text-[var(--color-castify-danger,inherit)]">
+                {describeError(moveItems.error)}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Folder tiles first — from the cached tree, so pagination of
             the item listing never drops a folder off a page boundary. */}
@@ -641,8 +805,45 @@ function CuratedPane() {
           page={page}
           onPageChange={setPage}
           filtersActive={filtersActive}
+          selection={
+            selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
+          }
+          itemMenu={
+            selectMode
+              ? undefined
+              : (entry) => (
+                  <LibraryItemMenu
+                    itemName={entry.name}
+                    onMove={() =>
+                      setMoveTarget({
+                        kind: entry.kind === "video" ? "video" : "file",
+                        id: entry.id,
+                      })
+                    }
+                  />
+                )
+          }
         />
       </div>
+
+      {/* Batch/single move picker — one dialog, one request per pick. */}
+      {moveTarget !== null && (
+        <FolderPickerDialog
+          title={
+            moveTarget === "batch"
+              ? `Move ${selected.length} ${
+                  selected.length === 1 ? "item" : "items"
+                }`
+              : "Move to folder"
+          }
+          rootLabel="Unfiled"
+          folders={tree.data?.folders ?? []}
+          currentFolderId={selectedFolder}
+          pending={moveItems.isPending}
+          onPick={handleMovePick}
+          onClose={() => setMoveTarget(null)}
+        />
+      )}
 
       {/* Owner CRUD dialogs — mutations invalidate the tree + contents
           families (the task-004 hooks); a success closes the dialog, an
