@@ -4,6 +4,7 @@ pub mod cli;
 pub mod cookies;
 pub mod dto;
 pub mod error;
+pub mod library_folders;
 pub mod local_source;
 pub mod middleware;
 pub mod routes;

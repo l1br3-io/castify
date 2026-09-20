@@ -61,6 +61,10 @@ pub struct ShareFolderRow {
     pub created_at: String,
 }
 
+/// A folder row's raw columns for the in-memory subtree walk:
+/// `(id, parent_id, name, position)`.
+type SubtreeNode = (String, Option<String>, String, i64);
+
 /// Folder-depth cap: root folders sit at depth 1; the deepest legal
 /// folder is 8. Enforced by the repository's CTE walks — declarative SQL
 /// cannot express it.
@@ -519,10 +523,7 @@ impl ShareRepository {
         if let Some(pid) = parent_id {
             // An unknown or foreign parent folder is a no-op, same shape
             // as the share guard — never an error, no existence leak.
-            if Self::fetch_folder(&mut tx, share_id, pid)
-                .await?
-                .is_none()
-            {
+            if Self::fetch_folder(&mut tx, share_id, pid).await?.is_none() {
                 return Ok(None);
             }
             // New folder's depth = the parent's ancestor chain (parent
@@ -532,9 +533,7 @@ impl ShareRepository {
             }
         }
         let name = valid_folder_name(name).ok_or(FolderInvalid::Name)?;
-        if Self::sibling_name_taken(&mut tx, share_id, parent_id, name, None)
-            .await?
-        {
+        if Self::sibling_name_taken(&mut tx, share_id, parent_id, name, None).await? {
             return Err(FolderInvalid::DuplicateName.into());
         }
         let position = Self::next_folder_position(&mut tx, share_id, parent_id).await?;
@@ -648,10 +647,7 @@ impl ShareRepository {
         if let Some(target) = new_parent_id {
             new_parent = target;
             if let Some(pid) = target {
-                if Self::fetch_folder(&mut tx, share_id, pid)
-                    .await?
-                    .is_none()
-                {
+                if Self::fetch_folder(&mut tx, share_id, pid).await?.is_none() {
                     return Ok(None);
                 }
                 // Cycle: the new parent must not live inside the moved
@@ -763,7 +759,7 @@ impl ShareRepository {
         // unordered, the pre-order walk happens in memory (tree ≤
         // depth 8, dozens of folders — a Rust DFS beats fighting CTE
         // ordering semantics).
-        let subtree: Vec<(String, Option<String>, String, i64)> = sqlx::query(
+        let subtree: Vec<SubtreeNode> = sqlx::query(
             "WITH RECURSIVE subtree(id) AS ( \
                  SELECT id FROM share_folders WHERE id = ? \
                  UNION \
@@ -789,19 +785,15 @@ impl ShareRepository {
         // order; a recursive DFS from the deleted folder yields the
         // lift order (emit-on-visit, so each subtree fully drains
         // before the next sibling — children before next sibling).
-        let mut children: HashMap<Option<&str>, Vec<&(String, Option<String>, String, i64)>> =
-            HashMap::new();
+        let mut children: HashMap<Option<&str>, Vec<&SubtreeNode>> = HashMap::new();
         for rec in &subtree {
-            children
-                .entry(rec.1.as_deref())
-                .or_default()
-                .push(rec);
+            children.entry(rec.1.as_deref()).or_default().push(rec);
         }
         for group in children.values_mut() {
             group.sort_by_key(|rec| rec.3);
         }
         fn walk<'a>(
-            children: &HashMap<Option<&'a str>, Vec<&'a (String, Option<String>, String, i64)>>,
+            children: &HashMap<Option<&'a str>, Vec<&'a SubtreeNode>>,
             parent: Option<&'a str>,
             out: &mut Vec<&'a (String, Option<String>, String, i64)>,
         ) {
@@ -810,7 +802,7 @@ impl ShareRepository {
                 walk(children, Some(rec.0.as_str()), out);
             }
         }
-        let mut descendants: Vec<&(String, Option<String>, String, i64)> = Vec::new();
+        let mut descendants: Vec<&SubtreeNode> = Vec::new();
         walk(&children, Some(folder_id), &mut descendants);
 
         // (2) Lift items: every item whose folder sits in the subtree,
@@ -842,7 +834,10 @@ impl ShareRepository {
             .collect();
             for (video_id, fid, position) in rows {
                 if let Some(fid) = fid {
-                    items_by_folder.entry(fid).or_default().push((video_id, position));
+                    items_by_folder
+                        .entry(fid)
+                        .or_default()
+                        .push((video_id, position));
                 }
             }
             for group in items_by_folder.values_mut() {
@@ -1027,10 +1022,11 @@ impl ShareRepository {
         let Some(prev_folder) = prev_folder else {
             return Ok(RemovedItem::Rejected); // non-member video
         };
-        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM share_items WHERE share_id = ?")
-            .bind(share_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        let members: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM share_items WHERE share_id = ?")
+                .bind(share_id)
+                .fetch_one(&mut *tx)
+                .await?;
         if members == 1 {
             return Ok(RemovedItem::LastItem);
         }
@@ -1044,7 +1040,6 @@ impl ShareRepository {
 
         Ok(RemovedItem::Removed)
     }
-
 
     // -- Folder helpers: one shared guard, share-scoped fetches, and the
     // single-CTE walks that keep every tree check O(depth) statements.
@@ -1108,10 +1103,7 @@ impl ShareRepository {
 
     /// Subtree height of `folder_id`, itself included — one downward
     /// recursive CTE. A missing folder measures 0.
-    async fn subtree_height(
-        tx: &mut sqlx::SqliteConnection,
-        folder_id: &str,
-    ) -> sqlx::Result<i64> {
+    async fn subtree_height(tx: &mut sqlx::SqliteConnection, folder_id: &str) -> sqlx::Result<i64> {
         sqlx::query_scalar(
             "WITH RECURSIVE subtree(id, depth) AS ( \
                  SELECT id, 1 FROM share_folders WHERE id = ? \
@@ -1281,7 +1273,9 @@ fn row_to_folder(row: &sqlx::sqlite::SqliteRow) -> ShareFolderRow {
 /// Returns the trimmed form ready to store, or `None` when invalid.
 fn valid_folder_name(name: &str) -> Option<&str> {
     let trimmed = name.trim();
-    (1..=200).contains(&trimmed.chars().count()).then_some(trimmed)
+    (1..=200)
+        .contains(&trimmed.chars().count())
+        .then_some(trimmed)
 }
 
 /// ISO-8601 UTC without sub-second noise, matching `castify_auth`'s
@@ -1988,9 +1982,7 @@ mod tests {
     // ---- Folders (0017) ----
 
     /// Unwrap the expected validation rejection out of a folder write.
-    fn expect_invalid(
-        result: Result<Option<ShareFolderRow>, FolderWriteError>,
-    ) -> FolderInvalid {
+    fn expect_invalid(result: Result<Option<ShareFolderRow>, FolderWriteError>) -> FolderInvalid {
         match result {
             Err(FolderWriteError::Invalid(e)) => e,
             other => panic!("expected a validation rejection, got {other:?}"),
@@ -2174,20 +2166,26 @@ mod tests {
         use FolderInvalid::{Depth, DuplicateName, Name};
 
         assert_eq!(
-            expect_invalid(repo.create_folder(&owner.to_string(), &share.id, None, "")
-                .await),
+            expect_invalid(
+                repo.create_folder(&owner.to_string(), &share.id, None, "")
+                    .await
+            ),
             Name,
             "empty name rejected"
         );
         assert_eq!(
-            expect_invalid(repo.create_folder(&owner.to_string(), &share.id, None, "   \t ")
-                .await),
+            expect_invalid(
+                repo.create_folder(&owner.to_string(), &share.id, None, "   \t ")
+                    .await
+            ),
             Name,
             "whitespace-only name rejected"
         );
         assert_eq!(
-            expect_invalid(repo.create_folder(&owner.to_string(), &share.id, None, &"x".repeat(201))
-                .await),
+            expect_invalid(
+                repo.create_folder(&owner.to_string(), &share.id, None, &"x".repeat(201))
+                    .await
+            ),
             Name,
             "201 chars rejected"
         );
@@ -2219,14 +2217,21 @@ mod tests {
             .unwrap();
         for depth in 2..=8 {
             parent = repo
-                .create_folder(&owner.to_string(), &share.id, Some(&parent.id), &format!("d{depth}"))
+                .create_folder(
+                    &owner.to_string(),
+                    &share.id,
+                    Some(&parent.id),
+                    &format!("d{depth}"),
+                )
                 .await
                 .unwrap()
                 .unwrap_or_else(|| panic!("depth {depth} must be legal"));
         }
         assert_eq!(
-            expect_invalid(repo.create_folder(&owner.to_string(), &share.id, Some(&parent.id), "d9")
-                .await),
+            expect_invalid(
+                repo.create_folder(&owner.to_string(), &share.id, Some(&parent.id), "d9")
+                    .await
+            ),
             Depth,
             "depth 9 rejected at the boundary"
         );
@@ -2250,8 +2255,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            expect_invalid(repo.reparent_folder(&owner.to_string(), &share.id, &sub_root.id, Some(&chain7.id))
-                .await),
+            expect_invalid(
+                repo.reparent_folder(
+                    &owner.to_string(),
+                    &share.id,
+                    &sub_root.id,
+                    Some(&chain7.id)
+                )
+                .await
+            ),
             Depth,
             "subtree height counts toward the cap"
         );
@@ -2272,20 +2284,26 @@ mod tests {
             .find(|f| f.name == "d2")
             .unwrap();
         assert_eq!(
-            expect_invalid(repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&d1.id))
-                .await),
+            expect_invalid(
+                repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&d1.id))
+                    .await
+            ),
             FolderInvalid::Cycle,
             "self reparent rejected"
         );
         assert_eq!(
-            expect_invalid(repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&d2.id))
-                .await),
+            expect_invalid(
+                repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&d2.id))
+                    .await
+            ),
             FolderInvalid::Cycle,
             "reparent onto own child rejected"
         );
         assert_eq!(
-            expect_invalid(repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&parent.id))
-                .await),
+            expect_invalid(
+                repo.reparent_folder(&owner.to_string(), &share.id, &d1.id, Some(&parent.id))
+                    .await
+            ),
             FolderInvalid::Cycle,
             "reparent onto deep descendant rejected"
         );
@@ -2313,8 +2331,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            expect_invalid(repo.rename_folder(&owner.to_string(), &share.id, &a.id, "two")
-                .await),
+            expect_invalid(
+                repo.rename_folder(&owner.to_string(), &share.id, &a.id, "two")
+                    .await
+            ),
             FolderInvalid::DuplicateName,
             "rename onto a sibling's name is the friendly duplicate"
         );
@@ -2407,13 +2427,7 @@ mod tests {
 
         // Explicit null parent in a combined write moves to root.
         let to_root = repo
-            .update_folder(
-                &owner.to_string(),
-                &share.id,
-                &holder.id,
-                None,
-                Some(None),
-            )
+            .update_folder(&owner.to_string(), &share.id, &holder.id, None, Some(None))
             .await
             .unwrap()
             .unwrap();
@@ -2479,58 +2493,76 @@ mod tests {
 
         // Guard rejections are Ok(None) — never errors, no leak between
         // "missing" and "foreign".
-        assert!(repo
-            .create_folder(&stranger.to_string(), &share.id, None, "n")
-            .await
-            .unwrap()
-            .is_none(), "foreign owner writes nothing");
-        assert!(repo
-            .create_folder(&owner.to_string(), "missing-share", None, "n")
-            .await
-            .unwrap()
-            .is_none(), "unknown share is a no-op");
-        assert!(repo
-            .create_folder(&owner.to_string(), &revoked.id, None, "n")
-            .await
-            .unwrap()
-            .is_none(), "revoked share is a no-op");
-        assert!(repo
-            .create_folder(&owner.to_string(), &share.id, Some(&foreign_folder.id), "n")
-            .await
-            .unwrap()
-            .is_none(), "a folder from another share cannot parent");
-        assert!(repo
-            .create_folder(&owner.to_string(), &share.id, Some("missing-folder"), "n")
-            .await
-            .unwrap()
-            .is_none(), "unknown parent folder is a no-op");
+        assert!(
+            repo.create_folder(&stranger.to_string(), &share.id, None, "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "foreign owner writes nothing"
+        );
+        assert!(
+            repo.create_folder(&owner.to_string(), "missing-share", None, "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "unknown share is a no-op"
+        );
+        assert!(
+            repo.create_folder(&owner.to_string(), &revoked.id, None, "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "revoked share is a no-op"
+        );
+        assert!(
+            repo.create_folder(&owner.to_string(), &share.id, Some(&foreign_folder.id), "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "a folder from another share cannot parent"
+        );
+        assert!(
+            repo.create_folder(&owner.to_string(), &share.id, Some("missing-folder"), "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "unknown parent folder is a no-op"
+        );
 
-        assert!(repo
-            .rename_folder(&owner.to_string(), &share.id, "missing-folder", "n")
-            .await
-            .unwrap()
-            .is_none(), "rename of unknown folder is a no-op");
-        assert!(repo
-            .rename_folder(&owner.to_string(), &share.id, &foreign_folder.id, "n")
-            .await
-            .unwrap()
-            .is_none(), "rename scoped to this share's folders");
+        assert!(
+            repo.rename_folder(&owner.to_string(), &share.id, "missing-folder", "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "rename of unknown folder is a no-op"
+        );
+        assert!(
+            repo.rename_folder(&owner.to_string(), &share.id, &foreign_folder.id, "n")
+                .await
+                .unwrap()
+                .is_none(),
+            "rename scoped to this share's folders"
+        );
         assert!(repo
             .rename_folder(&stranger.to_string(), &share.id, &foreign_folder.id, "n")
             .await
             .unwrap()
             .is_none());
 
-        assert!(repo
-            .reparent_folder(&owner.to_string(), &share.id, "missing-folder", None)
-            .await
-            .unwrap()
-            .is_none(), "reparent of unknown folder is a no-op");
-        assert!(repo
-            .reparent_folder(&owner.to_string(), &share.id, &foreign_folder.id, None)
-            .await
-            .unwrap()
-            .is_none(), "reparent scoped to this share's folders");
+        assert!(
+            repo.reparent_folder(&owner.to_string(), &share.id, "missing-folder", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "reparent of unknown folder is a no-op"
+        );
+        assert!(
+            repo.reparent_folder(&owner.to_string(), &share.id, &foreign_folder.id, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "reparent scoped to this share's folders"
+        );
 
         // Nothing leaked into either share's tree.
         assert_eq!(repo.list_folders(&share.id).await.unwrap().len(), 0);
@@ -2622,10 +2654,15 @@ mod tests {
             (&videos[5], Some(&trip.id)),
             (&videos[3], Some(&night.id)),
         ] {
-            repo.move_item(&owner.to_string(), &share.id, vid, folder.map(|s| s.as_str()))
-                .await
-                .unwrap()
-                .expect("seeding move succeeds");
+            repo.move_item(
+                &owner.to_string(),
+                &share.id,
+                vid,
+                folder.map(|s| s.as_str()),
+            )
+            .await
+            .unwrap()
+            .expect("seeding move succeeds");
         }
 
         // Replace: drop `b`, reorder the survivors, interleave a fresh
@@ -2649,9 +2686,21 @@ mod tests {
         // Survivors keep their folders; per-scope positions follow the
         // caller's relative order; new ids slot into the root scope in
         // array order.
-        assert_eq!(placement_of(&items, &videos[4]), (None, 0), "e — root, first");
-        assert_eq!(placement_of(&items, &extra[0]), (None, 1), "g — new, in place");
-        assert_eq!(placement_of(&items, &videos[0]), (None, 2), "a — root, after g");
+        assert_eq!(
+            placement_of(&items, &videos[4]),
+            (None, 0),
+            "e — root, first"
+        );
+        assert_eq!(
+            placement_of(&items, &extra[0]),
+            (None, 1),
+            "g — new, in place"
+        );
+        assert_eq!(
+            placement_of(&items, &videos[0]),
+            (None, 2),
+            "a — root, after g"
+        );
         assert_eq!(
             placement_of(&items, &videos[3]),
             (Some(night.id.clone()), 0),
@@ -2703,7 +2752,11 @@ mod tests {
         // position — and lands at root scope like every append.
         assert_eq!(placement_of(&items, &videos[0]), (None, 0));
         assert_eq!(placement_of(&items, &videos[1]), (None, 1));
-        assert_eq!(placement_of(&items, &videos[3]), (None, 2), "root-tail append");
+        assert_eq!(
+            placement_of(&items, &videos[3]),
+            (None, 2),
+            "root-tail append"
+        );
         assert_eq!(
             placement_of(&items, &videos[2]),
             (Some(trip.id.clone()), 0),
@@ -2718,7 +2771,9 @@ mod tests {
         let owner = seed_owner(&pool).await;
         let videos = seed_videos(
             &pool,
-            &["r0.mp4", "r1.mp4", "d0.mp4", "d1.mp4", "ia.mp4", "ib.mp4", "ig.mp4"],
+            &[
+                "r0.mp4", "r1.mp4", "d0.mp4", "d1.mp4", "ia.mp4", "ib.mp4", "ig.mp4",
+            ],
         )
         .await;
         let share = repo
@@ -2761,10 +2816,15 @@ mod tests {
             (&videos[5], Some(&c2.id)),
             (&videos[6], Some(&g.id)),
         ] {
-            repo.move_item(&owner.to_string(), &share.id, vid, folder.map(|s| s.as_str()))
-                .await
-                .unwrap()
-                .unwrap();
+            repo.move_item(
+                &owner.to_string(),
+                &share.id,
+                vid,
+                folder.map(|s| s.as_str()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
         }
 
         let deleted = repo
@@ -2967,7 +3027,11 @@ mod tests {
         let items = repo.list_items(&share.id).await.unwrap();
         assert_eq!(placement_of(&items, &videos[0]), (Some(f.id.clone()), 0));
         assert_eq!(placement_of(&items, &videos[1]), (Some(f.id.clone()), 1));
-        assert_eq!(placement_of(&items, &videos[2]), (None, 0), "root renumbered");
+        assert_eq!(
+            placement_of(&items, &videos[2]),
+            (None, 0),
+            "root renumbered"
+        );
         assert_eq!(placement_of(&items, &videos[3]), (None, 1));
 
         // a back to root: appends at the root tail.
@@ -3011,8 +3075,18 @@ mod tests {
             (&owner.to_string(), &missing_share, &videos[0], Some(&f.id)),
             (&owner.to_string(), &revoked.id, &videos[0], Some(&f.id)),
             (&owner.to_string(), &share.id, &outsider[0], Some(&f.id)),
-            (&owner.to_string(), &share.id, &videos[0], Some(&foreign_folder.id)),
-            (&owner.to_string(), &share.id, &videos[0], Some(&missing_folder)),
+            (
+                &owner.to_string(),
+                &share.id,
+                &videos[0],
+                Some(&foreign_folder.id),
+            ),
+            (
+                &owner.to_string(),
+                &share.id,
+                &videos[0],
+                Some(&missing_folder),
+            ),
         ] {
             assert!(
                 repo.move_item(owner_id, share_id, video_id, folder_id.map(|s| s.as_str()))
