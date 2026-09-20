@@ -36,12 +36,14 @@ import { SharesSection } from "./shares-list";
 import { jsonResponse, jsonError, renderWithProviders } from "../test/utils";
 import { setCsrfToken } from "../api/client";
 import type { ShareDto } from "../api/shares";
-import { deleteShareLink, getShareLinkMap } from "../lib/share-links-db";
+import { deleteShareLink, getShareLinkMap, getShortLink, saveShortLink } from "../lib/share-links-db";
 
 vi.mock("../lib/share-links-db", () => ({
   getShareLinkMap: vi.fn(),
   saveShareLink: vi.fn(),
   deleteShareLink: vi.fn(),
+  getShortLink: vi.fn(),
+  saveShortLink: vi.fn(),
 }));
 
 // `restoreMocks: true` in the vitest config resets mock implementations
@@ -50,6 +52,8 @@ vi.mock("../lib/share-links-db", () => ({
 beforeEach(() => {
   vi.mocked(getShareLinkMap).mockResolvedValue({});
   vi.mocked(deleteShareLink).mockResolvedValue(undefined);
+  vi.mocked(getShortLink).mockResolvedValue(null);
+  vi.mocked(saveShortLink).mockResolvedValue(undefined);
 });
 
 // jsdom ships no Async Clipboard API. Tests install (or remove)
@@ -415,6 +419,55 @@ describe("SharesSection", () => {
       1,
     );
     expect(screen.getByText("Wedding cut")).toBeInTheDocument();
+  });
+
+  // --- short link button (docs/specs/short-links task 004) ---
+
+  it("active rows with a local link offer both Copy link and Copy short link", async () => {
+    vi.mocked(getShareLinkMap).mockResolvedValue({ s1: "/share/tok_abc" });
+
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([ACTIVE]),
+    });
+
+    expect(
+      await screen.findByRole("button", { name: /copy link/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /copy short link/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shares created on another device offer neither copy button", async () => {
+    vi.mocked(getShareLinkMap).mockResolvedValue({});
+
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([OTHER_DEVICE]),
+    });
+
+    await screen.findByText("Wedding cut");
+    expect(
+      screen.queryByRole("button", { name: /copy link/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /copy short link/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("past rows offer no short link even when a local link exists", async () => {
+    vi.mocked(getShareLinkMap).mockResolvedValue({ s3: "/share/tok_old" });
+
+    renderWithProviders(<SharesSection />, {
+      fetchImplementation: sharesFetch([REVOKED]),
+    });
+
+    // Past rows hide under the default Active chip — reveal with All.
+    fireEvent.click(await screen.findByRole("button", { name: /^all/i }));
+
+    await screen.findByText("Old share");
+    expect(
+      screen.queryByRole("button", { name: /copy short link/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("revokes after confirmation: DELETE, refetch, row flips in place", async () => {

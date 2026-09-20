@@ -44,7 +44,7 @@ import {
   type FetchHandler,
 } from "../test/utils";
 import { setCsrfToken } from "../api/client";
-import { saveShareLink } from "../lib/share-links-db";
+import { getShortLink, saveShareLink } from "../lib/share-links-db";
 import { generateShareName } from "../lib/share-names";
 import type { ShareDto } from "../api/shares";
 
@@ -52,6 +52,8 @@ vi.mock("../lib/share-links-db", () => ({
   getShareLinkMap: vi.fn(),
   saveShareLink: vi.fn(),
   deleteShareLink: vi.fn(),
+  getShortLink: vi.fn(),
+  saveShortLink: vi.fn(),
 }));
 
 vi.mock("../lib/share-names", () => ({
@@ -109,6 +111,7 @@ describe("ShareDialog", () => {
   beforeEach(() => {
     setCsrfToken("csrf-test");
     vi.mocked(saveShareLink).mockResolvedValue(undefined);
+    vi.mocked(getShortLink).mockResolvedValue(null);
     // Deterministic prefill for every test; reroll tests layer
     // mockReturnValueOnce sequences on top after resetting.
     vi.mocked(generateShareName).mockReturnValue("quiet-harbor-42");
@@ -283,6 +286,51 @@ describe("ShareDialog", () => {
     expect(
       await screen.findByRole("button", { name: /^copied$/i }),
     ).toBeInTheDocument();
+  });
+
+  // --- short link (docs/specs/short-links task 004) ---
+
+  /** Creation POST plus the spoo.me mint — both over the one fetch stub. */
+  function createShareAndShortenFetch(): FetchHandler {
+    return (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "https://spoo.me/" && method === "POST")
+        return jsonResponse({ short_url: "https://spoo.me/U1b05Y" });
+      if (url === "/api/shares" && method === "POST")
+        return jsonResponse(CREATED_BODY, 201);
+      return jsonError(404, `unmocked ${method} ${url}`);
+    };
+  }
+
+  it("post-creation view offers Copy short link; a mint renders the short URL as text", async () => {
+    setupDialog(["v1"], createShareAndShortenFetch());
+
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+    expect(await screen.findByText(/only once/i)).toBeInTheDocument();
+
+    expect(
+      screen.getByRole("button", { name: /copy short link/i }),
+    ).toBeInTheDocument();
+    // The dialog already displays the canonical link as text…
+    expect(
+      screen.getByText(`${window.location.origin}/share/tok_abc`),
+    ).toBeInTheDocument();
+    // …but the minted alias appears only after the explicit click.
+    expect(screen.queryByText(/spoo\.me/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /copy short link/i }));
+
+    expect(await screen.findByText("https://spoo.me/U1b05Y")).toBeInTheDocument();
+    expect(screen.getByText(/third.part/i)).toBeInTheDocument();
+  });
+
+  it("the warning notes the short link's third-party dependency even before minting", async () => {
+    setupDialog(["v1"], createShareFetch());
+
+    fireEvent.click(screen.getByRole("button", { name: /create share/i }));
+
+    expect(await screen.findByText(/third.part/i)).toBeInTheDocument();
   });
 
   // --- failure + retry ---

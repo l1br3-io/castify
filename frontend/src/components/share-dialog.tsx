@@ -78,6 +78,7 @@ import {
   useShareItemsOwned,
 } from "../hooks/use-share-items";
 import { CopyLinkButton } from "./copy-link-button";
+import { ShortLinkButton } from "./short-link-button";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Field, Input } from "./ui/field";
@@ -524,7 +525,10 @@ function ShareOptionRow({
 }
 
 /** Post-creation view — the one-time link, copy, warning, Done. The
- * "Share link created" heading is the Dialog primitive's title. */
+ * "Share link created" heading is the Dialog primitive's title. The
+ * short link (docs/specs/short-links) is minted on explicit click via
+ * `ShortLinkButton` and lifted here as text so it can be read onto
+ * another device; the canonical link above it stays the durable one. */
 function CreatedView({
   created,
   onDone,
@@ -533,20 +537,32 @@ function CreatedView({
   onDone: () => void;
 }) {
   const absoluteUrl = absoluteShareUrl(created.share_url);
+  const [shortUrl, setShortUrl] = useState<string | null>(null);
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <p className="break-all rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 font-mono text-sm">
           {absoluteUrl}
         </p>
-        <div>
+        {shortUrl !== null && (
+          <p className="break-all rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-3 py-2 font-mono text-sm">
+            {shortUrl}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
           <CopyLinkButton linkPath={created.share_url} />
+          <ShortLinkButton
+            shareId={created.id}
+            linkPath={created.share_url}
+            onResolved={setShortUrl}
+          />
         </div>
       </div>
       <p role="status" className="text-sm text-[var(--color-castify-accent-dim)]">
         This link is shown only once — copy it now. It&apos;s saved on this
         device (Settings → Shares can copy it again here), but it can&apos;t
-        be recovered anywhere else.
+        be recovered anywhere else. &quot;Copy short link&quot; routes through
+        a third-party shortener — the full link is the durable one.
       </p>
       <div className="flex justify-end">
         <Button onClick={onDone}>Done</Button>
