@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProviderKey, VideoSummaryDto } from "../api/types";
@@ -172,7 +172,7 @@ describe("legacy tv skeleton (task 001)", () => {
     expect(() => readFileSync(legacyCssPath), "public/tv/legacy.css").not.toThrow();
   });
 
-  it("renders the placeholder into #castify-legacy and hides #root", () => {
+  it("renders into #castify-legacy and hides #root", () => {
     const root = document.createElement("div");
     root.id = "root";
     document.body.appendChild(root);
@@ -181,7 +181,7 @@ describe("legacy tv skeleton (task 001)", () => {
 
     const container = document.getElementById("castify-legacy");
     expect(container, "#castify-legacy container").not.toBeNull();
-    expect(container?.textContent).toContain("Loading");
+    expect(container?.textContent?.length ?? 0).toBeGreaterThan(0);
     expect(root.style.display, "#root hidden in forced mode").toBe("none");
   });
 
@@ -299,5 +299,190 @@ describe("legacy tv watch happy path (task 003)", () => {
     expect(document.querySelector("#castify-legacy video")?.getAttribute("src")).toBe(
       "/api/share/tok_9/videos/vid_9/stream",
     );
+  });
+});
+
+describe("legacy tv landing + unlock + notice (task 004)", () => {
+  afterEach(resetLegacyDom);
+
+  it("renders the share-links-only notice on non-share paths", () => {
+    window.history.pushState({}, "", "/settings");
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    expect(container?.textContent).toContain("Castify on this TV supports share links only.");
+  });
+
+  it("renders one anchor per video — thumbnail and name share the same link", async () => {
+    window.history.pushState({}, "", "/share/tok_2");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_2", () => ({
+        status: 200,
+        body: { title: "Trip videos", item_count: 2, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_2/items", () => ({
+        status: 200,
+        body: {
+          folders: [],
+          items: [
+            shareItem({ id: "vid_a", name: "Beach.mp4" }),
+            shareItem({ id: "vid_b", name: "Mountains.mp4", duration_ms: 3661000 }),
+          ],
+        },
+      }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(2);
+    });
+
+    expect(container?.querySelector(".tv-title")?.textContent).toBe("Trip videos");
+
+    const first = container?.querySelectorAll("a.tv-item-link")[0];
+    const expectedHref = "/share/tok_2/watch/vid_a";
+    expect(first?.getAttribute("href")).toBe(expectedHref);
+    // Click parity: the thumbnail img lives inside the same anchor as the
+    // name — one link, so both clicks navigate identically (FR-3.1).
+    const thumb = first?.querySelector("img.tv-item-thumb");
+    expect(thumb?.getAttribute("src")).toBe("/api/share/tok_2/videos/vid_a/thumbnail");
+    expect(thumb?.closest("a")?.getAttribute("href")).toBe(expectedHref);
+    expect(first?.querySelector(".tv-item-name")?.textContent).toBe("Beach.mp4");
+    expect(first?.querySelector(".tv-item-name")?.closest("a")?.getAttribute("href")).toBe(expectedHref);
+
+    const second = container?.querySelectorAll("a.tv-item-link")[1];
+    expect(second?.getAttribute("href")).toBe("/share/tok_2/watch/vid_b");
+    expect(second?.textContent).toContain("1:01:01");
+  });
+
+  it("renders the unlock form when the share is locked", async () => {
+    window.history.pushState({}, "", "/share/tok_3");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_3", () => ({
+        status: 200,
+        body: { title: "Private videos", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_3/items", () => ({ status: 401, body: { error: "locked" } }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+
+    expect(container?.querySelector(".tv-title")?.textContent).toBe("Private videos");
+    expect(container?.querySelector('label[for="tv-password"]')?.textContent).toBe("Password");
+    expect(requestedUrls()).toContain("GET /api/share/tok_3");
+  });
+
+  it("wrong password shows an inline message and stays on the form", async () => {
+    window.history.pushState({}, "", "/share/tok_4");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_4", () => ({
+        status: 200,
+        body: { title: "Private videos", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_4/items", () => ({ status: 401, body: { error: "locked" } }));
+      fake.post("/api/share/tok_4/unlock", () => ({ status: 401, body: { error: "wrong password" } }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+
+    (document.getElementById("tv-password") as HTMLInputElement).value = "nope";
+    fireEvent.submit(document.getElementById("tv-unlock-form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(container?.textContent).toContain("Wrong password");
+    });
+    expect(container?.querySelector("input[type=password]")).not.toBeNull();
+
+    const unlockRequest = FakeXMLHttpRequest.requests.find((r) => r.url === "/api/share/tok_4/unlock");
+    expect(unlockRequest?.method).toBe("POST");
+    expect(unlockRequest?.body).toBe(JSON.stringify({ password: "nope" }));
+    expect(unlockRequest?.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("successful unlock refetches and renders the video list", async () => {
+    window.history.pushState({}, "", "/share/tok_5");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_5", () => ({
+        status: 200,
+        body: { title: "Private videos", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_5/items", () => {
+        const unlocked = FakeXMLHttpRequest.requests.some((r) => r.url === "/api/share/tok_5/unlock");
+        return unlocked
+          ? { status: 200, body: { folders: [], items: [shareItem({ id: "vid_x", name: "Secret.mp4" })] } }
+          : { status: 401, body: { error: "locked" } };
+      });
+      fake.post("/api/share/tok_5/unlock", () => ({ status: 204 }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+
+    (document.getElementById("tv-password") as HTMLInputElement).value = "hunter2";
+    fireEvent.submit(document.getElementById("tv-unlock-form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(1);
+    });
+    expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe("/share/tok_5/watch/vid_x");
+  });
+
+  it("rate limit (429) shows the wait message", async () => {
+    window.history.pushState({}, "", "/share/tok_6");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_6", () => ({
+        status: 200,
+        body: { title: "Private videos", item_count: 1, locked: true, status: "active" },
+      }));
+      fake.get("/api/share/tok_6/items", () => ({ status: 401, body: { error: "locked" } }));
+      fake.post("/api/share/tok_6/unlock", () => ({ status: 429, body: { error: "rate limited" } }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("input[type=password]")).not.toBeNull();
+    });
+
+    (document.getElementById("tv-password") as HTMLInputElement).value = "a";
+    fireEvent.submit(document.getElementById("tv-unlock-form") as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(container?.textContent).toContain("Too many attempts");
+    });
+  });
+
+  it.each([
+    [404, "This share doesn't exist."],
+    [410, "This share is no longer available."],
+  ])("dead share (%s) renders terminal copy on the landing page", async (code, copy) => {
+    window.history.pushState({}, "", "/share/tok_dead");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_dead", () => ({ status: code, body: { error: "dead" } }));
+    });
+
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain(copy);
+    });
   });
 });

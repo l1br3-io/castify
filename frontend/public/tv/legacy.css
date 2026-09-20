@@ -33,14 +33,22 @@
   margin: 0;
 }
 
+/* GOTCHA: no `gap` anywhere — flexbox gap is Chromium 84+ and silently
+ * no-ops on the Tizen engine; spacing is margins. */
 #castify-legacy .tv-watch {
   width: 100%;
   max-width: 960px;
-  display: -webkit-flex;
-  display: flex;
-  -webkit-flex-direction: column;
-  flex-direction: column;
-  gap: 12px;
+}
+
+#castify-legacy .tv-watch .tv-title {
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-video {
+  width: 100%;
+  background: #000000;
+  border-radius: 8px;
+  margin-bottom: 12px;
 }
 
 #castify-legacy .tv-title {
@@ -88,4 +96,104 @@
   font-weight: 600;
   padding: 10px 24px;
   cursor: pointer;
+}
+
+#castify-legacy .tv-button[disabled] {
+  background: #3a2e13;
+  color: #9096a5;
+  cursor: default;
+}
+
+#castify-legacy .tv-landing {
+  width: 100%;
+  max-width: 720px;
+}
+
+#castify-legacy .tv-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#castify-legacy .tv-item {
+  margin: 0 0 8px 0;
+}
+
+/* One anchor per row wraps the thumbnail AND the name — click parity by
+ * construction (FR-3.1). */
+#castify-legacy .tv-item-link {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px;
+  text-decoration: none;
+  color: #e7e9ee;
+}
+
+#castify-legacy .tv-item-thumb {
+  width: 160px;
+  height: 90px;
+  border-radius: 4px;
+  background: #0c0e13;
+  object-fit: cover;
+  flex-shrink: 0;
+  -webkit-flex-shrink: 0;
+}
+
+#castify-legacy .tv-item-body {
+  display: block;
+  min-width: 0;
+  margin-left: 12px;
+}
+
+#castify-legacy .tv-item-name {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  word-wrap: break-word;
+}
+
+#castify-legacy .tv-item-meta {
+  display: block;
+  color: #9096a5;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+#castify-legacy .tv-unlock-form {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
+  -webkit-align-items: center;
+  align-items: center;
+}
+
+#castify-legacy .tv-label {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-input {
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  color: #e7e9ee;
+  font-size: 16px;
+  padding: 10px 12px;
+  width: 240px;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+}
+
+#castify-legacy .tv-unlock-error {
+  color: #f0a93a;
+  font-size: 14px;
+  min-height: 20px;
+  margin: 12px 0 0 0;
 }

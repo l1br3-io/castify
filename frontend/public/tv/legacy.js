@@ -68,8 +68,19 @@
    * `error` fires on network failure (status 0), `status` on non-2xx.
    */
   function getJson(url, handlers) {
+    requestJson("GET", url, null, handlers);
+  }
+
+  function postJson(url, body, handlers) {
+    requestJson("POST", url, JSON.stringify(body), handlers);
+  }
+
+  function requestJson(method, url, body, handlers) {
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", url, true);
+    xhr.open(method, url, true);
+    if (body !== null) {
+      xhr.setRequestHeader("Content-Type", "application/json");
+    }
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) {
         return;
@@ -90,7 +101,7 @@
         handlers.status(xhr.status, data);
       }
     };
-    xhr.send();
+    xhr.send(body);
   }
 
   function formatDuration(ms) {
@@ -148,6 +159,20 @@
         retry();
       };
     }
+  }
+
+  /* Terminal share errors — copy mirrors the modern page. Anything else
+   * degrades to the retryable generic error. */
+  function renderShareError(container, code, retry) {
+    if (code === 404) {
+      renderMessage(container, "This share doesn't exist.");
+      return;
+    }
+    if (code === 410) {
+      renderMessage(container, "This share is no longer available.");
+      return;
+    }
+    renderRetryableError(container, retry);
   }
 
   /* ── routing ───────────────────────────────────────────────────────── */
@@ -286,6 +311,183 @@
     });
   }
 
+  /* ── landing page ──────────────────────────────────────────────────── */
+
+  /*
+   * /share/{token}: resolve supplies the title (the one endpoint that
+   * answers while locked), items decides the view — 200 renders the flat
+   * video list, 401 renders the inline unlock form (204 → re-run the
+   * flow, which then renders the list).
+   */
+  function renderLanding(container, token) {
+    renderLoading(container);
+    getJson("/api/share/" + token, {
+      ok: function (share) {
+        var title = share && share.title ? share.title : "Shared videos";
+        renderLandingItems(container, token, title);
+      },
+      status: function (code) {
+        renderShareError(container, code, function () {
+          renderLanding(container, token);
+        });
+      },
+      error: function () {
+        renderRetryableError(container, function () {
+          renderLanding(container, token);
+        });
+      },
+    });
+  }
+
+  function renderLandingItems(container, token, title) {
+    getJson("/api/share/" + token + "/items", {
+      ok: function (data) {
+        renderVideoList(container, token, title, data && data.items ? data.items : []);
+      },
+      status: function (code) {
+        if (code === 401) {
+          renderUnlockForm(container, token, title);
+          return;
+        }
+        renderShareError(container, code, function () {
+          renderLanding(container, token);
+        });
+      },
+      error: function () {
+        renderRetryableError(container, function () {
+          renderLanding(container, token);
+        });
+      },
+    });
+  }
+
+  /*
+   * The share's videos as a flat list. Each row is a single anchor
+   * wrapping the thumbnail, the name, and duration/size meta — clicking
+   * the thumbnail and clicking the name are the same action by
+   * construction (FR-3.1, click parity).
+   */
+  function renderVideoList(container, token, title, items) {
+    if (!items.length) {
+      container.innerHTML =
+        '<div class="tv-landing">' +
+        '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
+        "</div>";
+      renderMessage(container, "Nothing in this share.");
+      return;
+    }
+    var rows = "";
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i];
+      var videoPath = "/api/share/" + token + "/videos/" + encodeURIComponent(item.id);
+      var meta = [];
+      var duration = formatDuration(item.duration_ms);
+      var size = formatSize(item.size_bytes);
+      if (duration) {
+        meta.push(escapeHtml(duration));
+      }
+      if (size) {
+        meta.push(escapeHtml(size));
+      }
+      rows +=
+        '<li class="tv-item">' +
+        '<a class="tv-item-link" href="/share/' + escapeHtml(token) +
+        "/watch/" + escapeHtml(encodeURIComponent(item.id)) + '">' +
+        '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
+        '<span class="tv-item-body">' +
+        '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
+        (meta.length ? '<span class="tv-item-meta">' + meta.join(" &#183; ") + "</span>" : "") +
+        "</span>" +
+        "</a>" +
+        "</li>";
+    }
+    container.innerHTML =
+      '<div class="tv-landing">' +
+      '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
+      '<ul class="tv-items">' + rows + "</ul>" +
+      "</div>";
+  }
+
+  /* ── unlock form ───────────────────────────────────────────────────── */
+
+  function renderUnlockForm(container, token, title) {
+    container.innerHTML =
+      '<div class="tv-message tv-unlock">' +
+      '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
+      '<p class="tv-message-body">This share is password-protected.</p>' +
+      '<form class="tv-unlock-form" id="tv-unlock-form">' +
+      '<label class="tv-label" for="tv-password">Password</label>' +
+      '<input class="tv-input" type="password" id="tv-password" autocomplete="off">' +
+      '<button type="submit" class="tv-button" id="tv-unlock-submit">Unlock</button>' +
+      "</form>" +
+      '<p class="tv-unlock-error" id="tv-unlock-error"></p>' +
+      "</div>";
+    var form = document.getElementById("tv-unlock-form");
+    if (form) {
+      form.onsubmit = function (event) {
+        if (event && event.preventDefault) {
+          event.preventDefault();
+        }
+        submitUnlock(container, token);
+        return false;
+      };
+    }
+  }
+
+  function submitUnlock(container, token) {
+    var input = document.getElementById("tv-password");
+    var errorEl = document.getElementById("tv-unlock-error");
+    var button = document.getElementById("tv-unlock-submit");
+    var password = input ? input.value : "";
+    if (!password) {
+      return;
+    }
+    if (errorEl) {
+      errorEl.innerHTML = "";
+    }
+    if (button) {
+      button.disabled = true;
+    }
+    postJson("/api/share/" + token + "/unlock", { password: password }, {
+      ok: function () {
+        renderLanding(container, token);
+      },
+      status: function (code) {
+        if (button) {
+          button.disabled = false;
+        }
+        if (code === 401) {
+          showUnlockError("Wrong password. Try again.");
+          return;
+        }
+        if (code === 429) {
+          showUnlockError("Too many attempts. Wait a moment and try again.");
+          return;
+        }
+        if (code === 404 || code === 410) {
+          renderShareError(container, code, function () {
+            renderLanding(container, token);
+          });
+          return;
+        }
+        showUnlockError("Something went wrong. Try again.");
+      },
+      error: function () {
+        if (button) {
+          button.disabled = false;
+        }
+        showUnlockError("Something went wrong. Try again.");
+      },
+    });
+  }
+
+  function showUnlockError(text) {
+    var errorEl = document.getElementById("tv-unlock-error");
+    if (errorEl) {
+      errorEl.innerHTML = escapeHtml(text);
+    }
+  }
+
   /* ── boot ──────────────────────────────────────────────────────────── */
 
   function render() {
@@ -294,9 +496,10 @@
     var route = parseRoute(window.location.pathname);
     if (route && route.videoId) {
       renderWatch(container, route.token, route.videoId);
+    } else if (route) {
+      renderLanding(container, route.token);
     } else {
-      /* Task 004 replaces this with the landing flow / non-share notice. */
-      renderLoading(container);
+      renderMessage(container, "Castify on this TV supports share links only.");
     }
   }
 
