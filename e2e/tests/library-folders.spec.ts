@@ -79,8 +79,12 @@ test.describe("Library folders (e2e mock)", () => {
     await organizer.getByRole("button", { name: "Save" }).click();
     await expect(organizer.getByRole("link", { name: "Open folder Trip" })).toBeVisible();
 
-    // Descend into Trip; create Day 1 inside it.
-    await organizer.getByRole("link", { name: "Open folder Trip" }).click();
+    // Descend into Trip; create Day 1 inside it. The folder tile's
+    // stretched link is intercepted by its glyph well in a real browser —
+    // use the suite's DOM-click idiom (see organizer.spec.ts) rather than
+    // Playwright's actionability-checked click, which retries to the test
+    // timeout.
+    await clickCardLink(page, "Open folder Trip");
     await expect(organizer.getByTestId("contents-path")).toHaveText("Trip");
     await organizer.getByRole("button", { name: "+ New folder" }).click();
     await organizer.getByLabel("Folder name").fill("Day 1");
@@ -132,8 +136,11 @@ test.describe("Library folders (e2e mock)", () => {
     await expect(unfiledBadge).toHaveText(`${initial - 2} items`);
 
     // ── Descend and play a video from inside the folder ─────────────
-    await organizer.getByRole("link", { name: "Open folder Trip" }).click();
-    await organizer.getByRole("link", { name: "Open folder Day 1" }).click();
+    await clickCardLink(page, "Open folder Trip");
+    await expect(
+      organizer.getByRole("link", { name: "Open folder Day 1" }),
+    ).toBeVisible();
+    await clickCardLink(page, "Open folder Day 1");
     await expect(organizer.getByTestId("contents-path")).toHaveText("Day 1");
     await expect(
       organizer.getByRole("link", { name: "Play vacation.mp4" }),
