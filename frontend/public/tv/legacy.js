@@ -702,6 +702,22 @@
     return folderId;
   }
 
+  function parentFolderId(tree, folderId) {
+    var folder = folderId ? tree.folderById[folderId] : null;
+    return folder && folder.parent_id ? folder.parent_id : "";
+  }
+
+  /*
+   * The explicit on-screen Back control. The remote's Return walks
+   * history — this link names its destination outright, so a
+   * deep-linked ?folder= (no in-app history behind it) still has a way
+   * up. Root browse hides it: there is nowhere back to go inside the
+   * share.
+   */
+  function renderBackNav(href) {
+    return '<a class="tv-back-nav" href="' + escapeHtml(href) + '">&#8249; Back</a>';
+  }
+
   /* ── whole-share search (legacy-tv-nav-search task 002) ────────────── */
 
   /* One pending debounce at a time; explicit navigation (folder rows,
@@ -775,12 +791,14 @@
     var html =
       '<div class="tv-landing">' +
       renderHeaderBand(state, "") +
+      (folderId ? renderBackNav(buildShareUrl(state.token, parentFolderId(state.tree, folderId))) : "") +
       renderCrumbs(state, folderId);
     if (!folders.length && !items.length) {
       html += '<p class="tv-empty-level">Nothing in this folder.</p>';
       html += "</div>";
       container.innerHTML = html;
       wireFolderNav(container);
+      wireBackNav(container);
     } else {
       html += '<ul class="tv-items">';
       var i;
@@ -793,6 +811,7 @@
       html += "</ul></div>";
       container.innerHTML = html;
       wireFolderNav(container);
+      wireBackNav(container);
     }
   }
 
@@ -803,6 +822,7 @@
     var html =
       '<div class="tv-landing">' +
       renderHeaderBand(state, query) +
+      renderBackNav(buildShareUrl(state.token, currentFolderId(state.tree), "")) +
       '<p class="tv-results-count">' + total + (total === 1 ? " result" : " results") + "</p>";
     if (!total) {
       html += '<p class="tv-empty-level">No videos match.</p>' +
@@ -822,6 +842,7 @@
     html += "</div>";
     container.innerHTML = html;
     wireFolderNav(container);
+    wireBackNav(container);
     wireClearSearch();
   }
 
@@ -947,6 +968,38 @@
     var found = root.getElementsByClassName(className);
     for (var i = 0; i < found.length; i++) {
       out.push(found[i]);
+    }
+  }
+
+  /*
+   * Same interception contract as folder links (real href, no-JS
+   * fallback, in-memory re-render), with one twist: exiting search
+   * REPLACES the history entry — back must not bounce the recipient
+   * into their own query again, the rule the debounced ?q= writes and
+   * the clear-search button already follow. Climbing toward the root
+   * PUSHES, so the remote's Return can step back down like any link.
+   */
+  function wireBackNav(container) {
+    var links = [];
+    collectByClass(container, "tv-back-nav", links);
+    for (var i = 0; i < links.length; i++) {
+      links[i].onclick = function (event) {
+        if (event && event.preventDefault) {
+          event.preventDefault();
+        }
+        clearSearchTimer();
+        var state = landingData;
+        if (state) {
+          var href = this.getAttribute("href") || buildShareUrl(state.token, "", "");
+          if (getQueryParam("q")) {
+            window.history.replaceState({}, "", href);
+          } else {
+            window.history.pushState({}, "", href);
+          }
+          renderBrowse();
+        }
+        return false;
+      };
     }
   }
 

@@ -237,7 +237,11 @@ describe("legacy tv skeleton (task 001)", () => {
   });
 
   it("scopes every legacy.css selector under #castify-legacy", () => {
-    const css = readFileSync(legacyCssPath, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const css = readFileSync(legacyCssPath, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      // Flatten at-rule preludes (@media (…) {) so the enclosing condition
+      // isn't mistaken for a selector — the inner rules are checked as-is.
+      .replace(/@[^{}]*\{/g, "{");
     const selectors = css
       .split("}")
       .map((rule) => rule.split("{")[0].trim())
@@ -1470,5 +1474,117 @@ describe("legacy tv link continuity (nav-search task 003)", () => {
       expect(container?.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
     });
     expect(window.location.search).toBe("?legacy=1&folder=f_s1");
+  });
+});
+
+describe("legacy tv explicit back control", () => {
+  afterEach(resetLegacyDom);
+
+  /** Landing at `path` against the canonical nested fixture (tok_fb). */
+  function stubNestedShareAt(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fb", () => ({
+        status: 200,
+        body: { title: "Trip videos", item_count: 4, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_fb/items", () => ({
+        status: 200,
+        body: { folders: NAV_SEARCH_FOLDERS, items: NAV_SEARCH_ITEMS },
+      }));
+    });
+  }
+
+  async function renderLanding(): Promise<HTMLElement> {
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link, a.tv-folder-link").length).toBeGreaterThan(0);
+    });
+    return container as HTMLElement;
+  }
+
+  it("root browse hides the control — there is nowhere back to go", async () => {
+    stubNestedShareAt("/share/tok_fb");
+    const container = await renderLanding();
+
+    expect(container.querySelector("a.tv-back-nav")).toBeNull();
+  });
+
+  it("inside folders: back names the parent explicitly; each click climbs one level, zero XHRs", async () => {
+    stubNestedShareAt("/share/tok_fb");
+    const container = await renderLanding();
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Day 1
+
+    const back = container.querySelector("a.tv-back-nav") as HTMLAnchorElement;
+    expect(back.getAttribute("href")).toBe("/share/tok_fb?folder=f_s1");
+
+    fireEvent.click(back);
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+
+    fireEvent.click(container.querySelector("a.tv-back-nav") as HTMLElement);
+    expect(window.location.search).toBe("");
+    expect([...container.querySelectorAll(".tv-folder-name")].map((el) => el.textContent)).toEqual([
+      "Season 1",
+      "Season 2",
+      "Empty",
+    ]);
+    expect(container.querySelector("a.tv-back-nav")).toBeNull();
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+  });
+
+  it("deep-linked ?folder= still has a way up — the target is explicit, not history-relative", async () => {
+    stubNestedShareAt("/share/tok_fb?folder=f_day1");
+    const container = await renderLanding();
+
+    const back = container.querySelector("a.tv-back-nav");
+    expect(back?.getAttribute("href")).toBe("/share/tok_fb?folder=f_s1");
+
+    fireEvent.click(back as HTMLElement);
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+  });
+
+  it("search mode: back exits to the folder view — q dropped via replaceState, input cleared", async () => {
+    stubNestedShareAt("/share/tok_fb?folder=f_s1");
+    const container = await renderLanding();
+
+    const input = container.querySelector("#tv-search") as HTMLInputElement;
+    input.value = "episode";
+    fireEvent.input(input);
+    await waitFor(() => {
+      expect(window.location.search).toBe("?folder=f_s1&q=episode");
+    });
+
+    const back = container.querySelector("a.tv-back-nav");
+    expect(back?.getAttribute("href")).toBe("/share/tok_fb?folder=f_s1");
+
+    fireEvent.click(back as HTMLElement);
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(container.querySelector(".tv-results-count")).toBeNull();
+    expect((container.querySelector("#tv-search") as HTMLInputElement).value).toBe("");
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+
+    // replaceState never pushed an entry: back lands on what preceded
+    // the landing (the harness's reset entry, "/") — never back into
+    // the recipient's own query.
+    window.history.back();
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/");
+    });
+  });
+
+  it("forced mode: the back control preserves legacy=1", async () => {
+    stubNestedShareAt("/share/tok_fb?legacy=1&folder=f_day1");
+    const container = await renderLanding();
+
+    expect(container.querySelector("a.tv-back-nav")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_s1",
+    );
   });
 });

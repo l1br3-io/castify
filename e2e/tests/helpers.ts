@@ -521,6 +521,43 @@ export async function revokeShare(
   expect(res.status()).toBe(204);
 }
 
+/**
+ * `POST /api/shares/{id}/folders` — create a share folder (owner).
+ * 201 with the folder row. Creation order defines `position` — tests
+ * should assert against names, not positions.
+ */
+export async function createShareFolder(
+  page: Page,
+  shareId: string,
+  body: { name: string; parent_id?: string | null },
+  csrf: string,
+): Promise<ShareFolder> {
+  const res = await page.request.post(
+    `/api/shares/${encodeURIComponent(shareId)}/folders`,
+    { headers: await authHeaders(page, csrf), data: body },
+  );
+  expect(res.status()).toBe(201);
+  return res.json();
+}
+
+/**
+ * `PATCH /api/shares/{id}/items/{video_id}` — move one member item into
+ * a folder; `folder_id: null` moves it back to the share root.
+ */
+export async function moveShareItem(
+  page: Page,
+  shareId: string,
+  videoId: string,
+  folderId: string | null,
+  csrf: string,
+): Promise<void> {
+  const res = await page.request.patch(
+    `/api/shares/${encodeURIComponent(shareId)}/items/${encodeURIComponent(videoId)}`,
+    { headers: await authHeaders(page, csrf), data: { folder_id: folderId } },
+  );
+  expect(res.ok()).toBeTruthy();
+}
+
 export interface ShareResolveResponse {
   title: string;
   item_count: number;

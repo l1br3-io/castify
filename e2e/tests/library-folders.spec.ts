@@ -135,6 +135,11 @@ test.describe("Library folders (e2e mock)", () => {
     // Unfiled drains by exactly the 2 filed items.
     await expect(unfiledBadge).toHaveText(`${initial - 2} items`);
 
+    // Leave select mode before browsing on: the mode is sticky after a
+    // successful move (matches the browse grid's pattern) and its cards
+    // toggle selection instead of exposing play links.
+    await organizer.getByRole("button", { name: "Done" }).click();
+
     // ── Descend and play a video from inside the folder ─────────────
     await clickCardLink(page, "Open folder Trip");
     await expect(

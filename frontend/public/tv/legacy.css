@@ -124,6 +124,7 @@
 }
 
 #castify-legacy .tv-back:focus {
+  outline: none;
   color: #e7e9ee;
   text-decoration: underline;
 }
@@ -224,6 +225,7 @@
 }
 
 #castify-legacy .tv-crumbs .tv-crumb:focus {
+  outline: none;
   color: #e7e9ee;
   text-decoration: underline;
 }
@@ -236,6 +238,26 @@
 #castify-legacy .tv-crumbs .tv-crumb-current {
   color: #f0a93a;
   font-weight: 600;
+}
+
+/* The explicit Back control (folder levels + search mode): a bordered
+ * pill sized for remote aim — the crumb trail names the place, this is
+ * the way out. Focus follows the button shape: a 2px amber outline. */
+#castify-legacy .tv-back-nav {
+  display: inline-block;
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 6px;
+  color: #e7e9ee;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  margin: 0 0 12px 0;
+  text-decoration: none;
+}
+
+#castify-legacy .tv-back-nav:focus {
+  outline: 2px solid #f0a93a;
 }
 
 /* Folder rows read differently from video rows: no thumbnail, name
@@ -261,6 +283,11 @@
   font-size: 16px;
   font-weight: 600;
   word-wrap: break-word;
+  /* Absorb the free line so the chevron pins right even when a row has
+   * no counts span ("Empty") to push it there. */
+  flex: 1 1 auto;
+  -webkit-flex: 1 1 auto;
+  min-width: 0;
 }
 
 #castify-legacy .tv-folder-counts {
@@ -325,6 +352,16 @@
   appearance: none;
 }
 
+/* The engine's native search-clear × renders blue — a second accent, and
+ * a pointer affordance on a remote-first device. Backspace clears; the
+ * zero-results state carries the explicit Clear-search button. */
+#castify-legacy .tv-search::-webkit-search-cancel-button,
+#castify-legacy .tv-search::-webkit-search-results-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 #castify-legacy .tv-search:focus {
   outline: none;
   border-color: #f0a93a;
@@ -348,6 +385,23 @@
 
 #castify-legacy .tv-clear {
   margin-top: 12px;
+}
+
+/* Below ~480px (a phone following a share link, not a TV) the band
+ * stacks: title keeps its full measure, search drops to its own row. */
+@media (max-width: 480px) {
+  #castify-legacy .tv-header-band {
+    -webkit-flex-direction: column;
+    flex-direction: column;
+    -webkit-align-items: stretch;
+    align-items: stretch;
+  }
+
+  #castify-legacy .tv-search {
+    width: 100%;
+    margin-left: 0;
+    margin-top: 12px;
+  }
 }
 
 #castify-legacy .tv-unlock-form {
