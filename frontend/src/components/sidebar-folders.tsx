@@ -24,11 +24,10 @@
 // Mounted only on "/" by AppLayout, so no other route pays the fetches.
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 
 import type { FolderNodeDto } from "../api/types";
 import { useFolderTree } from "../hooks/use-folder-tree";
-import { useLibraryFolderTree } from "../hooks/use-library-folders";
+import { useLibraryFolderNav, useLibraryFolderTree } from "../hooks/use-library-folders";
 import { FolderTree, type TreeNode } from "./folder-tree";
 import { buildLibraryTree } from "../lib/library-tree";
 import { Skeleton } from "./ui/skeleton";
@@ -69,50 +68,22 @@ type SidebarFoldersProps = {
 };
 
 export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
-  const [searchParams, setSearchParams] = useSearchParams();
+  const {
+    selectedFolder,
+    providerMode,
+    selectedDir,
+    selectCurated,
+    selectProvider,
+  } = useLibraryFolderNav();
   const libraryTree = useLibraryFolderTree();
   const providerTree = useFolderTree();
   const [cloudOpen, setCloudOpen] = useState(false);
-
-  const rawFolder = searchParams.get("folder");
-  const selectedFolder =
-    rawFolder === null || rawFolder === "" || rawFolder === "none"
-      ? null
-      : rawFolder;
-  const providerMode = searchParams.has("dir");
-  const selectedDir = searchParams.get("dir") ?? "";
 
   // A provider deep link opens the Cloud section — the link names the
   // view it should land on.
   useEffect(() => {
     if (providerMode) setCloudOpen(true);
   }, [providerMode]);
-
-  // One param write per selection — the mode rule needs both keys
-  // touched atomically (two single-param helpers would clobber each
-  // other from the same render's stale snapshot).
-  function navigateWith(
-    mutate: (params: URLSearchParams) => void,
-    options?: { replace?: boolean },
-  ): void {
-    const params = new URLSearchParams(searchParams);
-    mutate(params);
-    setSearchParams(params, options?.replace ? { replace: true } : undefined);
-  }
-  const selectCurated = (id: string | null, options?: { replace?: boolean }) =>
-    navigateWith((params) => {
-      params.delete("dir");
-      if (id === null) {
-        params.delete("folder");
-      } else {
-        params.set("folder", id);
-      }
-    }, options);
-  const selectProvider = (path: string, options?: { replace?: boolean }) =>
-    navigateWith((params) => {
-      params.delete("folder");
-      params.set("dir", path);
-    }, options);
 
   const curatedNodes = useMemo(
     () => (libraryTree.data ? buildLibraryTree(libraryTree.data) : null),

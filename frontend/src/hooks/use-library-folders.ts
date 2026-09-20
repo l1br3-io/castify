@@ -135,3 +135,59 @@ export function useLibraryFolderParam(): [
 
   return [folder, setFolder];
 }
+
+/**
+ * The browse route's two-tree navigation state — the single mode rule
+ * (documented atop `sidebar-folders.tsx`), shared by the sidebar and the
+ * organizer:
+ *
+ *   * `?dir=` present (even empty) → provider mode; its value selects
+ *     the provider node ("" = provider root).
+ *   * otherwise → curated mode; `?folder=<id>` selects a curated
+ *     folder, absent/empty/`none` selects Unfiled (the default).
+ *   * Selecting in either tree clears the other's param — one atomic
+ *     write per selection (two single-param setters would clobber each
+ *     other from the same render's stale snapshot).
+ */
+export function useLibraryFolderNav() {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const rawFolder = searchParams.get("folder");
+  const selectedFolder =
+    rawFolder === null || rawFolder === "" || rawFolder === "none"
+      ? null
+      : rawFolder;
+  const providerMode = searchParams.has("dir");
+  const selectedDir = searchParams.get("dir") ?? "";
+
+  function navigateWith(
+    mutate: (params: URLSearchParams) => void,
+    options?: { replace?: boolean },
+  ): void {
+    const params = new URLSearchParams(searchParams);
+    mutate(params);
+    setSearchParams(params, options?.replace ? { replace: true } : undefined);
+  }
+
+  /** `null` selects Unfiled (the curated root view). */
+  const selectCurated = (id: string | null, options?: { replace?: boolean }) =>
+    navigateWith((params) => {
+      params.delete("dir");
+      if (id === null) {
+        params.delete("folder");
+      } else {
+        params.set("folder", id);
+      }
+    }, options);
+
+  /** Always sets `dir` (even to "") — an absent `dir` is the curated
+   *  default, so the provider root must keep the param to stay
+   *  reachable. */
+  const selectProvider = (path: string, options?: { replace?: boolean }) =>
+    navigateWith((params) => {
+      params.delete("folder");
+      params.set("dir", path);
+    }, options);
+
+  return { selectedFolder, providerMode, selectedDir, selectCurated, selectProvider };
+}
