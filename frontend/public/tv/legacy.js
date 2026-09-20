@@ -224,8 +224,54 @@
    * modern app mid-journey (e2e/dev only — real TVs probe into legacy
    * and carry no flag to preserve).
    */
+  function isForced() {
+    return window.location.search.indexOf("legacy=1") !== -1;
+  }
+
   function legacyParam() {
-    return window.location.search.indexOf("legacy=1") !== -1 ? "?legacy=1" : "";
+    return isForced() ? "?legacy=1" : "";
+  }
+
+  /*
+   * No URLSearchParams (Chromium 49+) — hand-parse location.search. A
+   * malformed percent-escape in a hand-edited URL must not throw and
+   * brick the page, hence the try/catch.
+   */
+  function getQueryParam(name) {
+    var match = new RegExp("[?&]" + name + "=([^&]*)").exec(window.location.search);
+    if (!match) {
+      return "";
+    }
+    try {
+      return decodeURIComponent(match[1].replace(/\+/g, " "));
+    } catch (e) {
+      return "";
+    }
+  }
+
+  /*
+   * Every internal link's query string is built here, merging legacy=1
+   * with the view params (folder, later q). The old legacyParam()
+   * append-style could not carry more than one param — anything else in
+   * the URL got clobbered.
+   */
+  function buildQueryString(folderId) {
+    var parts = [];
+    if (isForced()) {
+      parts.push("legacy=1");
+    }
+    if (folderId) {
+      parts.push("folder=" + encodeURIComponent(folderId));
+    }
+    return parts.length ? "?" + parts.join("&") : "";
+  }
+
+  function buildShareUrl(token, folderId) {
+    return "/share/" + token + buildQueryString(folderId);
+  }
+
+  function buildWatchUrl(token, videoId, folderId) {
+    return "/share/" + token + "/watch/" + encodeURIComponent(videoId) + buildQueryString(folderId);
   }
 
   /* ── watch page ────────────────────────────────────────────────────── */
@@ -435,6 +481,11 @@
 
   /* ── landing page ──────────────────────────────────────────────────── */
 
+  /* One items fetch's worth of landing state; folder navigation
+   * re-renders from here without further requests. */
+  var landingData = null;
+  var popstateWired = false;
+
   /*
    * /share/{token}: resolve supplies the title (the one endpoint that
    * answers while locked), items decides the view — 200 renders the flat
@@ -464,7 +515,14 @@
   function renderLandingItems(container, token, title) {
     getJson("/api/share/" + token + "/items", {
       ok: function (data) {
-        renderVideoList(container, token, title, data && data.items ? data.items : []);
+        var folders = data && data.folders ? data.folders : [];
+        var items = data && data.items ? data.items : [];
+        if (!folders.length && !items.length) {
+          renderMessage(container, "Nothing in this share.");
+          return;
+        }
+        landingData = { container: container, token: token, title: title, tree: buildTree(folders, items) };
+        renderBrowse();
       },
       status: function (code) {
         if (code === 401) {
@@ -483,51 +541,227 @@
     });
   }
 
+  /* ── folder browse (legacy-tv-nav-search task 001) ─────────────────── */
+
+  /* The in-memory index over the one items fetch: folder navigation is
+   * pure client-side re-rendering, so the recipient request budget stays
+   * resolve + unlock + one items fetch. "" keys are the share root. */
+  function buildTree(folders, items) {
+    var folderById = {};
+    var foldersByParent = {};
+    var itemsByFolder = {};
+    var i;
+    for (i = 0; i < folders.length; i++) {
+      var folder = folders[i];
+      folderById[folder.id] = folder;
+      var parentKey = folder.parent_id || "";
+      if (!foldersByParent[parentKey]) {
+        foldersByParent[parentKey] = [];
+      }
+      foldersByParent[parentKey].push(folder);
+    }
+    var key;
+    for (key in foldersByParent) {
+      if (foldersByParent.hasOwnProperty(key)) {
+        foldersByParent[key].sort(function (a, b) {
+          return a.position - b.position;
+        });
+      }
+    }
+    for (i = 0; i < items.length; i++) {
+      var itemKey = items[i].folder_id || "";
+      if (!itemsByFolder[itemKey]) {
+        itemsByFolder[itemKey] = [];
+      }
+      itemsByFolder[itemKey].push(items[i]);
+    }
+    return {
+      folderById: folderById,
+      foldersByParent: foldersByParent,
+      itemsByFolder: itemsByFolder,
+    };
+  }
+
+  function foldersAt(tree, folderId) {
+    return tree.foldersByParent[folderId || ""] || [];
+  }
+
+  function itemsAt(tree, folderId) {
+    return tree.itemsByFolder[folderId || ""] || [];
+  }
+
+  /* Ancestor chain root-first for the breadcrumb trail. The seen-set
+   * guards against malformed parent cycles looping forever. */
+  function folderChain(tree, folderId) {
+    var chain = [];
+    var seen = {};
+    var current = folderId ? tree.folderById[folderId] : null;
+    while (current && !seen[current.id]) {
+      seen[current.id] = true;
+      chain.unshift(current);
+      current = current.parent_id ? tree.folderById[current.parent_id] : null;
+    }
+    return chain;
+  }
+
+  function renderCrumbs(state, folderId) {
+    if (!folderId) {
+      return "";
+    }
+    var chain = folderChain(state.tree, folderId);
+    var html =
+      '<p class="tv-crumbs">' +
+      '<a class="tv-crumb" href="' + escapeHtml(buildShareUrl(state.token, "")) + '" data-folder="">' +
+      escapeHtml(state.title) +
+      "</a>";
+    for (var i = 0; i < chain.length; i++) {
+      html += '<span class="tv-crumb-sep">&#8250;</span>';
+      if (i === chain.length - 1) {
+        html += '<span class="tv-crumb-current">' + escapeHtml(chain[i].name) + "</span>";
+      } else {
+        html +=
+          '<a class="tv-crumb" href="' + escapeHtml(buildShareUrl(state.token, chain[i].id)) +
+          '" data-folder="' + escapeHtml(chain[i].id) + '">' +
+          escapeHtml(chain[i].name) +
+          "</a>";
+      }
+    }
+    html += "</p>";
+    return html;
+  }
+
+  /* Folder row: one anchor (click parity like video rows), no thumbnail —
+   * name left, direct counts right, CSS-drawn chevron. Counts are direct
+   * children only, parts shown only when non-zero. */
+  function renderFolderRow(state, folder) {
+    var counts = [];
+    var videoCount = itemsAt(state.tree, folder.id).length;
+    var subfolderCount = foldersAt(state.tree, folder.id).length;
+    if (videoCount) {
+      counts.push(videoCount + " videos");
+    }
+    if (subfolderCount) {
+      counts.push(subfolderCount + " folders");
+    }
+    return (
+      '<li class="tv-item">' +
+      '<a class="tv-folder-link" href="' + escapeHtml(buildShareUrl(state.token, folder.id)) +
+      '" data-folder="' + escapeHtml(folder.id) + '">' +
+      '<span class="tv-folder-name">' + escapeHtml(folder.name) + "</span>" +
+      (counts.length ? '<span class="tv-folder-counts">' + counts.join(" &#183; ") + "</span>" : "") +
+      "</a>" +
+      "</li>"
+    );
+  }
+
+  function renderItemRow(state, item, folderId) {
+    var videoPath = "/api/share/" + state.token + "/videos/" + encodeURIComponent(item.id);
+    var meta = [];
+    var duration = formatDuration(item.duration_ms);
+    var size = formatSize(item.size_bytes);
+    if (duration) {
+      meta.push(escapeHtml(duration));
+    }
+    if (size) {
+      meta.push(escapeHtml(size));
+    }
+    return (
+      '<li class="tv-item">' +
+      '<a class="tv-item-link" href="' + escapeHtml(buildWatchUrl(state.token, item.id, folderId)) + '">' +
+      '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
+      '<span class="tv-item-body">' +
+      '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
+      (meta.length ? '<span class="tv-item-meta">' + meta.join(" &#183; ") + "</span>" : "") +
+      "</span>" +
+      "</a>" +
+      "</li>"
+    );
+  }
+
   /*
-   * The share's videos as a flat list. Each row is a single anchor
-   * wrapping the thumbnail, the name, and duration/size meta — clicking
-   * the thumbnail and clicking the name are the same action by
-   * construction (FR-3.1, click parity).
+   * Folder-first browse at the level the URL names. Cold loads and
+   * pushState/popstate re-entry all land here; the level is read fresh
+   * from location.search each render.
    */
-  function renderVideoList(container, token, title, items) {
-    if (!items.length) {
-      container.innerHTML =
-        '<div class="tv-landing">' +
-        '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
-        "</div>";
-      renderMessage(container, "Nothing in this share.");
+  function renderBrowse() {
+    var state = landingData;
+    if (!state) {
       return;
     }
-    var rows = "";
-    for (var i = 0; i < items.length; i++) {
-      var item = items[i];
-      var videoPath = "/api/share/" + token + "/videos/" + encodeURIComponent(item.id);
-      var meta = [];
-      var duration = formatDuration(item.duration_ms);
-      var size = formatSize(item.size_bytes);
-      if (duration) {
-        meta.push(escapeHtml(duration));
-      }
-      if (size) {
-        meta.push(escapeHtml(size));
-      }
-      rows +=
-        '<li class="tv-item">' +
-        '<a class="tv-item-link" href="/share/' + escapeHtml(token) +
-        "/watch/" + escapeHtml(encodeURIComponent(item.id)) + escapeHtml(legacyParam()) + '">' +
-        '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
-        '<span class="tv-item-body">' +
-        '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
-        (meta.length ? '<span class="tv-item-meta">' + meta.join(" &#183; ") + "</span>" : "") +
-        "</span>" +
-        "</a>" +
-        "</li>";
+    var container = state.container;
+    var folderId = getQueryParam("folder");
+    if (folderId && !state.tree.folderById[folderId]) {
+      /* Stale deep-link (folder since deleted) — the root level, not a
+       * bricked page. */
+      folderId = "";
     }
-    container.innerHTML =
+    var folders = foldersAt(state.tree, folderId);
+    var items = itemsAt(state.tree, folderId);
+    var html =
       '<div class="tv-landing">' +
-      '<h1 class="tv-title">' + escapeHtml(title) + "</h1>" +
-      '<ul class="tv-items">' + rows + "</ul>" +
-      "</div>";
+      '<h1 class="tv-title">' + escapeHtml(state.title) + "</h1>" +
+      renderCrumbs(state, folderId);
+    if (!folders.length && !items.length) {
+      html += '<p class="tv-empty-level">Nothing in this folder.</p>';
+      html += "</div>";
+      container.innerHTML = html;
+      wireFolderNav(container);
+    } else {
+      html += '<ul class="tv-items">';
+      var i;
+      for (i = 0; i < folders.length; i++) {
+        html += renderFolderRow(state, folders[i]);
+      }
+      for (i = 0; i < items.length; i++) {
+        html += renderItemRow(state, items[i], folderId);
+      }
+      html += "</ul></div>";
+      container.innerHTML = html;
+      wireFolderNav(container);
+    }
+    /* GOTCHA: entering a folder is history.pushState, which never
+     * re-runs this script — the remote's Return button only fires
+     * popstate. Without this re-render, back updates the URL and leaves
+     * the list one level deep. addEventListener (not the onpopstate
+     * property) so the handler survives jsdom's test harness too. */
+    if (!popstateWired) {
+      popstateWired = true;
+      window.addEventListener("popstate", function () {
+        renderBrowse();
+      });
+    }
+  }
+
+  /*
+   * Folder links and crumbs carry real hrefs (click parity, no-JS
+   * fallback) but left-clicks are intercepted: the payload is already in
+   * memory, so entering a folder is a pushState + re-render, not a fetch.
+   */
+  function wireFolderNav(container) {
+    var navLinks = [];
+    collectByClass(container, "tv-folder-link", navLinks);
+    collectByClass(container, "tv-crumb", navLinks);
+    for (var i = 0; i < navLinks.length; i++) {
+      navLinks[i].onclick = function (event) {
+        if (event && event.preventDefault) {
+          event.preventDefault();
+        }
+        var state = landingData;
+        var folderId = this.getAttribute("data-folder") || "";
+        if (state) {
+          window.history.pushState({}, "", buildShareUrl(state.token, folderId));
+          renderBrowse();
+        }
+        return false;
+      };
+    }
+  }
+
+  function collectByClass(root, className, out) {
+    var found = root.getElementsByClassName(className);
+    for (var i = 0; i < found.length; i++) {
+      out.push(found[i]);
+    }
   }
 
   /* ── unlock form ───────────────────────────────────────────────────── */

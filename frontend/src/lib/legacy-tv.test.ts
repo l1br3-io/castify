@@ -9,7 +9,7 @@ import { resolve } from "node:path";
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ProviderKey, VideoSummaryDto } from "../api/types";
+import type { ProviderKey, ShareFolderDto, VideoSummaryDto } from "../api/types";
 
 const legacyJsPath = resolve(import.meta.dirname, "../../public/tv/legacy.js");
 const legacyCssPath = resolve(import.meta.dirname, "../../public/tv/legacy.css");
@@ -36,6 +36,7 @@ function resetLegacyDom(): void {
   const root = document.getElementById("root");
   if (root) root.style.display = "";
   window.history.pushState({}, "", "/");
+  window.onpopstate = null;
   vi.unstubAllGlobals();
 }
 
@@ -148,7 +149,7 @@ function stubCanPlay(reply: "probably" | "maybe" | ""): void {
 
 /** A share item as the items endpoint returns it (flattened summary). */
 function shareItem(
-  overrides: Partial<VideoSummaryDto> = {},
+  overrides: Partial<VideoSummaryDto> & { folder_id?: string | null } = {},
 ): VideoSummaryDto & { folder_id: string | null } {
   return {
     id: "vid_1",
@@ -171,6 +172,28 @@ function shareItem(
     ...overrides,
   };
 }
+
+/** A share folder as the items endpoint returns it (`ShareFolderDto`). */
+function shareFolder(overrides: Partial<ShareFolderDto> = {}): ShareFolderDto {
+  return { id: "f_1", parent_id: null, name: "Folder", position: 0, ...overrides };
+}
+
+// Canonical nested fixture for the nav-search effort: two root folders (payload
+// order deliberately shuffled so tests prove `position` ordering), a subfolder,
+// an empty folder, and one video per level.
+const NAV_SEARCH_FOLDERS: ShareFolderDto[] = [
+  shareFolder({ id: "f_s2", name: "Season 2", position: 1 }),
+  shareFolder({ id: "f_s1", name: "Season 1", position: 0 }),
+  shareFolder({ id: "f_day1", parent_id: "f_s1", name: "Day 1", position: 0 }),
+  shareFolder({ id: "f_empty", name: "Empty", position: 2 }),
+];
+
+const NAV_SEARCH_ITEMS: Array<VideoSummaryDto & { folder_id: string | null }> = [
+  shareItem({ id: "vid_root", name: "Trailer.mp4", folder_id: null }),
+  shareItem({ id: "vid_s1", name: "Episode 1.mp4", folder_id: "f_s1" }),
+  shareItem({ id: "vid_day1", name: "Episode 2.mp4", folder_id: "f_day1" }),
+  shareItem({ id: "vid_s2", name: "Extras.mp4", folder_id: "f_s2" }),
+];
 
 describe("legacy tv skeleton (task 001)", () => {
   afterEach(resetLegacyDom);
@@ -795,5 +818,208 @@ describe("legacy tv forced-mode link continuity (FR-1.4)", () => {
     expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
       "/share/tok_clean/watch/vid_1",
     );
+  });
+});
+
+describe("legacy tv folder browse (nav-search task 001)", () => {
+  afterEach(resetLegacyDom);
+
+  /** Landing at `path` against the canonical nested fixture (tok_fb). */
+  function stubFolderedShare(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fb", () => ({
+        status: 200,
+        body: { title: "Trip videos", item_count: 4, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_fb/items", () => ({
+        status: 200,
+        body: { folders: NAV_SEARCH_FOLDERS, items: NAV_SEARCH_ITEMS },
+      }));
+    });
+  }
+
+  async function renderLanding(): Promise<HTMLElement> {
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link, a.tv-folder-link").length).toBeGreaterThan(0);
+    });
+    return container as HTMLElement;
+  }
+
+  function folderNames(container: HTMLElement): string[] {
+    return [...container.querySelectorAll(".tv-folder-name")].map((el) => el.textContent);
+  }
+
+  function videoNames(container: HTMLElement): string[] {
+    return [...container.querySelectorAll(".tv-item-name")].map((el) => el.textContent);
+  }
+
+  it("renders folder rows before video rows, position order, with direct counts", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    // Folders precede videos at the level; payload order must not leak through.
+    expect(folderNames(container)).toEqual(["Season 1", "Season 2", "Empty"]);
+    const rows = [...container.querySelectorAll("ul.tv-items > li")];
+    expect(rows[0].querySelector("a")).toHaveClass("tv-folder-link");
+    expect(rows[3].querySelector("a")).toHaveClass("tv-item-link");
+
+    // Direct counts, parts only when non-zero (modern sidebar's "N videos" style).
+    const counts = [...container.querySelectorAll(".tv-folder-counts")].map((el) => el.textContent);
+    expect(counts[0]).toBe("1 videos · 1 folders");
+    expect(counts[1]).toBe("1 videos");
+    expect(container.querySelectorAll(".tv-folder-counts")).toHaveLength(2); // Empty has none
+
+    // Root level shows no breadcrumb trail.
+    expect(container.querySelector(".tv-crumbs")).toBeNull();
+  });
+
+  it("folder click pushStates the folder param and re-renders from memory — zero XHRs", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(folderNames(container)).toEqual(["Day 1"]);
+    expect(videoNames(container)).toContain("Episode 1.mp4");
+    expect(requestedUrls()).toEqual(["GET /api/share/tok_fb", "GET /api/share/tok_fb/items"]);
+  });
+
+  it("breadcrumbs: title is the root link, ancestors link, current crumb is plain text", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Day 1
+
+    const crumbs = container.querySelector(".tv-crumbs");
+    expect(crumbs).not.toBeNull();
+    const links = [...crumbs!.querySelectorAll("a.tv-crumb")];
+    expect(links).toHaveLength(2);
+    expect(links[0].textContent).toBe("Trip videos");
+    expect(links[0].getAttribute("href")).toBe("/share/tok_fb");
+    expect(links[1].textContent).toBe("Season 1");
+    expect(links[1].getAttribute("href")).toBe("/share/tok_fb?folder=f_s1");
+    expect(crumbs!.querySelector(".tv-crumb-current")?.textContent).toBe("Day 1");
+    // The current level is never a link — it's where you are.
+    expect([...crumbs!.querySelectorAll("a")].some((a) => a.textContent === "Day 1")).toBe(false);
+  });
+
+  it("crumb clicks navigate like folder clicks", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Day 1
+    const crumbs = container.querySelector(".tv-crumbs")!;
+    fireEvent.click(crumbs.querySelectorAll("a.tv-crumb")[1]); // Season 1
+
+    expect(window.location.search).toBe("?folder=f_s1");
+    expect(videoNames(container)).toContain("Episode 1.mp4");
+
+    fireEvent.click(container.querySelector(".tv-crumbs")!.querySelectorAll("a.tv-crumb")[0]); // root
+    expect(window.location.search).toBe("");
+    expect(folderNames(container)).toEqual(["Season 1", "Season 2", "Empty"]);
+  });
+
+  it("history.back() (the remote's Return) re-renders the previous level", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Season 1
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[0]); // Day 1
+    expect(window.location.search).toBe("?folder=f_day1");
+
+    window.history.back();
+    await waitFor(() => {
+      expect(container.querySelectorAll(".tv-item-name")[0]?.textContent ?? "").toContain("Episode 1.mp4");
+    });
+    expect(window.location.search).toBe("?folder=f_s1");
+
+    window.history.back();
+    await waitFor(() => {
+      expect(folderNames(container)).toEqual(["Season 1", "Season 2", "Empty"]);
+    });
+    expect(window.location.search).toBe("");
+  });
+
+  it("cold-loads ?folder= at that level", async () => {
+    stubFolderedShare("/share/tok_fb?folder=f_day1");
+    const container = await renderLanding();
+
+    expect(window.location.search).toBe("?folder=f_day1");
+    expect(folderNames(container)).toEqual([]);
+    expect(videoNames(container)).toEqual(["Episode 2.mp4"]);
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Day 1");
+  });
+
+  it("stale ?folder= (folder since deleted) falls back to root, not an error", async () => {
+    stubFolderedShare("/share/tok_fb?folder=zzz");
+    const container = await renderLanding();
+
+    expect(folderNames(container)).toEqual(["Season 1", "Season 2", "Empty"]);
+    expect(container.querySelector(".tv-crumbs")).toBeNull();
+  });
+
+  it("empty folder: message with crumbs still navigable", async () => {
+    stubFolderedShare("/share/tok_fb");
+    const container = await renderLanding();
+
+    fireEvent.click(container.querySelectorAll("a.tv-folder-link")[2]); // Empty
+
+    expect(container.textContent).toContain("Nothing in this folder.");
+    const crumbs = container.querySelector(".tv-crumbs");
+    expect(crumbs).not.toBeNull();
+    fireEvent.click(crumbs!.querySelectorAll("a.tv-crumb")[0]); // root
+    expect(folderNames(container)).toEqual(["Season 1", "Season 2", "Empty"]);
+  });
+
+  it("watch links from inside a folder carry the folder param", async () => {
+    stubFolderedShare("/share/tok_fb?folder=f_day1");
+    const container = await renderLanding();
+
+    expect(container.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb/watch/vid_day1?folder=f_day1",
+    );
+  });
+
+  it("watch links merge legacy=1 with the folder param when forced", async () => {
+    stubFolderedShare("/share/tok_fb?legacy=1&folder=f_day1");
+    const container = await renderLanding();
+
+    expect(container.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb/watch/vid_day1?legacy=1&folder=f_day1",
+    );
+  });
+
+  it("folder-free share renders the classic flat list — no crumbs, no folder rows", async () => {
+    window.history.pushState({}, "", "/share/tok_flat");
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_flat", () => ({
+        status: 200,
+        body: { title: "Flat", item_count: 2, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_flat/items", () => ({
+        status: 200,
+        body: {
+          folders: [],
+          items: [shareItem({ id: "v1", name: "A.mp4" }), shareItem({ id: "v2", name: "B.mp4" })],
+        },
+      }));
+    });
+
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link")).toHaveLength(2);
+    });
+
+    expect(container?.querySelector(".tv-crumbs")).toBeNull();
+    expect(container?.querySelector("a.tv-folder-link")).toBeNull();
+    expect(container?.querySelector("a.tv-item-link")?.getAttribute("href")).toBe("/share/tok_flat/watch/v1");
   });
 });

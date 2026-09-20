@@ -111,6 +111,23 @@
   cursor: default;
 }
 
+/* Focus floor for controls: visible outlines on buttons, an amber
+ * border on inputs, underline on the back link — the row treatment
+ * above covers lists. Same single accent, three honest shapes. */
+#castify-legacy .tv-button:focus {
+  outline: 2px solid #f0a93a;
+}
+
+#castify-legacy .tv-input:focus {
+  outline: none;
+  border-color: #f0a93a;
+}
+
+#castify-legacy .tv-back:focus {
+  color: #e7e9ee;
+  text-decoration: underline;
+}
+
 #castify-legacy .tv-landing {
   width: 100%;
   max-width: 720px;
@@ -169,6 +186,105 @@
   color: #9096a5;
   font-size: 12px;
   margin-top: 4px;
+}
+
+/* ── folder-first browse (legacy-tv-nav-search task 001) ──────────── */
+
+/* On a TV, focus is the cursor. The focused row carries a 4px amber
+ * inset edge (box-shadow — no layout shift) plus an amber border; the
+ * default thin ring is replaced by this treatment, never merely
+ * removed. Amber stays reserved for focus and the current crumb. */
+#castify-legacy .tv-item-link:focus,
+#castify-legacy .tv-folder-link:focus {
+  outline: none;
+  border-color: #f0a93a;
+  box-shadow: inset 4px 0 0 #f0a93a;
+}
+
+/* The chevron warms with its row — part of the focused row, not a
+ * second accent. */
+#castify-legacy .tv-folder-link:focus:after {
+  border-right-color: #f0a93a;
+  border-bottom-color: #f0a93a;
+}
+
+/* Ancestor crumbs: muted links; the current level is plain amber text
+ * (never a link — it's where you are). Root level shows no trail. The
+ * separator sits at border tone so the trail reads as two voices:
+ * where you can go, and where you are. */
+#castify-legacy .tv-crumbs {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: #9096a5;
+}
+
+#castify-legacy .tv-crumbs .tv-crumb {
+  color: #9096a5;
+  text-decoration: none;
+}
+
+#castify-legacy .tv-crumbs .tv-crumb:focus {
+  color: #e7e9ee;
+  text-decoration: underline;
+}
+
+#castify-legacy .tv-crumbs .tv-crumb-sep {
+  margin: 0 6px;
+  color: #2a3040;
+}
+
+#castify-legacy .tv-crumbs .tv-crumb-current {
+  color: #f0a93a;
+  font-weight: 600;
+}
+
+/* Folder rows read differently from video rows: no thumbnail, name
+ * left, muted direct counts right, and a chevron drawn with borders
+ * (no images, no icon fonts — Tizen-safe). Min-height matches the video
+ * row (90px thumb + 2×8px padding) so the scan line stays level; the
+ * extra left padding gives the amber focus edge room to breathe. */
+#castify-legacy .tv-folder-link {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  background: #171b24;
+  border: 1px solid #2a3040;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-height: 106px;
+  text-decoration: none;
+  color: #e7e9ee;
+}
+
+#castify-legacy .tv-folder-name {
+  font-size: 16px;
+  font-weight: 600;
+  word-wrap: break-word;
+}
+
+#castify-legacy .tv-folder-counts {
+  color: #9096a5;
+  font-size: 12px;
+  margin-left: auto;
+  padding-right: 24px;
+  white-space: nowrap;
+}
+
+#castify-legacy .tv-folder-link:after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #9096a5;
+  border-bottom: 2px solid #9096a5;
+  -webkit-transform: rotate(-45deg);
+  transform: rotate(-45deg);
+}
+
+#castify-legacy .tv-empty-level {
+  color: #9096a5;
+  font-size: 14px;
+  margin: 0;
 }
 
 #castify-legacy .tv-unlock-form {
