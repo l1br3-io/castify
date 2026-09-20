@@ -150,7 +150,7 @@
     container.innerHTML =
       '<div class="tv-message">' +
       '<p class="tv-message-title">' + escapeHtml(text) + "</p>" +
-      '<a class="tv-back" href="' + escapeHtml(backHref + legacyParam()) + '">Back to the share</a>' +
+      '<a class="tv-back" href="' + escapeHtml(backHref) + '">Back to the share</a>' +
       "</div>";
   }
 
@@ -228,10 +228,6 @@
     return window.location.search.indexOf("legacy=1") !== -1;
   }
 
-  function legacyParam() {
-    return isForced() ? "?legacy=1" : "";
-  }
-
   /*
    * No URLSearchParams (Chromium 49+) — hand-parse location.search. A
    * malformed percent-escape in a hand-edited URL must not throw and
@@ -251,9 +247,10 @@
 
   /*
    * Every internal link's query string is built here, merging legacy=1
-   * with the view params (folder, later q). The old legacyParam()
-   * append-style could not carry more than one param — anything else in
-   * the URL got clobbered.
+   * with the view params (folder, q). GOTCHA: the original legacyParam()
+   * APPENDED "?legacy=1" blindly — any link that needed a second param
+   * clobbered it (the "?" was baked into the append). One builder, every
+   * href, nothing concatenated by hand.
    */
   function buildQueryString(folderId, q) {
     var parts = [];
@@ -269,8 +266,8 @@
     return parts.length ? "?" + parts.join("&") : "";
   }
 
-  function buildShareUrl(token, folderId) {
-    return "/share/" + token + buildQueryString(folderId);
+  function buildShareUrl(token, folderId, q) {
+    return "/share/" + token + buildQueryString(folderId, q);
   }
 
   function buildWatchUrl(token, videoId, folderId, q) {
@@ -308,7 +305,13 @@
       ok: function (data) {
         var video = findVideo(data && data.items ? data.items : [], videoId);
         if (!video) {
-          renderMessageWithBack(container, "This video isn't part of the share.", "/share/" + token);
+          /* The back link carries whatever browse/search state the URL
+           * holds — the recipient lands where they left off. */
+          renderMessageWithBack(
+            container,
+            "This video isn't part of the share.",
+            buildShareUrl(token, getQueryParam("folder"), getQueryParam("q"))
+          );
           return;
         }
         renderStream(container, token, video, videoId);
@@ -381,12 +384,16 @@
     if (size) {
       meta.push(escapeHtml(size));
     }
+    /* Back to the exact folder/search state the watch URL carries —
+     * FR-4: the remote's Return and this link land in the same place. */
+    var backHref = buildShareUrl(token, getQueryParam("folder"), getQueryParam("q"));
     container.innerHTML =
       '<div class="tv-watch">' +
       '<h1 class="tv-title">' + escapeHtml(video.name) + "</h1>" +
       '<video class="tv-video" controls preload="metadata" src="' + escapeHtml(url) +
       '" poster="' + escapeHtml(videoPath + "/thumbnail") + '"></video>' +
       (meta.length ? '<p class="tv-meta">' + meta.join(" &#183; ") + "</p>" : "") +
+      '<a class="tv-back" href="' + escapeHtml(backHref) + '">Back to the share</a>' +
       "</div>";
     var videoEl = container.getElementsByTagName("video")[0];
     wireExpiryRecovery(container, videoPath, videoEl);

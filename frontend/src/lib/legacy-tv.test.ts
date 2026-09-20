@@ -1308,3 +1308,167 @@ describe("legacy tv search (nav-search task 002)", () => {
     ]);
   });
 });
+
+describe("legacy tv link continuity (nav-search task 003)", () => {
+  afterEach(resetLegacyDom);
+
+  function stubNestedShareAt(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fb", () => ({
+        status: 200,
+        body: { title: "Trip videos", item_count: 4, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_fb/items", () => ({
+        status: 200,
+        body: { folders: NAV_SEARCH_FOLDERS, items: NAV_SEARCH_ITEMS },
+      }));
+    });
+  }
+
+  function stubWatchAt(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_fb/items", () => ({
+        status: 200,
+        body: { folders: NAV_SEARCH_FOLDERS, items: NAV_SEARCH_ITEMS },
+      }));
+      fake.get("/api/share/tok_fb/videos/vid_s1/stream-url", () => ({
+        status: 200,
+        body: { url: "https://cdn.example.com/s1.mp4", strategy: "direct", expires_at: null },
+      }));
+      fake.get("/api/share/tok_fb/videos/vid_s1/subtitles", () => ({ status: 200, body: [] }));
+    });
+  }
+
+  async function renderLanding(): Promise<HTMLElement> {
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link, a.tv-folder-link").length).toBeGreaterThan(0);
+    });
+    return container as HTMLElement;
+  }
+
+  async function typeQuery(container: HTMLElement, query: string): Promise<void> {
+    const input = container.querySelector("#tv-search") as HTMLInputElement;
+    input.value = query;
+    fireEvent.input(input);
+    await waitFor(() => {
+      const search = window.location.search;
+      const settled = query === ""
+        ? !search.includes("q=")
+        : search.includes("q=" + encodeURIComponent(query));
+      expect(settled).toBe(true);
+    });
+  }
+
+  it("every browse link shape merges params instead of clobbering", async () => {
+    stubNestedShareAt("/share/tok_fb?legacy=1&folder=f_s1");
+    const container = await renderLanding();
+
+    // Watch row
+    expect(container.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb/watch/vid_s1?legacy=1&folder=f_s1",
+    );
+    // Crumbs: root is a link; Season 1 is the current crumb (plain text).
+    const crumbs = container.querySelectorAll("a.tv-crumb");
+    expect(crumbs).toHaveLength(1);
+    expect(crumbs[0].getAttribute("href")).toBe("/share/tok_fb?legacy=1");
+    expect(container.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+    // Subfolder row (Day 1)
+    expect(container.querySelector("a.tv-folder-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_day1",
+    );
+  });
+
+  it("stale ?folder= in forced mode renders root and rebuilds clean links", async () => {
+    stubNestedShareAt("/share/tok_fb?legacy=1&folder=ghost");
+    const container = await renderLanding();
+
+    expect(container.querySelectorAll("a.tv-folder-link")).toHaveLength(3);
+    expect(container.querySelector("a.tv-folder-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_s1",
+    );
+  });
+
+  it("search-mode watch links carry legacy, folder, and q", async () => {
+    stubNestedShareAt("/share/tok_fb?legacy=1&folder=f_s1");
+    const container = await renderLanding();
+
+    await typeQuery(container, "episode");
+
+    expect(container.querySelector("a.tv-item-link")?.getAttribute("href")).toBe(
+      "/share/tok_fb/watch/vid_s1?legacy=1&folder=f_s1&q=episode",
+    );
+  });
+
+  it("watch page back link returns to the exact browse state — or clean root", async () => {
+    stubWatchAt("/share/tok_fb/watch/vid_s1?legacy=1&folder=f_s1");
+    stubCanPlay("probably");
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+    expect(container?.querySelector("a.tv-back")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_s1",
+    );
+
+    // No params in, no params out — and no stray "?" on the clean URL.
+    stubWatchAt("/share/tok_fb/watch/vid_s1");
+    document.getElementById("castify-legacy")?.remove();
+    delete (window as LegacyWindow).__castifyLegacyLoaded;
+    delete (window as LegacyWindow).__castifyLegacyInit;
+    loadLegacyScript();
+    const fresh = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(fresh?.querySelector("video")).not.toBeNull();
+    });
+    expect(fresh?.querySelector("a.tv-back")?.getAttribute("href")).toBe("/share/tok_fb");
+  });
+
+  it("watch back link carries the search state too", async () => {
+    stubWatchAt("/share/tok_fb/watch/vid_s1?legacy=1&folder=f_s1&q=episode");
+    stubCanPlay("probably");
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector("video")).not.toBeNull();
+    });
+    expect(container?.querySelector("a.tv-back")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_s1&q=episode",
+    );
+  });
+
+  it("isn't-part-of-the-share back link preserves folder + query", async () => {
+    stubWatchAt("/share/tok_fb/watch/vid_ghost?legacy=1&folder=f_s1&q=ep");
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.textContent).toContain("This video isn't part of the share.");
+    });
+    expect(container?.querySelector("a.tv-back")?.getAttribute("href")).toBe(
+      "/share/tok_fb?legacy=1&folder=f_s1&q=ep",
+    );
+  });
+
+  it("cold load with folder + q renders search over that context; clear lands in the folder", async () => {
+    stubNestedShareAt("/share/tok_fb?legacy=1&folder=f_s1&q=zzz");
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelector(".tv-results-count")).not.toBeNull();
+    });
+
+    expect(container?.textContent).toContain("No videos match.");
+    expect(container?.querySelector(".tv-crumbs")).toBeNull();
+
+    fireEvent.click(container?.querySelector("#tv-clear-search") as HTMLElement);
+
+    await waitFor(() => {
+      expect(container?.querySelector(".tv-crumb-current")?.textContent).toBe("Season 1");
+    });
+    expect(window.location.search).toBe("?legacy=1&folder=f_s1");
+  });
+});
