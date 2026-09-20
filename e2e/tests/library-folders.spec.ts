@@ -92,9 +92,15 @@ test.describe("Library folders (e2e mock)", () => {
     await expect(organizer.getByTestId("contents-path")).toHaveText("Unfiled");
 
     await organizer.getByRole("button", { name: "Select items" }).click();
+    // Gate on the action bar before touching cards: a missed or double
+    // mode toggle must fail here (fast, diagnosable) rather than leave
+    // the card clicks retrying actionability until the test timeout.
+    await expect(organizer.getByText("0 items selected")).toBeVisible();
+    // The checkbox is the card's explicit selection control (the same
+    // interaction the browse-grid specs use); the audio FileCard has no
+    // checkbox, so its card body toggles.
     await organizer
-      .locator("article", { hasText: "vacation.mp4" })
-      .first()
+      .getByRole("checkbox", { name: "Select vacation.mp4" })
       .click();
     await organizer
       .locator("article", { hasText: "song.mp3" })
@@ -107,7 +113,13 @@ test.describe("Library folders (e2e mock)", () => {
         req.method() === "PATCH" && req.url().endsWith("/api/library-folders/items"),
     );
     await organizer.getByRole("button", { name: "Move to folder" }).click();
-    await page.getByRole("dialog", { name: "Move 2 items" }).getByRole("button", { name: "Trip" }).click();
+    // Pick Day 1 (not Trip): the flow below descends into Day 1 to play
+    // vacation.mp4 there, and the Trip deletion then lifts the whole
+    // subtree (Day 1 + its items) back to Unfiled.
+    await page
+      .getByRole("dialog", { name: "Move 2 items" })
+      .getByRole("button", { name: "Day 1" })
+      .click();
     const move = await moveRequest;
     const moveBody = move.postDataJSON() as {
       items: Array<{ kind: string; id: string }>;
