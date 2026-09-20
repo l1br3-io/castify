@@ -18,6 +18,11 @@ All recipes via [`just`](./justfile). Key ones:
 - `just e2e` — Playwright suite against the docker stack
 - `just bench` — catalog/stream benchmarks
 
+Commands must be quiet on success — output only for errors/failures (token
+economy). The justfile enforces this via `just quiet-audit` in CI; apply the
+same to direct invocations: `cargo … --quiet` (plus `-- --quiet` to collapse
+passing tests to dots), `npm … --silent`, vitest `--reporter=dot`.
+
 ## Tech
 
 Two stacks, kept separate at the boundary:

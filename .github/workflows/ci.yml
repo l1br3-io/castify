@@ -15,6 +15,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install just
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Fast guardrail (~1s): agent-facing justfile recipes must stay quiet on
+      # success — output only for errors/failures (token economy for AI agents).
+      - name: Quiet-audit
+        run: just quiet-audit
       - name: Install Rust toolchain
         run: |
           rustup show

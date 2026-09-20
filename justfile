@@ -1,4 +1,10 @@
 # Castify task runner. See https://github.com/casey/just
+#
+# Quiet-on-success contract: recipes emit output ONLY for errors/failures —
+# token economy for AI agents (AGENTS.md routes agents through these recipes).
+# Enforced by `just quiet-audit`. Genuinely interactive recipes (dev, api/web,
+# deploy, upload*, logs, ps) are exempt; their lines carry a
+# `# quiet-audit: allow` marker.
 
 # Load `.env` (root-level) into every recipe's environment, so `cargo run`,
 # `npm run dev`, etc. inherit provider creds without manual `source`. The same
@@ -8,68 +14,107 @@ set dotenv-load := true
 
 # Plain `docker compose` (default stack). E2E recipes use COMPOSE_E2E.
 COMPOSE := "docker compose"
-COMPOSE_E2E := "docker compose -f docker-compose.yml -f docker-compose.e2e.yml"
+# `--progress quiet`: suppress the build stream on success (errors still print).
+COMPOSE_E2E := "docker compose --progress quiet -f docker-compose.yml -f docker-compose.e2e.yml"
+# Strip libtest per-binary boilerplate ("running N tests" / blanks / ok lines).
+# sed (unlike grep -v) always exits 0, so pipefail still yields cargo's status;
+# FAILED results, panics and failures lists pass through untouched.
+QUIET_TEST := "sed -E '/^running [0-9]+ tests$/d; /^$/d; /^test result: ok[.]/d'"
 
 # Default: list available recipes.
 default:
     @just --list
+
+# Guardrail for the quiet-on-success contract above: fail if an agent-facing
+# command appears without its quiet flag. Exempt a line by appending
+# `# quiet-audit: allow`. Extend the pattern list when adopting new tooling.
+quiet-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    fail=0
+    audit() { # <regex over justfile lines> <required token>
+        local hit n line
+        while IFS= read -r hit; do
+            n="${hit%%:*}"; line="${hit#*:}"
+            if [[ "$line" == *"quiet-audit: allow"* ]]; then continue; fi
+            if [[ "$line" != *"$2"* ]]; then
+                echo "quiet-audit: justfile:$n missing '$2': ${line##\# }" >&2
+                fail=1
+            fi
+        done < <(grep -nE "$1" justfile | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v "audit '" || true)
+    }
+    audit 'cargo (test|clippy|run|build)'  '--quiet'
+    audit 'npm ci'                         '--silent'
+    audit 'npm run'                        '--silent'
+    audit 'npx playwright install'         '/dev/null'
+    audit 'npx playwright test'            '--reporter=dot'
+    audit 'COMPOSE_E2E :='                 '--progress quiet'
+    audit 'up --build'                     'COMPOSE_E2E'
+    if [ "$fail" = 1 ]; then
+        echo "quiet-audit: FAILED — add the quiet flag, or '# quiet-audit: allow' if genuinely interactive" >&2
+        exit 1
+    fi
+    echo "quiet-audit: OK"
 
 # Auto-fix what CI checks: formatting, clippy, and frontend lint.
 fix:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "== backend: fmt ==";   cargo fmt --all
-    echo "== backend: clippy =="; cargo clippy --fix --allow-dirty --all-targets --all-features
-    echo "== frontend: lint =="; ( cd frontend && npm run lint -- --fix )
+    echo "== backend: clippy =="; cargo clippy --fix --allow-dirty --all-targets --all-features --quiet
+    echo "== frontend: lint =="; ( cd frontend && npm run lint --silent -- --fix )
 
 # Run the same checks CI runs, locally. Fails fast on the first failing step.
 ci:
     #!/usr/bin/env bash
     set -euo pipefail
+    # cargo's --quiet hides build progress AND collapses passing tests to dots
+    # (it forwards the flag to libtest — don't pass `-- --quiet` too). Failures
+    # still print in full.
     echo "== backend: fmt ==";   cargo fmt --all -- --check
-    echo "== backend: clippy =="; cargo clippy --all-targets --all-features -- -D warnings
-    echo "== backend: test ==";  cargo test --all
-    echo "== backend: test (e2e feature) =="; cargo test -p castify-api --features e2e -- --test-threads=1
-    echo "== frontend: install =="; ( cd frontend && npm ci )
-    echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck )
-    echo "== frontend: lint =="; ( cd frontend && npm run lint )
-    echo "== frontend: test =="; ( cd frontend && npm run test )
-    echo "== frontend: build =="; ( cd frontend && npm run build )
+    echo "== backend: clippy =="; cargo clippy --all-targets --all-features --quiet -- -D warnings
+    echo "== backend: test ==";  cargo test --all --quiet 2>&1 | {{QUIET_TEST}}
+    echo "== backend: test (e2e feature) =="; cargo test -p castify-api --features e2e --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
+    echo "== frontend: install =="; ( cd frontend && npm ci --silent --no-fund --no-audit )
+    echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck --silent )
+    echo "== frontend: lint =="; ( cd frontend && npm run lint --silent )
+    echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
+    echo "== frontend: build =="; ( cd frontend && npm run build --silent -- --logLevel error )
 
 # Run all tests reliably in one go, single-threaded backend (per deviation #18)
 # plus frontend type/lint/test. Use as a pre-manual-testing baseline.
 preflight:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "== backend: test (single-threaded) =="; cargo test -p castify-api -- --test-threads=1
-    echo "== backend: test (e2e feature, single-threaded) =="; cargo test -p castify-api --features e2e -- --test-threads=1
-    echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck )
-    echo "== frontend: lint =="; ( cd frontend && npm run lint )
-    echo "== frontend: test =="; ( cd frontend && npm run test )
+    echo "== backend: test (single-threaded) =="; cargo test -p castify-api --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
+    echo "== backend: test (e2e feature, single-threaded) =="; cargo test -p castify-api --features e2e --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
+    echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck --silent )
+    echo "== frontend: lint =="; ( cd frontend && npm run lint --silent )
+    echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
 
 # Run all tests: backend (Rust) and frontend (Vitest).
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "== backend: test ==";  cargo test --all
-    echo "== frontend: test =="; ( cd frontend && npm run test )
+    echo "== backend: test ==";  cargo test --all --quiet 2>&1 | {{QUIET_TEST}}
+    echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
 
 # Run the Rust API in the foreground (backend on 127.0.0.1:8427 by default).
 api:
-    cargo run -p castify-api
+    cargo run -p castify-api # quiet-audit: allow (interactive dev server)
 
 # Like `api`, named for the split-terminal Vite dev workflow (pair with `dev-web`).
 dev-api:
-    cargo run -p castify-api
+    cargo run -p castify-api # quiet-audit: allow (interactive dev server)
 
 # Run the Vite dev server in the foreground (frontend on http://localhost:5173,
 # proxies /api to the backend declared by CASTIFY_BACKEND_URL, default 127.0.0.1:8427).
 web:
-    cd frontend && npm run dev
+    cd frontend && npm run dev # quiet-audit: allow (interactive dev server)
 
 # Paired with `dev-api`: same as `web`, named for the split-terminal dev flow.
 dev-web:
-    cd frontend && npm run dev
+    cd frontend && npm run dev # quiet-audit: allow (interactive dev server)
 
 # E2e smoke test: cold-boot the Docker stack, run Playwright, tear down.
 # Pass CASTIFY_E2E_REUSE=1 to keep the stack running after tests (for debugging).
@@ -88,13 +133,14 @@ e2e:
     trap cleanup EXIT
 
     echo "== e2e: install deps =="
-    ( cd e2e && npm ci )
+    ( cd e2e && npm ci --silent --no-fund --no-audit )
     echo "== e2e: install chromium =="
     # --with-deps installs system libraries (libnss3, etc.) via sudo.
-    # Fall back to browser-only if sudo is unavailable.
-    if ! ( cd e2e && npx playwright install --with-deps chromium ); then
+    # Fall back to browser-only if sudo is unavailable. stdout is redirected:
+    # download progress is pure token cost; errors land on stderr.
+    if ! ( cd e2e && npx playwright install --with-deps chromium >/dev/null ); then
         echo "note: --with-deps failed (no sudo?); installing browser only" >&2
-        ( cd e2e && npx playwright install chromium )
+        ( cd e2e && npx playwright install chromium >/dev/null )
     fi
 
     echo "== docker: cold boot (fresh volume, e2e build) =="
@@ -117,7 +163,7 @@ e2e:
     echo "stack healthy"
 
     echo "== playwright: running e2e tests =="
-    ( cd e2e && npx playwright test )
+    ( cd e2e && npx playwright test --reporter=dot )
 
 # --- Performance benchmark (T13) ---
 
@@ -188,14 +234,14 @@ bench:
 # Seed 10K benchmark videos into CASTIFY_DATA_DIR (assumes API is already
 # running and POST /api/setup has been called).
 bench-seed:
-    cargo run -p castify-bench --bin bench-seed
+    cargo run -p castify-bench --bin bench-seed --quiet
 
 # Run HTTP latency benchmark against a running API. Requires BENCH_SESSION
 # (the castify_session cookie value).
 bench-run:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run -p castify-bench --bin bench-run -- \
+    cargo run -p castify-bench --bin bench-run --quiet -- \
         --session "${BENCH_SESSION:?BENCH_SESSION is required (castify_session cookie)}" \
         --base-url "${CASTIFY_BENCH_URL:-http://localhost:8427}"
 
@@ -290,7 +336,7 @@ dev:
         ( cargo watch -i frontend -x "run -p castify-api" ) &
     else
         echo "note: cargo-watch not installed; backend won't auto-reload. 'cargo install cargo-watch' to enable." >&2
-        ( cargo run -p castify-api ) &
+        ( cargo run -p castify-api ) & # quiet-audit: allow (interactive dev server)
     fi
     if ! command -v npm >/dev/null 2>&1; then
         echo "error: npm is required to run the frontend" >&2
@@ -318,7 +364,7 @@ dev:
     else
         printf 'note: curl not found; skipping backend readiness gate\n' >&2
     fi
-    ( cd frontend && npm run dev ) &
+    ( cd frontend && npm run dev ) & # quiet-audit: allow (interactive dev server)
     wait
 
 # --- R2 media upload (rclone; see docs/deploy-do-r2.md § Uploading media) ---
