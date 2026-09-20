@@ -21,6 +21,36 @@
         }
       })();
     </script>
+    <script>
+      // Legacy TV dispatch (docs/specs/legacy-tv-player/): append the ES5
+      // legacy player when this browser cannot run the modern bundle.
+      // GOTCHA: the double probe — `new Function("return ({}).a?.b")`
+      // catches engines below the bundle's syntax floor (optional chaining,
+      // Chrome < 80); `"noModule" in HTMLScriptElement.prototype` is the
+      // module floor (Chrome < 61). Either failure means the modern bundle
+      // cannot run, so the legacy script takes over. This block must itself
+      // stay ES5 — the oldest target has to parse the dispatcher. ?legacy=1
+      // forces the legacy path for dev/e2e in modern browsers.
+      (function () {
+        var legacy = false;
+        try {
+          new Function("return ({}).a?.b");
+        } catch (e) {
+          legacy = true;
+        }
+        if (!("noModule" in HTMLScriptElement.prototype)) {
+          legacy = true;
+        }
+        if (window.location.search.indexOf("legacy=1") !== -1) {
+          legacy = true;
+        }
+        if (legacy) {
+          var s = document.createElement("script");
+          s.src = "/tv/legacy.js";
+          document.head.appendChild(s);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
