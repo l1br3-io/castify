@@ -8,8 +8,8 @@ use tracing::Level;
 
 use crate::middleware::{auth_middleware, csrf_middleware};
 use crate::routes::{
-    collections, connections, csrf, files, folders, health, session, settings, setup, share,
-    shares, videos,
+    collections, connections, csrf, files, folders, health, library_folders, session, settings,
+    setup, share, shares, videos,
 };
 use crate::spa::spa_handler;
 use crate::state::AppState;
@@ -107,6 +107,26 @@ pub fn build_app(state: AppState) -> Router {
         .route(
             "/api/folders/contents",
             axum::routing::get(folders::contents),
+        )
+        .route(
+            "/api/library-folders/tree",
+            axum::routing::get(library_folders::tree),
+        )
+        .route(
+            "/api/library-folders",
+            axum::routing::post(library_folders::create),
+        )
+        .route(
+            "/api/library-folders/items",
+            axum::routing::patch(library_folders::move_items),
+        )
+        .route(
+            "/api/library-folders/contents",
+            axum::routing::get(library_folders::contents),
+        )
+        .route(
+            "/api/library-folders/{folder_id}",
+            axum::routing::patch(library_folders::update).delete(library_folders::delete),
         )
         .route(
             "/api/collections",

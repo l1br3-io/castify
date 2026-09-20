@@ -41,6 +41,8 @@ pub enum ApiError {
     Catalog(#[from] castify_catalog::CatalogError),
     #[error("share error: {0}")]
     Shares(#[from] crate::shares::ShareError),
+    #[error("library folder error: {0}")]
+    LibraryFolders(#[from] crate::library_folders::LibraryFolderError),
     #[error("provider error: {0}")]
     Provider(#[from] castify_catalog::ProviderError),
     /// The provider's refresh token has expired or been revoked
@@ -155,6 +157,19 @@ impl IntoResponse for ApiError {
                 // call, so an error surfacing from the share subsystem is
                 // infrastructure (DB, crypto) — opaque 500.
                 tracing::error!(error = ?err, "share subsystem error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                    None,
+                    None,
+                    None,
+                )
+            }
+            ApiError::LibraryFolders(err) => {
+                // Same layering as Shares: route-level validation and
+                // guard outcomes never reach this arm — only
+                // infrastructure does. Opaque 500.
+                tracing::error!(error = ?err, "library folder subsystem error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal error".to_string(),

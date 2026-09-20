@@ -4,6 +4,7 @@ pub mod csrf;
 pub mod files;
 pub mod folders;
 pub mod health;
+pub mod library_folders;
 pub mod session;
 pub mod settings;
 pub mod setup;
