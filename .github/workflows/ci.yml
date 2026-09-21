@@ -27,19 +27,28 @@ jobs:
         run: |
           rustup show
           rustup component add rustfmt clippy
+      # Prebuilt binary in seconds; process-per-test runner (profiles in
+      # .config/nextest.toml).
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
-        run: cargo test --all
+        run: cargo nextest run --profile castify --workspace
       # The `e2e` feature gates the byte-serving mirror tests against the
-      # in-process mock providers (crates/api/src/e2e.rs) — `cargo test
-      # --all` runs default features only, so run them explicitly or they
-      # never execute in automation.
+      # in-process mock providers (crates/api/src/e2e.rs) — nextest's
+      # workspace run uses default features only, so run them explicitly or
+      # they never execute in automation.
       - name: Tests (e2e feature)
-        run: cargo test -p castify-api --features e2e -- --test-threads=1
+        run: cargo nextest run --profile castify -p castify-api --features e2e
+      # nextest skips doctests — keep libtest parity for them.
+      - name: Doctests
+        run: cargo test --doc --all --quiet
 
   frontend:
     name: Frontend (TypeScript)
