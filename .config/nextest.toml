@@ -1,0 +1,17 @@
+# cargo-nextest configuration (auto-discovered from the workspace root).
+# All runner policy lives here — justfile and CI reference the profile by
+# name (`--profile castify`) instead of carrying long flag strings.
+
+# Shared runner profile: parallel by default (process-per-test), quiet on
+# success, loud on failure.
+[profile.castify]
+# Retries are capped at 2 by policy: a test needing a 3rd retry is a bug to
+# fix, not a knob to turn (spec: never raise this to mask a reproducible
+# failure).
+retries = 2
+# Quiet-on-success contract: no per-test status lines on green runs.
+status-level = "none"
+# Final summary lists flaky outcomes (absorbed retries) — never silent.
+final-status-level = "flaky"
+# Failing tests print their output immediately and again in the final list.
+failure-output = "immediate-final"
