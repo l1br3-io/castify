@@ -210,170 +210,253 @@
 
 #castify-legacy .tv-landing {
   width: 100%;
-  max-width: 720px;
 }
 
+/* The browse list is the standalone's card grid without the grid:
+ * flex-wrap of fixed-width cards. GOTCHA: display:grid is Chromium 57+
+ * and gap is 84+ — fixed widths + margins stand in. 3 x 540px cards +
+ * 3 x 36px margins = the 1728px content column (1920 - 2x96) exactly,
+ * so three cards fill a row with the trailing margin spent invisibly. */
 #castify-legacy .tv-items {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-wrap: wrap;
+  flex-wrap: wrap;
 }
 
 #castify-legacy .tv-item {
-  margin: 0 0 8px 0;
+  margin: 0;
 }
 
-/* One anchor per row wraps the thumbnail AND the name — click parity by
- * construction (FR-3.1). */
+/* Folders stack full-width above the card row (standalone's folder
+ * block, 16px apart); cards flow 3-wide, 36px apart — both via margins. */
+#castify-legacy .tv-item-folder {
+  width: 100%;
+  margin: 0 0 16px 0;
+}
+
+#castify-legacy .tv-item-card {
+  width: 540px;
+  margin: 0 36px 36px 0;
+}
+
+/* The card (standalone .card.ml-card): 2px divider border, 7px radius,
+ * transparent background; the anchor carries the hooks, the card the
+ * skin. The tv-focus treatment lives at the bottom of this file. */
 #castify-legacy .tv-item-link {
-  display: -webkit-flex;
-  display: flex;
-  -webkit-align-items: center;
-  align-items: center;
-  background: #171b24;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
-  padding: 8px;
+  display: block;
   text-decoration: none;
-  color: #e7e9ee;
+  color: #201f1d;
 }
 
+#castify-legacy .tv-card {
+  border: 2px solid rgba(32, 31, 29, 0.16);
+  border-radius: 7px;
+  background: transparent;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* The plate (standalone .plate.ml-plate): striped surface, centered play
+ * icon, surface border + divider outline, sepia grade.
+ * GOTCHA: aspect-ratio is Chromium 88+ — the 16:9 height is precompiled
+ * from the plate's width (540 card - 2x2 card border = 536px; 536 x 9/16
+ * = 301px). */
+#castify-legacy .tv-plate {
+  position: relative;
+  height: 301px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: repeating-linear-gradient(135deg, #eae7e7 0 12px, #d7d3d3 12px 24px);
+  border: 6px solid #eae9e9;
+  outline: 1px solid rgba(32, 31, 29, 0.16);
+  /* GOTCHA: unprefixed filter is Chromium 53+ — the grade needs the
+   * -webkit- alias on the Tizen engine. Purely cosmetic: without it the
+   * plate still reads via stripes + border. */
+  -webkit-filter: sepia(0.22) saturate(0.82) contrast(1.05);
+}
+
+#castify-legacy .tv-plate .tv-play-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  -webkit-transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%);
+  color: rgba(32, 31, 29, 0.35);
+}
+
+/* The real thumbnail covers the plate frame when it loads (object-fit
+ * is Chromium 32+); a failed URL renders empty (alt=""), degrading to
+ * stripes + play icon — never a broken-image glyph. */
 #castify-legacy .tv-item-thumb {
-  width: 160px;
-  height: 90px;
-  border-radius: 4px;
-  background: #0c0e13;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
-  flex-shrink: 0;
-  -webkit-flex-shrink: 0;
+  color: transparent;
 }
 
-#castify-legacy .tv-item-body {
+#castify-legacy .tv-card-body {
   display: block;
-  min-width: 0;
-  margin-left: 12px;
+  padding: 20px 24px 24px;
 }
 
-#castify-legacy .tv-item-name {
+#castify-legacy .tv-card-body .tv-item-name {
   display: block;
-  font-size: 15px;
+  font-size: 26px;
   font-weight: 600;
   word-wrap: break-word;
 }
 
-#castify-legacy .tv-item-meta {
+#castify-legacy .tv-card-meta {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 19px;
+  color: rgba(32, 31, 29, 0.5);
+}
+
+/* Outline tag of the standalone's meta row (1px accent border, accent
+ * text). Static "Video" kind label — the share surface only lists
+ * videos. */
+#castify-legacy .tv-tag {
+  display: inline-block;
+  border: 1px solid #b68235;
+  border-radius: 3px;
+  color: #b68235;
+  font-size: 16px;
+  padding: 3px 10px;
+  margin-right: 10px;
+  white-space: nowrap;
+}
+
+#castify-legacy .tv-card-meta .tv-item-meta {
   display: block;
-  color: #9096a5;
-  font-size: 12px;
-  margin-top: 4px;
+  color: rgba(32, 31, 29, 0.5);
+  font-size: 19px;
+  margin: 0;
 }
 
 /* ── folder-first browse (legacy-tv-nav-search task 001) ──────────── */
 
-/* On a TV, focus is the cursor. The focused row carries a 4px amber
- * inset edge (box-shadow — no layout shift) plus an amber border; the
- * default thin ring is replaced by this treatment, never merely
- * removed. Amber stays reserved for focus and the current crumb. */
-#castify-legacy .tv-item-link:focus,
-#castify-legacy .tv-folder-link:focus {
+/* The tv-focus treatment (standalone .tv-focus): accent border, slight
+ * lift, 30% accent ring + md shadow — on :hover and :focus alike.
+ * GOTCHA: :focus-visible is Chromium 86+, banned; on a TV the remote's
+ * focus IS the cursor, so :focus is the honest signal. Cards are
+ * focused through their anchor (.tv-item-link), folders directly. */
+#castify-legacy .tv-folder-link:hover,
+#castify-legacy .tv-folder-link:focus,
+#castify-legacy .tv-item-link:hover .tv-card,
+#castify-legacy .tv-item-link:focus .tv-card {
   outline: none;
-  border-color: #f0a93a;
-  box-shadow: inset 4px 0 0 #f0a93a;
+  border-color: #b68235;
+  -webkit-transform: scale(1.02);
+  transform: scale(1.02);
+  box-shadow: 0 0 0 4px rgba(182, 130, 53, 0.3), 0 3px 10px rgba(45, 43, 43, 0.16);
 }
 
-/* The chevron warms with its row — part of the focused row, not a
- * second accent. */
-#castify-legacy .tv-folder-link:focus:after {
-  border-right-color: #f0a93a;
-  border-bottom-color: #f0a93a;
-}
-
-/* Ancestor crumbs: muted links; the current level is plain amber text
- * (never a link — it's where you are). Root level shows no trail. The
- * separator sits at border tone so the trail reads as two voices:
- * where you can go, and where you are. */
+/* Ancestor crumbs: muted links warming to accent-700 under the cursor;
+ * the current level is accent-700 600-weight (never a link — it's where
+ * you are). Root level shows no trail. Separators sit at 40% ink. */
 #castify-legacy .tv-crumbs {
-  margin: 0 0 16px 0;
-  font-size: 14px;
-  color: #9096a5;
+  margin: 0 0 28px 0;
+  font-size: 24px;
+  color: rgba(32, 31, 29, 0.65);
 }
 
 #castify-legacy .tv-crumbs .tv-crumb {
-  color: #9096a5;
+  color: rgba(32, 31, 29, 0.65);
   text-decoration: none;
+  border-radius: 2px;
+  padding: 2px 4px;
 }
 
+#castify-legacy .tv-crumbs .tv-crumb:hover,
 #castify-legacy .tv-crumbs .tv-crumb:focus {
   outline: none;
-  color: #e7e9ee;
-  text-decoration: underline;
+  background: rgba(182, 130, 53, 0.15);
+  color: #7d5411;
 }
 
 #castify-legacy .tv-crumbs .tv-crumb-sep {
   margin: 0 6px;
-  color: #2a3040;
+  color: rgba(32, 31, 29, 0.4);
 }
 
 #castify-legacy .tv-crumbs .tv-crumb-current {
-  color: #f0a93a;
+  color: #7d5411;
   font-weight: 600;
+  padding: 2px 4px;
 }
 
-/* The explicit Back control (folder levels + search mode): a bordered
- * pill sized for remote aim — the crumb trail names the place, this is
- * the way out. Focus follows the button shape: a 2px amber outline. */
+/* The explicit Back control (folder levels + search mode), in the
+ * standalone's .ml-back voice: accent-700 text on paper, wash +
+ * underline under the cursor — no pill, no fill. */
 #castify-legacy .tv-back-nav {
   display: inline-block;
-  background: #171b24;
-  border: 1px solid #2a3040;
-  border-radius: 6px;
-  color: #e7e9ee;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 8px 16px;
+  color: #7d5411;
+  font-size: 24px;
+  padding: 6px 4px;
   margin: 0 0 12px 0;
+  border-radius: 2px;
   text-decoration: none;
 }
 
+#castify-legacy .tv-back-nav:hover,
 #castify-legacy .tv-back-nav:focus {
-  outline: 2px solid #f0a93a;
+  outline: none;
+  background: rgba(182, 130, 53, 0.15);
+  text-decoration: underline;
 }
 
-/* Folder rows read differently from video rows: no thumbnail, name
- * left, muted direct counts right, and a chevron drawn with borders
- * (no images, no icon fonts — Tizen-safe). Min-height matches the video
- * row (90px thumb + 2×8px padding) so the scan line stays level; the
- * extra left padding gives the amber focus edge room to breathe. */
+/* Folder rows read like the standalone's .ml-folder: borders instead of
+ * filled panels, accent folder icon left (gap banned — margin), name at
+ * 26px/600, muted direct counts right, border-drawn chevron kept. */
 #castify-legacy .tv-folder-link {
   display: -webkit-flex;
   display: flex;
   -webkit-align-items: center;
   align-items: center;
-  background: #171b24;
-  border: 1px solid #2a3040;
-  border-radius: 8px;
-  padding: 8px 12px;
-  min-height: 106px;
+  background: #f3f2f2;
+  border: 2px solid rgba(32, 31, 29, 0.16);
+  border-radius: 7px;
+  padding: 22px 28px;
   text-decoration: none;
-  color: #e7e9ee;
+  color: #201f1d;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+#castify-legacy .tv-folder-icon {
+  display: block;
+  -webkit-flex: none;
+  flex: none;
+  margin-right: 18px;
 }
 
 #castify-legacy .tv-folder-name {
-  font-size: 16px;
+  font-size: 26px;
   font-weight: 600;
   word-wrap: break-word;
   /* Absorb the free line so the chevron pins right even when a row has
    * no counts span ("Empty") to push it there. */
-  flex: 1 1 auto;
   -webkit-flex: 1 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 #castify-legacy .tv-folder-counts {
-  color: #9096a5;
-  font-size: 12px;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 20px;
   margin-left: auto;
-  padding-right: 24px;
   white-space: nowrap;
 }
 
@@ -381,24 +464,35 @@
   content: "";
   width: 10px;
   height: 10px;
-  border-right: 2px solid #9096a5;
-  border-bottom: 2px solid #9096a5;
+  margin-left: 24px;
+  border-right: 2px solid rgba(32, 31, 29, 0.4);
+  border-bottom: 2px solid rgba(32, 31, 29, 0.4);
+  -webkit-flex: none;
+  flex: none;
   -webkit-transform: rotate(-45deg);
   transform: rotate(-45deg);
 }
 
 #castify-legacy .tv-empty-level {
-  color: #9096a5;
-  font-size: 14px;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 24px;
   margin: 0;
+}
+
+/* Full-width hairline under the band/crumbs block (standalone .hr). */
+#castify-legacy .tv-hr {
+  height: 1px;
+  border: 0;
+  background: rgba(32, 31, 29, 0.16);
+  margin: 0 0 32px 0;
 }
 
 /* ── header band + search (legacy-tv-nav-search task 002) ─────────── */
 
-/* The signature band: title and search share one row — search is a
- * first-class citizen of the landing, not a bolt-on. The title flexes
- * and shrinks (min-width: 0 so long names wrap instead of pushing the
- * field out); the field keeps its width. */
+/* The signature band: 60px Cormorant title and the bordered search box
+ * in one row (standalone TV layout). The title flexes and shrinks
+ * (min-width: 0 so long names ellipsize instead of pushing the box
+ * out); the box keeps its 420x68 frame. */
 #castify-legacy .tv-header-band {
   display: -webkit-flex;
   display: flex;
@@ -406,27 +500,56 @@
   align-items: center;
   -webkit-justify-content: space-between;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin: 0 0 20px 0;
 }
 
 #castify-legacy .tv-header-band .tv-title {
+  font-size: 60px;
+  line-height: 1.12;
   -webkit-flex: 1 1 auto;
   flex: 1 1 auto;
   min-width: 0;
+  margin: 0 48px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The standalone's .input at TV scale: 420x68, 2px divider border,
+ * inline magnifier at 60% ink, borderless input inside. */
+#castify-legacy .tv-search-wrap {
+  display: -webkit-flex;
+  display: flex;
+  -webkit-align-items: center;
+  align-items: center;
+  width: 420px;
+  height: 68px;
+  -webkit-flex: none;
+  flex: none;
+  box-sizing: border-box;
+  border: 2px solid rgba(32, 31, 29, 0.16);
+  border-radius: 4px;
+  padding: 0 10px;
+}
+
+#castify-legacy .tv-search-wrap svg {
+  -webkit-flex: none;
+  flex: none;
+  margin-right: 14px;
+  opacity: 0.6;
 }
 
 #castify-legacy .tv-search {
-  background: #171b24;
-  border: 1px solid #2a3040;
-  border-radius: 6px;
-  color: #e7e9ee;
-  font-size: 16px;
-  padding: 10px 12px;
-  width: 240px;
-  box-sizing: border-box;
-  margin-left: 24px;
-  flex-shrink: 0;
-  -webkit-flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: #201f1d;
+  font-family: inherit;
+  font-size: 22px;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
   -webkit-appearance: none;
   appearance: none;
 }
@@ -441,9 +564,11 @@
   display: none;
 }
 
+/* Focus feedback lives on the input itself (Chromium 38 has no :has to
+ * light the parent): an inset accent band hugging the wrap's border. */
 #castify-legacy .tv-search:focus {
   outline: none;
-  border-color: #f0a93a;
+  box-shadow: inset 0 0 0 2px #b68235;
 }
 
 /* Search chrome: a quiet count header, and result rows that say where
@@ -464,23 +589,6 @@
 
 #castify-legacy .tv-clear {
   margin-top: 12px;
-}
-
-/* Below ~480px (a phone following a share link, not a TV) the band
- * stacks: title keeps its full measure, search drops to its own row. */
-@media (max-width: 480px) {
-  #castify-legacy .tv-header-band {
-    -webkit-flex-direction: column;
-    flex-direction: column;
-    -webkit-align-items: stretch;
-    align-items: stretch;
-  }
-
-  #castify-legacy .tv-search {
-    width: 100%;
-    margin-left: 0;
-    margin-top: 12px;
-  }
 }
 
 #castify-legacy .tv-unlock-form {

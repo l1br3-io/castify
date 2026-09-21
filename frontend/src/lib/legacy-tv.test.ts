@@ -1663,3 +1663,112 @@ describe("legacy tv classical canvas (classical task 001)", () => {
     expect(frame.style.height).toBe("540px");
   });
 });
+
+describe("legacy tv classical browse surfaces (classical task 002)", () => {
+  afterEach(resetLegacyDom);
+
+  /** Flat single-folder share at `path` (tok_cb): two videos, one folder. */
+  function stubBrowseShare(path: string): void {
+    window.history.pushState({}, "", path);
+    stubShareApi((fake) => {
+      fake.get("/api/share/tok_cb", () => ({
+        status: 200,
+        body: { title: "Classical browse", item_count: 2, locked: false, status: "active" },
+      }));
+      fake.get("/api/share/tok_cb/items", () => ({
+        status: 200,
+        body: {
+          folders: [shareFolder({ id: "f_cb", name: "Picks" })],
+          items: [shareItem({ id: "vid_cb", name: "Beach.mp4" })],
+        },
+      }));
+    });
+  }
+
+  async function renderLanding(): Promise<HTMLElement> {
+    loadLegacyScript();
+    const container = document.getElementById("castify-legacy");
+    await waitFor(() => {
+      expect(container?.querySelectorAll("a.tv-item-link, a.tv-folder-link").length).toBeGreaterThan(0);
+    });
+    return container as HTMLElement;
+  }
+
+  it("wraps the search input in .tv-search-wrap with the inline magnifier SVG", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    const wrap = container.querySelector(".tv-search-wrap");
+    expect(wrap).not.toBeNull();
+    const input = wrap?.querySelector("#tv-search");
+    expect(input?.getAttribute("type")).toBe("search");
+    expect(input?.getAttribute("placeholder")).toBe("Search videos");
+    expect(wrap?.querySelector("svg")).not.toBeNull();
+  });
+
+  it("folder rows carry the accent folder SVG before the name, full-width li", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    const link = container.querySelector("a.tv-folder-link") as HTMLElement;
+    const svg = link.querySelector("svg");
+    const name = link.querySelector(".tv-folder-name");
+    expect(svg).not.toBeNull();
+    expect(name).not.toBeNull();
+    // The icon is drawn before the name, inside the same anchor.
+    expect(svg!.compareDocumentPosition(name as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Full-width row marker: folders stack, cards flow in the wrapped row.
+    expect(link.closest("li")?.classList.contains("tv-item-folder")).toBe(true);
+  });
+
+  it("video rows render the card + plate structure with the Video tag", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    const link = container.querySelector("a.tv-item-link") as HTMLElement;
+    const card = link.querySelector(".tv-card");
+    expect(card).not.toBeNull();
+
+    const plate = card?.querySelector(".tv-plate");
+    expect(plate).not.toBeNull();
+    // Play icon under the real thumbnail: svg first, img covers it when loaded.
+    expect(plate?.querySelector("svg")).not.toBeNull();
+    const thumb = plate?.querySelector("img.tv-item-thumb");
+    expect(thumb?.getAttribute("src")).toBe("/api/share/tok_cb/videos/vid_cb/thumbnail");
+
+    const body = card?.querySelector(".tv-card-body");
+    expect(body?.querySelector(".tv-item-name")?.textContent).toBe("Beach.mp4");
+    expect(body?.querySelector(".tv-tag")?.textContent).toBe("Video");
+    expect(body?.querySelector(".tv-item-meta")?.textContent).toContain("12:34");
+    // One anchor per video still holds: plate and name share the link.
+    expect(thumb?.closest("a")?.getAttribute("href")).toBe("/share/tok_cb/watch/vid_cb");
+    expect(body?.querySelector(".tv-item-name")?.closest("a")?.getAttribute("href")).toBe(
+      "/share/tok_cb/watch/vid_cb",
+    );
+  });
+
+  it("renders the hairline divider below the band/crumbs block", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    expect(container.querySelector(".tv-hr")).not.toBeNull();
+  });
+
+  it("classical CSS: plate grade, focus treatment on hover AND focus, no :focus-visible", () => {
+    const css = readFileSync(legacyCssPath, "utf8");
+
+    // Plate: stripes + surface border + divider outline + the -webkit- grade.
+    expect(css).toMatch(/repeating-linear-gradient\(135deg,\s*#eae7e7\s+0\s+12px,\s*#d7d3d3\s+12px\s+24px\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-plate\s*\{[^}]*-webkit-filter:\s*sepia\(0\.22\)\s*saturate\(0\.82\)\s*contrast\(1\.05\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-plate\s*\{[^}]*border:\s*6px solid #eae9e9/);
+    expect(css).toMatch(/#castify-legacy \.tv-plate\s*\{[^}]*outline:\s*1px solid rgba\(32, 31, 29, 0\.16\)/);
+
+    // tv-focus treatment: accent border + scale + 30% accent ring, on
+    // :hover and :focus alike (:focus-visible is Chromium 86+).
+    const treatment = /[^}]*border-color:\s*#b68235[^}]*scale\(1\.02\)[^}]*rgba\(182, 130, 53, 0\.3\)/;
+    expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:hover[^{]*\\{${treatment.source}`));
+    expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:focus[^{]*\\{${treatment.source}`));
+    // Comments may document the ban; the rules themselves may not use it.
+    expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/:focus-visible/);
+  });
+});

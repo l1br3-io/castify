@@ -58,6 +58,18 @@
       .replace(/"/g, "&quot;");
   }
 
+  /* ── inline SVGs (classical task 002) ──────────────────────────────── */
+
+  /* Lifted from the standalone TV layout. Inline SVG is Chromium-38-safe
+   * (no icon fonts, no external assets); strokes/fills are precompiled —
+   * the accent hex replaces the standalone's var(--color-accent). */
+  var SEARCH_ICON =
+    '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 21-4.34-4.34"></path><circle cx="11" cy="11" r="8"></circle></svg>';
+  var FOLDER_ICON =
+    '<svg class="tv-folder-icon" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#b68235" stroke-width="1.7"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path></svg>';
+  var PLAY_ICON =
+    '<svg class="tv-play-icon" width="52" height="52" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg>';
+
   /*
    * XHR GET returning parsed JSON. The unlock cookie is HttpOnly with
    * Path=/api/share/ — same-origin XHR attaches it automatically, so no
@@ -641,8 +653,9 @@
   }
 
   /* Folder row: one anchor (click parity like video rows), no thumbnail —
-   * name left, direct counts right, CSS-drawn chevron. Counts are direct
-   * children only, parts shown only when non-zero. */
+   * accent folder icon left, name, direct counts right, CSS-drawn
+   * chevron. Counts are direct children only, parts shown only when
+   * non-zero. Full-width li (tv-item-folder) stacks above the card row. */
   function renderFolderRow(state, folder) {
     var counts = [];
     var videoCount = itemsAt(state.tree, folder.id).length;
@@ -654,9 +667,10 @@
       counts.push(subfolderCount + " folders");
     }
     return (
-      '<li class="tv-item">' +
+      '<li class="tv-item tv-item-folder">' +
       '<a class="tv-folder-link" href="' + escapeHtml(buildShareUrl(state.token, folder.id)) +
       '" data-folder="' + escapeHtml(folder.id) + '">' +
+      FOLDER_ICON +
       '<span class="tv-folder-name">' + escapeHtml(folder.name) + "</span>" +
       (counts.length ? '<span class="tv-folder-counts">' + counts.join(" &#183; ") + "</span>" : "") +
       "</a>" +
@@ -664,6 +678,14 @@
     );
   }
 
+  /*
+   * Video card (classical task 002): the anchor keeps every hook
+   * (tv-item-link, tv-item-thumb, tv-item-name, tv-item-meta,
+   * tv-item-path); the card/plate wrappers are additive. The plate draws
+   * stripes + a centered play icon; the real <img> covers it once
+   * loaded, so a failed thumbnail degrades to the icon instead of a
+   * broken-image glyph.
+   */
   function renderItemRow(state, item, folderId, q) {
     var videoPath = "/api/share/" + state.token + "/videos/" + encodeURIComponent(item.id);
     var meta = [];
@@ -679,14 +701,22 @@
      * "in" that place, so the label would be noise. */
     var path = q ? folderPath(state.tree, item.folder_id || "") : "";
     return (
-      '<li class="tv-item">' +
+      '<li class="tv-item tv-item-card">' +
       '<a class="tv-item-link" href="' + escapeHtml(buildWatchUrl(state.token, item.id, folderId, q)) + '">' +
+      '<div class="tv-card">' +
+      '<div class="tv-plate">' +
+      PLAY_ICON +
       '<img class="tv-item-thumb" src="' + escapeHtml(videoPath + "/thumbnail") + '" alt="">' +
-      '<span class="tv-item-body">' +
+      "</div>" +
+      '<div class="tv-card-body">' +
       '<span class="tv-item-name">' + escapeHtml(item.name) + "</span>" +
       (path ? '<span class="tv-item-path">' + escapeHtml(path) + "</span>" : "") +
+      '<span class="tv-card-meta">' +
+      '<span class="tv-tag">Video</span>' +
       (meta.length ? '<span class="tv-item-meta">' + meta.join(" &#183; ") + "</span>" : "") +
       "</span>" +
+      "</div>" +
+      "</div>" +
       "</a>" +
       "</li>"
     );
@@ -771,14 +801,19 @@
   }
 
   /* The signature band: title and search share one row — search is a
-   * first-class citizen of the landing, not a bolt-on. */
+   * first-class citizen of the landing, not a bolt-on. The input rides
+   * inside .tv-search-wrap (the standalone's bordered .input) next to
+   * the inline magnifier. */
   function renderHeaderBand(state, q) {
     return (
       '<div class="tv-header-band">' +
       '<h1 class="tv-title">' + escapeHtml(state.title) + "</h1>" +
+      '<div class="tv-search-wrap">' +
+      SEARCH_ICON +
       '<input type="search" class="tv-search" id="tv-search" placeholder="Search videos" value="' +
       escapeHtml(q || "") +
       '">' +
+      "</div>" +
       "</div>"
     );
   }
@@ -792,7 +827,8 @@
       '<div class="tv-landing">' +
       renderHeaderBand(state, "") +
       (folderId ? renderBackNav(buildShareUrl(state.token, parentFolderId(state.tree, folderId))) : "") +
-      renderCrumbs(state, folderId);
+      renderCrumbs(state, folderId) +
+      '<div class="tv-hr"></div>';
     if (!folders.length && !items.length) {
       html += '<p class="tv-empty-level">Nothing in this folder.</p>';
       html += "</div>";
@@ -823,7 +859,8 @@
       '<div class="tv-landing">' +
       renderHeaderBand(state, query) +
       renderBackNav(buildShareUrl(state.token, currentFolderId(state.tree), "")) +
-      '<p class="tv-results-count">' + total + (total === 1 ? " result" : " results") + "</p>";
+      '<p class="tv-results-count">' + total + (total === 1 ? " result" : " results") + "</p>" +
+      '<div class="tv-hr"></div>';
     if (!total) {
       html += '<p class="tv-empty-level">No videos match.</p>' +
         '<button type="button" class="tv-button tv-clear" id="tv-clear-search">Clear search</button>';
