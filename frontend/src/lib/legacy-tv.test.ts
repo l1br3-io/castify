@@ -147,6 +147,15 @@ function stubCanPlay(reply: "probably" | "maybe" | ""): void {
   vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue(reply);
 }
 
+/**
+ * jsdom logs "Not implemented: HTMLMediaElement.prototype.load" when the
+ * CDN-expiry recovery path reloads the element. The tests assert on the
+ * src attribute, not on load() side effects — stub it as a no-op.
+ */
+function stubMediaLoad(): void {
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+}
+
 /** A share item as the items endpoint returns it (flattened summary). */
 function shareItem(
   overrides: Partial<VideoSummaryDto> & { folder_id?: string | null } = {},
@@ -717,6 +726,7 @@ describe("legacy tv watch edge states (task 005)", () => {
       fake.get("/api/share/tok_w8/videos/vid_1/subtitles", () => ({ status: 200, body: [] }));
     });
     stubCanPlay("probably");
+    stubMediaLoad();
 
     loadLegacyScript();
 

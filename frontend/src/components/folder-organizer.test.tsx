@@ -749,7 +749,10 @@ describe("FolderOrganizer curated pane", () => {
       await screen.findByText(/Items in it return to Unfiled and its subfolders move to the/i),
     ).toBeInTheDocument();
 
-    vi.stubGlobal("fetch", vi.fn(() => new Response(null, { status: 204 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(mutationFetch(() => new Response(null, { status: 204 }))),
+    );
     fireEvent.click(
       screen.getByRole("dialog", { name: 'Delete "Day 1"?' }).querySelector(
         'button:last-child',
@@ -822,9 +825,7 @@ describe("FolderOrganizer curated pane", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Trip" })).toBeEnabled();
 
-    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
     vi.stubGlobal("fetch", fetchSpy);
     fireEvent.click(screen.getByRole("button", { name: "Trip" }));
 
@@ -891,9 +892,7 @@ describe("FolderOrganizer curated pane", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Move to folder" }));
     await screen.findByRole("dialog", { name: "Move to folder" });
 
-    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(null, { status: 204 }),
-    );
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
     vi.stubGlobal("fetch", fetchSpy);
     fireEvent.click(screen.getByRole("button", { name: "Unfiled" }));
 

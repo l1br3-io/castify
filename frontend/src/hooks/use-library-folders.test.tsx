@@ -73,9 +73,13 @@ describe("mutation invalidation", () => {
 
   it("a batch move invalidates tree + active contents queries", async () => {
     const { wrapper, fetchSpy } = harness(["/"]);
-    fetchSpy.mockImplementation((input: RequestInfo | URL) =>
-      String(input).includes("/tree") ? jsonResponse(TREE) : jsonResponse(EMPTY_PAGE),
-    );
+    // Method-aware: reads answer faithful payloads, the PATCH answers
+    // 204. A blanket 204 starves the post-mutation refetch — the queries
+    // resolve `undefined` data (TanStack error).
+    fetchSpy.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PATCH") return new Response(null, { status: 204 });
+      return String(input).includes("/tree") ? jsonResponse(TREE) : jsonResponse(EMPTY_PAGE);
+    });
     const tree = renderHook(() => useLibraryFolderTree(), { wrapper });
     const contents = renderHook(
       () => useLibraryFolderContents({ folder_id: "f1", page: 1, limit: 50 }),
@@ -85,15 +89,11 @@ describe("mutation invalidation", () => {
     await waitFor(() => expect(contents.result.current.data?.total).toBe(0));
     expect(fetchSpy).toHaveBeenCalledTimes(2);
 
-    fetchSpy.mockImplementation(() => new Response(null, { status: 204 }));
     const move = renderHook(() => useMoveLibraryItems(), { wrapper });
     await act(() =>
       move.result.current.mutateAsync({ items: [{ kind: "video", id: "v1" }], folderId: "f1" }),
     );
 
-    fetchSpy.mockImplementation((input: RequestInfo | URL) =>
-      String(input).includes("/tree") ? jsonResponse(TREE) : jsonResponse(EMPTY_PAGE),
-    );
     await waitFor(() => {
       const reads = fetchSpy.mock.calls
         .map((c) => String(c[0]))
