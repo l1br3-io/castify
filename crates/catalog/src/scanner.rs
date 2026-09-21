@@ -1531,12 +1531,11 @@ mod tests {
     }
 
     async fn video_id_for(repo: &CatalogRepository, provider_file_id: &str) -> String {
-        let (id,): (String,) =
-            sqlx::query_as("SELECT id FROM videos WHERE provider_file_id = ?")
-                .bind(provider_file_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
+        let (id,): (String,) = sqlx::query_as("SELECT id FROM videos WHERE provider_file_id = ?")
+            .bind(provider_file_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
         id
     }
     // ── Library collections: durability re-link in the scan lifecycle ──
@@ -1621,7 +1620,9 @@ mod tests {
         let vid2 = video_id_for(&repo, "key-2").await;
         assert_ne!(vid1, vid2);
         assert_eq!(
-            repo.fetch_collection_member_ids(&collection.id).await.unwrap(),
+            repo.fetch_collection_member_ids(&collection.id)
+                .await
+                .unwrap(),
             vec![vid2],
             "membership must follow the new identity"
         );

@@ -63,7 +63,9 @@ use crate::auth::resolve_owner_id;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::validate_password;
 use crate::shares::token::{generate_share_token, hash_share_token};
-use crate::shares::{FolderInvalid, FolderWriteError, NewShare, RemovedItem, ShareError, ShareFolderRow, ShareRow};
+use crate::shares::{
+    FolderInvalid, FolderWriteError, NewShare, RemovedItem, ShareError, ShareFolderRow, ShareRow,
+};
 use crate::state::AppState;
 
 /// Fills the NOT NULL `title` column when the owner didn't name the share.
@@ -201,7 +203,10 @@ pub async fn share_items_payload(
     // bucket inherits its per-scope curation order.
     let mut by_folder: HashMap<Option<&str>, Vec<&crate::shares::ShareItemRow>> = HashMap::new();
     for row in &rows {
-        by_folder.entry(row.folder_id.as_deref()).or_default().push(row);
+        by_folder
+            .entry(row.folder_id.as_deref())
+            .or_default()
+            .push(row);
     }
     let mut ordered: Vec<&crate::shares::ShareItemRow> =
         by_folder.remove(&None).unwrap_or_default();
@@ -238,17 +243,17 @@ pub async fn share_items_payload(
 /// management list, so naming it leaks nothing and explains why
 /// nothing is editable). [`replace_items`] inlines the same two steps;
 /// these handlers share the helper because there are five of them.
-async fn require_active_share(
-    state: &AppState,
-    owner_id: &Uuid,
-    id: &str,
-) -> ApiResult<ShareRow> {
+async fn require_active_share(state: &AppState, owner_id: &Uuid, id: &str) -> ApiResult<ShareRow> {
     let row = state
         .share_repository()
         .fetch_owned(&owner_id.to_string(), id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    let status = derive_status(row.revoked_at.as_deref(), row.expires_at.as_deref(), Utc::now());
+    let status = derive_status(
+        row.revoked_at.as_deref(),
+        row.expires_at.as_deref(),
+        Utc::now(),
+    );
     if status != ShareStatus::Active {
         return Err(ApiError::Conflict(format!("share is {}", status.as_str())));
     }

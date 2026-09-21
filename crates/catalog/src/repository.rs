@@ -2310,12 +2310,10 @@ impl CatalogRepository {
         &self,
         id: &str,
     ) -> CatalogResult<Option<crate::model::Collection>> {
-        let row = sqlx::query(
-            "SELECT id, name, kind, created_at FROM collections WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query("SELECT id, name, kind, created_at FROM collections WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
         Ok(row.map(|row| {
             let kind_str: String = row.get("kind");
             crate::model::Collection {
@@ -2414,12 +2412,13 @@ impl CatalogRepository {
         collection_id: &str,
         video_id: &str,
     ) -> CatalogResult<Option<()>> {
-        let next: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(position) + 1, 0) FROM collection_items \
-                 WHERE collection_id = ?")
-                .bind(collection_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(position) + 1, 0) FROM collection_items \
+                 WHERE collection_id = ?",
+        )
+        .bind(collection_id)
+        .fetch_one(&self.pool)
+        .await?;
         let result = sqlx::query(
             "INSERT INTO collection_items (collection_id, video_id, position) VALUES (?, ?, ?)",
         )
@@ -2442,13 +2441,12 @@ impl CatalogRepository {
         collection_id: &str,
         video_id: &str,
     ) -> CatalogResult<bool> {
-        let deleted = sqlx::query(
-            "DELETE FROM collection_items WHERE collection_id = ? AND video_id = ?",
-        )
-        .bind(collection_id)
-        .bind(video_id)
-        .execute(&self.pool)
-        .await?;
+        let deleted =
+            sqlx::query("DELETE FROM collection_items WHERE collection_id = ? AND video_id = ?")
+                .bind(collection_id)
+                .bind(video_id)
+                .execute(&self.pool)
+                .await?;
         Ok(deleted.rows_affected() > 0)
     }
 
@@ -2481,7 +2479,10 @@ impl CatalogRepository {
     }
 
     /// Member video ids in curation order (positions ascending).
-    pub async fn fetch_collection_member_ids(&self, collection_id: &str) -> CatalogResult<Vec<String>> {
+    pub async fn fetch_collection_member_ids(
+        &self,
+        collection_id: &str,
+    ) -> CatalogResult<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
             "SELECT video_id FROM collection_items WHERE collection_id = ? \
              ORDER BY position ASC",
@@ -2550,20 +2551,18 @@ impl CatalogRepository {
                 // have NULL `castify_hash` — no content evidence, so a
                 // same-connection move is unprovable and skipped.
                 match castify_hash.as_deref() {
-                    Some(hash) => {
-                        sqlx::query_scalar::<_, String>(
-                            "SELECT id FROM videos \
+                    Some(hash) => sqlx::query_scalar::<_, String>(
+                        "SELECT id FROM videos \
                              WHERE connection_id = ? AND castify_hash = ? AND id != ? \
                              ORDER BY created_at DESC, id LIMIT 1",
-                        )
-                        .bind(connection_id)
-                        .bind(hash)
-                        .bind(&old_video_id)
-                        .fetch_optional(&self.pool)
-                        .await
-                        .ok()
-                        .flatten()
-                    }
+                    )
+                    .bind(connection_id)
+                    .bind(hash)
+                    .bind(&old_video_id)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .ok()
+                    .flatten(),
                     None => None,
                 }
             } else {
@@ -2587,20 +2586,18 @@ impl CatalogRepository {
                     // GOTCHA: NULL-hash rows have no content evidence;
                     // only the provider_file_id path above can save them.
                     None => match castify_hash.as_deref() {
-                        Some(hash) => {
-                            sqlx::query_scalar::<_, String>(
-                                "SELECT id FROM videos \
+                        Some(hash) => sqlx::query_scalar::<_, String>(
+                            "SELECT id FROM videos \
                                  WHERE connection_id = ? AND castify_hash = ? AND id != ? \
                                  ORDER BY created_at DESC, id LIMIT 1",
-                            )
-                            .bind(connection_id)
-                            .bind(hash)
-                            .bind(&old_video_id)
-                            .fetch_optional(&self.pool)
-                            .await
-                            .ok()
-                            .flatten()
-                        }
+                        )
+                        .bind(connection_id)
+                        .bind(hash)
+                        .bind(&old_video_id)
+                        .fetch_optional(&self.pool)
+                        .await
+                        .ok()
+                        .flatten(),
                         None => None,
                     },
                 }
@@ -2639,7 +2636,6 @@ impl CatalogRepository {
         }
         Ok(redirected)
     }
-
 }
 
 /// Probe statistics returned by `probe_stats()`.
@@ -4830,7 +4826,9 @@ mod tests {
             1
         );
         assert_eq!(
-            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            repo.fetch_collection_member_ids(&collection_id)
+                .await
+                .unwrap(),
             vec![vid2.clone()]
         );
 
@@ -4842,7 +4840,9 @@ mod tests {
             0
         );
         assert_eq!(
-            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            repo.fetch_collection_member_ids(&collection_id)
+                .await
+                .unwrap(),
             vec![vid2]
         );
     }
@@ -4864,7 +4864,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let vid1 = upsert_plain_video(&repo, &conn1.id, Provider::S3Compatible, "media/clip.mp4").await;
+        let vid1 =
+            upsert_plain_video(&repo, &conn1.id, Provider::S3Compatible, "media/clip.mp4").await;
         let collection_id = collection_with_member(&repo, &vid1).await;
 
         repo.disconnect(&conn1.id).await.unwrap();
@@ -4878,7 +4879,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let vid2 = upsert_plain_video(&repo, &conn2.id, Provider::S3Compatible, "media/clip.mp4").await;
+        let vid2 =
+            upsert_plain_video(&repo, &conn2.id, Provider::S3Compatible, "media/clip.mp4").await;
 
         assert_eq!(
             repo.relink_collection_items(
@@ -4891,7 +4893,9 @@ mod tests {
             1
         );
         assert_eq!(
-            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            repo.fetch_collection_member_ids(&collection_id)
+                .await
+                .unwrap(),
             vec![vid2]
         );
     }
@@ -4938,7 +4942,9 @@ mod tests {
             1
         );
         assert_eq!(
-            repo.fetch_collection_member_ids(&collection_id).await.unwrap(),
+            repo.fetch_collection_member_ids(&collection_id)
+                .await
+                .unwrap(),
             vec![vid3]
         );
     }
@@ -4963,8 +4969,14 @@ mod tests {
             .create_collection("Both", crate::model::CollectionKind::Manual)
             .await
             .unwrap();
-        repo.add_collection_item(&collection.id, &vid1).await.unwrap().unwrap();
-        repo.add_collection_item(&collection.id, &vid2).await.unwrap().unwrap();
+        repo.add_collection_item(&collection.id, &vid1)
+            .await
+            .unwrap()
+            .unwrap();
+        repo.add_collection_item(&collection.id, &vid2)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             repo.relink_collection_items(&conn, Provider::GoogleDrive, &seen(&["file-2"]))
@@ -4972,7 +4984,14 @@ mod tests {
                 .unwrap(),
             1
         );
-        let members = repo.fetch_collection_member_ids(&collection.id).await.unwrap();
-        assert_eq!(members, vec![vid2.clone()], "no duplicate edge, new row kept");
+        let members = repo
+            .fetch_collection_member_ids(&collection.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            members,
+            vec![vid2.clone()],
+            "no duplicate edge, new row kept"
+        );
     }
 }

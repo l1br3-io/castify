@@ -1259,7 +1259,10 @@ async fn migration_0015_kind_check_rejects_unknown_kind() {
     )
     .execute(&pool)
     .await;
-    assert!(bad_collection.is_err(), "kind = 'playlist' must be rejected");
+    assert!(
+        bad_collection.is_err(),
+        "kind = 'playlist' must be rejected"
+    );
 }
 
 /// Membership is a set relation: the same video twice in one collection
@@ -1355,7 +1358,10 @@ async fn migration_0015_cascades_remove_membership() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(remaining, 0, "membership should cascade with the collection");
+    assert_eq!(
+        remaining, 0,
+        "membership should cascade with the collection"
+    );
 }
 
 /// The purge: after migrating through 0016 the three suggestion staging
@@ -1397,19 +1403,19 @@ async fn migration_0016_drops_staging_tables_and_keeps_accepted_collections() {
     .await
     .unwrap();
 
-    let (name, kind): (String, String) = sqlx::query_as(
-        "SELECT name, kind FROM collections WHERE id = 'col-legacy'",
+    let (name, kind): (String, String) =
+        sqlx::query_as("SELECT name, kind FROM collections WHERE id = 'col-legacy'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(name, "Breaking Bad");
+    assert_eq!(kind, "show");
+
+    let members: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM collection_items WHERE collection_id = 'col-legacy'",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(name, "Breaking Bad");
-    assert_eq!(kind, "show");
-
-    let members: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM collection_items WHERE collection_id = 'col-legacy'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
     assert_eq!(members, 1, "accepted collection membership reads back");
 }

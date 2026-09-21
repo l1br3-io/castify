@@ -1294,10 +1294,8 @@ pub fn s3_presign_disabled() -> bool {
 /// Process-global prune-grace override (`None` = use boot config), set by
 /// `POST /api/__e2e/prune-grace`. Lets one stack exercise both `grace(2)`
 /// (the default posture) and `immediate(1)` semantics without a rebuild.
-static PRUNE_GRACE_OVERRIDE: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-static PRUNE_GRACE_SET: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PRUNE_GRACE_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PRUNE_GRACE_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Debug, Deserialize)]
 pub struct PruneGraceBody {
