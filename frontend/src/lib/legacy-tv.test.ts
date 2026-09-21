@@ -1796,8 +1796,11 @@ describe("legacy tv classical browse surfaces (classical task 002)", () => {
     expect(css).toMatch(/#castify-legacy \.tv-plate\s*\{[^}]*outline:\s*1px solid rgba\(32, 31, 29, 0\.16\)/);
 
     // tv-focus treatment: accent border + scale + 30% accent ring, on
-    // :hover and :focus alike (:focus-visible is Chromium 86+).
-    const treatment = /[^}]*border-color:\s*#b68235[^}]*scale\(1\.02\)[^}]*rgba\(182, 130, 53, 0\.3\)/;
+    // :hover and :focus alike (:focus-visible is Chromium 86+). The
+    // inset accent band keeps the edge readable under the stage's
+    // downscale, where a scaled 2px border antialiases away.
+    const treatment =
+      /[^}]*border-color:\s*#b68235[^}]*scale\(1\.02\)[^}]*inset 0 0 0 2px #b68235[^}]*rgba\(182, 130, 53, 0\.3\)/;
     expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:hover[^{]*\\{${treatment.source}`));
     expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:focus[^{]*\\{${treatment.source}`));
     // Comments may document the ban; the rules themselves may not use it.

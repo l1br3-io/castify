@@ -371,7 +371,12 @@
  * lift, 30% accent ring + md shadow — on :hover and :focus alike.
  * GOTCHA: :focus-visible is Chromium 86+, banned; on a TV the remote's
  * focus IS the cursor, so :focus is the honest signal. Cards are
- * focused through their anchor (.tv-item-link), folders directly. */
+ * focused through their anchor (.tv-item-link), folders directly.
+ * GOTCHA: the stage is usually DOWNSCALED (scale = width/1920), and a
+ * 2px border under scale(1.02) lands on fractional device pixels — the
+ * border antialiases into the paper and effectively vanishes on hover.
+ * The inset accent band paints INSIDE the border box, scales with the
+ * element, and keeps the bronze edge readable at any scale. */
 #castify-legacy .tv-folder-link:hover,
 #castify-legacy .tv-folder-link:focus,
 #castify-legacy .tv-item-link:hover .tv-card,
@@ -380,7 +385,10 @@
   border-color: #b68235;
   -webkit-transform: scale(1.02);
   transform: scale(1.02);
-  box-shadow: 0 0 0 4px rgba(182, 130, 53, 0.3), 0 3px 10px rgba(45, 43, 43, 0.16);
+  box-shadow:
+    inset 0 0 0 2px #b68235,
+    0 0 0 4px rgba(182, 130, 53, 0.3),
+    0 3px 10px rgba(45, 43, 43, 0.16);
 }
 
 /* Ancestor crumbs: muted links warming to accent-700 under the cursor;
