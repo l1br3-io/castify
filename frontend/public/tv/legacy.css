@@ -1,35 +1,114 @@
 /*
- * Castify legacy TV player styles.
+ * Castify legacy TV player styles — Classical reskin (legacy-tv-classical).
  *
  * GOTCHA: every selector must stay scoped under #castify-legacy (the modern
  * app also renders in forced ?legacy=1 mode — neither tree may style the
- * other), and no CSS custom properties, oklch, color-mix, @layer, or
- * @property may appear — the Tizen engine predates all of them. Hex colors
- * mirror the modern dark theme (index.css) so the pages read as one product.
- * The ban is enforced by the gate in src/lib/legacy-tv.test.ts.
+ * other), and no CSS custom properties, color-mix, oklch, @layer, @property,
+ * gap, grid, or aspect-ratio may appear — the Tizen engine (Chromium-38-era)
+ * predates all of them. The ban is enforced by the gate in
+ * src/lib/legacy-tv-gates.test.ts.
+ *
+ * GOTCHA: tokens are PRECOMPILED from the standalone design source
+ * ("Media Library (standalone).html") — var()/color-mix() there become
+ * literal hex/rgba here. The translation table lives in
+ * docs/specs/legacy-tv-classical/spec.md; never hand-pick a value that
+ * isn't in the table.
  */
 
+/* Latin subsets extracted from the standalone manifest. Both 400 and 600
+ * weights declare the SAME file per family (weight synthesis), exactly as
+ * the standalone does. woff2 + @font-face are Chromium 36+; font-display
+ * is ignored by the old engine (harmless). */
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/tv/fonts/cormorant-garamond-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/tv/fonts/cormorant-garamond-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Lora";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/tv/fonts/lora-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Lora";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/tv/fonts/lora-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Letterbox behind the 16:9 stage — visible only on non-16:9 viewports
+ * (standalone --color-neutral-900). */
 #castify-legacy {
   margin: 0;
   min-height: 100vh;
-  background: #10131a;
-  color: #e7e9ee;
-  font-family: sans-serif;
-  display: -webkit-flex;
-  display: flex;
-  -webkit-flex-direction: column;
-  flex-direction: column;
-  -webkit-align-items: center;
-  align-items: center;
-  -webkit-justify-content: center;
-  justify-content: center;
-  padding: 24px;
+  background: #2d2b2b;
+  color: #201f1d;
+  font-family: "Lora", Georgia, serif;
+}
+
+/* Fixed 1920x1080 logical stage scaled to the container width by
+ * legacy.js (applyScale — load + resize; no ResizeObserver, Chromium 64+).
+ * overflow: hidden crops the scaled stage; the height is set by JS to
+ * 1080 * scale so the letterbox fills the rest. */
+#castify-legacy .tv-frame {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+#castify-legacy .tv-stage {
+  width: 1920px;
+  height: 1080px;
   box-sizing: border-box;
+  padding: 64px 96px;
+  background: #f3f2f2;
+  color: #201f1d;
+  font-size: 22px;
+  line-height: 1.55;
+  -webkit-transform-origin: top left;
+  transform-origin: top left;
+}
+
+/* The only scroll context: the stage is fixed, so long lists scroll
+ * inside this column — page-level scrolling is gone with the old
+ * centered-flex layout. */
+#castify-legacy .tv-content {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Headings carry the Cormorant voice; body stays Lora (stack on
+ * #castify-legacy). Sizes land with each surface's restyle. */
+#castify-legacy h1,
+#castify-legacy h2,
+#castify-legacy h3,
+#castify-legacy .tv-title {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-weight: 600;
 }
 
 #castify-legacy .tv-loading {
-  color: #9096a5;
-  font-size: 18px;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 24px;
   margin: 0;
 }
 

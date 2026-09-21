@@ -1588,3 +1588,78 @@ describe("legacy tv explicit back control", () => {
     );
   });
 });
+
+describe("legacy tv classical canvas (classical task 001)", () => {
+  afterEach(resetLegacyDom);
+
+  const fontsDir = resolve(import.meta.dirname, "../../public/tv/fonts");
+
+  const FONT_FILES: Array<[family: string, file: string]> = [
+    ["Cormorant Garamond", "cormorant-garamond-latin.woff2"],
+    ["Lora", "lora-latin.woff2"],
+  ];
+
+  it("ships the two latin woff2 fonts — real files with wOF2 magic bytes", () => {
+    for (const [, file] of FONT_FILES) {
+      const bytes = readFileSync(resolve(fontsDir, file));
+      expect(bytes.length, `${file} size`).toBeGreaterThan(30000);
+      expect(bytes.subarray(0, 4).toString("latin1"), `${file} magic`).toBe("wOF2");
+    }
+  });
+
+  it("declares Cormorant + Lora at 400 and 600 against the shipped files", () => {
+    const css = readFileSync(legacyCssPath, "utf8");
+    for (const [family, file] of FONT_FILES) {
+      for (const weight of ["400", "600"]) {
+        const face = new RegExp(
+          `@font-face\\s*\\{[^}]*font-family:\\s*["']${family}["'][^}]*` +
+            `font-weight:\\s*${weight}[^}]*url\\("/tv/fonts/${file}"\\)[^}]*\\}`,
+        );
+        expect(css, `${family} ${weight} @font-face → ${file}`).toMatch(face);
+      }
+    }
+  });
+
+  it("mounts the 1920x1080 stage scaffold and renders into the #tv-content column", () => {
+    window.history.pushState({}, "", "/settings");
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    const frame = container?.querySelector(".tv-frame");
+    const stage = container?.querySelector(".tv-stage");
+    const content = container?.querySelector(".tv-content");
+    expect(frame).not.toBeNull();
+    expect(stage).not.toBeNull();
+    // The content column is the test-facing render root the flows write into.
+    expect(content?.id).toBe("tv-content");
+    expect(content?.textContent).toContain("Castify on this TV supports share links only.");
+    // The share-links notice lives INSIDE the stage, not beside it.
+    expect(stage?.contains(content ?? null)).toBe(true);
+    expect(frame?.contains(stage ?? null)).toBe(true);
+  });
+
+  it("guards the scale to 1 when clientWidth is 0 (jsdom has no layout)", () => {
+    window.history.pushState({}, "", "/settings");
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy");
+    const stage = container?.querySelector(".tv-stage") as HTMLElement;
+    const frame = container?.querySelector(".tv-frame") as HTMLElement;
+    expect(stage.style.transform).toBe("scale(1)");
+    expect(frame.style.height).toBe("1080px");
+  });
+
+  it("recomputes the scale on window resize — no ResizeObserver", () => {
+    window.history.pushState({}, "", "/settings");
+    loadLegacyScript();
+
+    const container = document.getElementById("castify-legacy") as HTMLElement;
+    Object.defineProperty(container, "clientWidth", { value: 960, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+
+    const stage = container.querySelector(".tv-stage") as HTMLElement;
+    const frame = container.querySelector(".tv-frame") as HTMLElement;
+    expect(stage.style.transform).toBe("scale(0.5)");
+    expect(frame.style.height).toBe("540px");
+  });
+});

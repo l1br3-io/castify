@@ -1112,18 +1112,61 @@
     }
   }
 
+  /* ── classical canvas (legacy-tv-classical task 001) ───────────────── */
+
+  /* The classical canvas: every render* writes into the content column of
+   * a fixed 1920x1080 stage scaled to the viewport width. The stage keeps
+   * the standalone's paper proportions on any screen; the letterbox shows
+   * only on non-16:9 viewports. */
+  function mountCanvas(container) {
+    if (container.querySelector(".tv-frame")) {
+      /* Re-entry (tests, forced-mode reloads): keep the scaffold and its
+       * resize wiring — rebuilding would stack duplicate listeners. */
+      applyScale(container);
+      return;
+    }
+    container.innerHTML =
+      '<div class="tv-frame"><div class="tv-stage">' +
+      '<div class="tv-content" id="tv-content"></div></div></div>';
+    applyScale(container);
+    /* GOTCHA: ResizeObserver is Chromium 64+ — banned here. The scale is
+     * recomputed on mount and on every window.resize instead. */
+    window.addEventListener("resize", function () {
+      applyScale(container);
+    });
+  }
+
+  function applyScale(container) {
+    var stage = container.querySelector(".tv-stage");
+    var frame = container.querySelector(".tv-frame");
+    if (!stage || !frame) {
+      return;
+    }
+    /* GOTCHA: jsdom and hidden tabs report clientWidth 0 — the naive
+     * division would scale the stage to 0 and blank the page. Guard to 1:
+     * an unscaled stage crops rather than disappears. */
+    var width = container.clientWidth;
+    var scale = width > 0 ? width / 1920 : 1;
+    stage.style.webkitTransform = "scale(" + scale + ")";
+    stage.style.transform = "scale(" + scale + ")";
+    frame.style.height = Math.round(1080 * scale) + "px";
+  }
+
   /* ── boot ──────────────────────────────────────────────────────────── */
 
   function render() {
     ensureStylesheet();
     var container = ensureContainer();
+    mountCanvas(container);
+    /* Every flow renders into the content column; signatures unchanged. */
+    var content = document.getElementById("tv-content");
     var route = parseRoute(window.location.pathname);
     if (route && route.videoId) {
-      renderWatch(container, route.token, route.videoId);
+      renderWatch(content, route.token, route.videoId);
     } else if (route) {
-      renderLanding(container, route.token);
+      renderLanding(content, route.token);
     } else {
-      renderMessage(container, "Castify on this TV supports share links only.");
+      renderMessage(content, "Castify on this TV supports share links only.");
     }
   }
 
