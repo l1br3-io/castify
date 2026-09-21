@@ -16,8 +16,9 @@ set dotenv-load := true
 COMPOSE := "docker compose"
 # `--progress quiet`: suppress the build stream on success (errors still print).
 COMPOSE_E2E := "docker compose --progress quiet -f docker-compose.yml -f docker-compose.e2e.yml"
-# Strip libtest per-binary boilerplate ("running N tests" / blanks / ok lines).
-# sed (unlike grep -v) always exits 0, so pipefail still yields cargo's status;
+# Strip libtest per-binary boilerplate ("running N tests" / blanks / ok lines)
+# for the remaining libtest steps (doctests — nextest skips them). sed
+# (unlike grep -v) always exits 0, so pipefail still yields cargo's status;
 # FAILED results, panics and failures lists pass through untouched.
 QUIET_TEST := "sed -E '/^running [0-9]+ tests?$/d; /^$/d; /^test result: ok[.]/d'"
 
@@ -44,6 +45,7 @@ quiet-audit:
         done < <(grep -nE "$1" justfile | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v "audit '" || true)
     }
     audit 'cargo (test|clippy|run|build)'  '--quiet'
+    audit 'cargo nextest run'              '--profile castify'
     audit 'npm ci'                         '--silent'
     audit 'npm run'                        '--silent'
     audit 'npx playwright install'         '/dev/null'
@@ -68,35 +70,38 @@ fix:
 ci:
     #!/usr/bin/env bash
     set -euo pipefail
-    # cargo's --quiet hides build progress AND collapses passing tests to dots
-    # (it forwards the flag to libtest — don't pass `-- --quiet` too). Failures
-    # still print in full.
     echo "== backend: fmt ==";   cargo fmt --all -- --check
     echo "== backend: clippy =="; cargo clippy --all-targets --all-features --quiet -- -D warnings
-    echo "== backend: test ==";  cargo test --all --quiet 2>&1 | {{QUIET_TEST}}
-    echo "== backend: test (e2e feature) =="; cargo test -p castify-api --features e2e --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
+    echo "== backend: test ==";  cargo nextest run --profile castify --workspace
+    echo "== backend: test (e2e feature) =="; cargo nextest run --profile castify -p castify-api --features e2e
+    # nextest skips doctests — keep libtest parity for them (--quiet collapses
+    # passing doctests to a summary; failures print in full).
+    echo "== backend: doctests =="; cargo test --doc --all --quiet 2>&1 | {{QUIET_TEST}}
     echo "== frontend: install =="; ( cd frontend && npm ci --silent --no-fund --no-audit )
     echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck --silent )
     echo "== frontend: lint =="; ( cd frontend && npm run lint --silent )
     echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
     echo "== frontend: build =="; ( cd frontend && npm run build --silent -- --logLevel error )
 
-# Run all tests reliably in one go, single-threaded backend (per deviation #18)
-# plus frontend type/lint/test. Use as a pre-manual-testing baseline.
+# Run all tests reliably in one go — parallel process-per-test backend via
+# nextest (m0 deviation #8's serialization is resolved; see
+# docs/specs/test-parallelism/) plus doctests and frontend type/lint/test.
+# Use as a pre-manual-testing baseline.
 preflight:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "== backend: test (single-threaded) =="; cargo test -p castify-api --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
-    echo "== backend: test (e2e feature, single-threaded) =="; cargo test -p castify-api --features e2e --quiet -- --test-threads=1 2>&1 | {{QUIET_TEST}}
+    echo "== backend: test =="; cargo nextest run --profile castify -p castify-api
+    echo "== backend: test (e2e feature) =="; cargo nextest run --profile castify -p castify-api --features e2e
+    echo "== backend: doctests =="; cargo test --doc --all --quiet 2>&1 | {{QUIET_TEST}}
     echo "== frontend: typecheck =="; ( cd frontend && npm run typecheck --silent )
     echo "== frontend: lint =="; ( cd frontend && npm run lint --silent )
     echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
 
-# Run all tests: backend (Rust) and frontend (Vitest).
+# Run all tests: backend (Rust, nextest) and frontend (Vitest).
 test:
     #!/usr/bin/env bash
     set -euo pipefail
-    echo "== backend: test ==";  cargo test --all --quiet 2>&1 | {{QUIET_TEST}}
+    echo "== backend: test ==";  cargo nextest run --profile castify --workspace
     echo "== frontend: test =="; ( cd frontend && npm run test --silent -- --reporter=dot )
 
 # Run the Rust API in the foreground (backend on 127.0.0.1:8427 by default).
@@ -241,7 +246,7 @@ test-one filter name="":
                 exit 1
             fi
             echo "== backend: unit filter: $f =="
-            cargo test --all --quiet "$f" 2>&1 | {{QUIET_TEST}}
+            cargo nextest run --profile castify --workspace "$f"
             ;;
     esac
 
