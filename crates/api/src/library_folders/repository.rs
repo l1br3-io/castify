@@ -1145,10 +1145,13 @@ mod tests {
     use super::*;
 
     /// `(pool, guard)` — same shape as the shares repository tests:
-    /// guard keeps the temp SQLite file alive for the test's lifetime.
-    async fn fresh_pool() -> (SqlitePool, tempfile::TempPath) {
-        let guard = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-        let pool = castify_storage::connect(guard.to_path_buf()).await.unwrap();
+    /// guard holds the TempDir (db + SQLite sidecars) for the test's
+    /// lifetime; drop removes it recursively.
+    async fn fresh_pool() -> (SqlitePool, tempfile::TempDir) {
+        let guard = tempfile::TempDir::new().unwrap();
+        let pool = castify_storage::connect(guard.path().join("db.sqlite3"))
+            .await
+            .unwrap();
         castify_storage::run_migrations(&pool).await.unwrap();
         (pool, guard)
     }

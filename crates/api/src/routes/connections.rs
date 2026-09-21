@@ -1270,9 +1270,9 @@ mod tests {
 
     /// DB-backed AppState for the inner-handler tests (mirrors
     /// tests/common, kept local so the private inner fn is reachable).
-    async fn test_state() -> (AppState, tempfile::TempPath) {
-        let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-        let path = named.to_path_buf();
+    async fn test_state() -> (AppState, tempfile::TempDir) {
+        let named = tempfile::TempDir::new().unwrap();
+        let path = named.path().join("db.sqlite3");
         let pool = castify_storage::connect(&path).await.unwrap();
         castify_storage::run_migrations(&pool).await.unwrap();
         let secret = castify_auth::SessionSecret::resolve(&pool, None)
@@ -1281,8 +1281,7 @@ mod tests {
         let token_key = castify_catalog::TokenKey::resolve(&pool, None)
             .await
             .unwrap();
-        let data_dir =
-            std::env::temp_dir().join(format!("castify-s3-connect-test-{}", std::process::id()));
+        let data_dir = named.path().join("data");
         std::fs::create_dir_all(&data_dir).ok();
         let config = crate::Config {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
