@@ -1803,6 +1803,12 @@ describe("legacy tv classical browse surfaces (classical task 002)", () => {
       /[^}]*border-color:\s*#b68235[^}]*scale\(1\.02\)[^}]*inset 0 0 0 2px #b68235[^}]*rgba\(182, 130, 53, 0\.3\)/;
     expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:hover[^{]*\\{${treatment.source}`));
     expect(css).toMatch(new RegExp(`#castify-legacy [^{]*:focus[^{]*\\{${treatment.source}`));
+
+    // Cards: padding opens a gap between the bronze edge and the plate
+    // (the plate rides flush against the border otherwise and swallows it).
+    const cardPad = /[^}]*padding:\s*6px/;
+    expect(css).toMatch(new RegExp(`#castify-legacy \\.tv-item-link:hover \\.tv-card\\s*\\{${cardPad.source}`));
+    expect(css).toMatch(new RegExp(`#castify-legacy \\.tv-item-link:focus \\.tv-card\\s*\\{${cardPad.source}`));
     // Comments may document the ban; the rules themselves may not use it.
     expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/:focus-visible/);
   });

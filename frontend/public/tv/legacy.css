@@ -372,23 +372,29 @@
  * GOTCHA: :focus-visible is Chromium 86+, banned; on a TV the remote's
  * focus IS the cursor, so :focus is the honest signal. Cards are
  * focused through their anchor (.tv-item-link), folders directly.
- * GOTCHA: the stage is usually DOWNSCALED (scale = width/1920), and a
- * 2px border under scale(1.02) lands on fractional device pixels — the
- * border antialiases into the paper and effectively vanishes on hover.
- * The inset accent band paints INSIDE the border box, scales with the
- * element, and keeps the bronze edge readable at any scale. */
+ * GOTCHA: the stage is usually DOWNSCALED (scale = width/1920), so the
+ * inset accent band rides along — the bronze edge then reads at any
+ * scale, not just where the border's 2px land on whole pixels. */
 #castify-legacy .tv-folder-link:hover,
 #castify-legacy .tv-folder-link:focus,
 #castify-legacy .tv-item-link:hover .tv-card,
 #castify-legacy .tv-item-link:focus .tv-card {
   outline: none;
   border-color: #b68235;
-  -webkit-transform: scale(1.02);
-  transform: scale(1.02);
   box-shadow:
     inset 0 0 0 2px #b68235,
     0 0 0 4px rgba(182, 130, 53, 0.3),
     0 3px 10px rgba(45, 43, 43, 0.16);
+}
+
+/* GOTCHA: cards draw the plate FLUSH against the border, and the plate's
+ * own cream frame + outline visually swallow the bronze edge — the inset
+ * band paints under the content entirely. Padding on hover opens a paper
+ * gap so the border reads as a frame around the whole card. Folders
+ * already carry 22px/28px padding — they must NOT shrink to 6px. */
+#castify-legacy .tv-item-link:hover .tv-card,
+#castify-legacy .tv-item-link:focus .tv-card {
+  padding: 6px;
 }
 
 /* Ancestor crumbs: muted links warming to accent-700 under the cursor;
