@@ -10,7 +10,7 @@ const PASSWORD: &str = "correct horse battery staple";
 
 /// Boot a fresh app, run first-run setup, and return the app, the session
 /// cookie pair (`castify_session=<value>`), and the temp db guard.
-async fn boot_and_setup() -> (axum::Router, String, tempfile::TempPath) {
+async fn boot_and_setup() -> (axum::Router, String, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let app = castify_api::app::build_app(state);
     let response = app

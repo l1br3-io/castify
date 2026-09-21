@@ -20,7 +20,7 @@ const OWNER_PASSWORD: &str = "correct horse battery staple";
 
 /// Boot a fresh app, run first-run setup, and return `(app, state, session
 /// cookie, db guard)` — same shape as the shares test harness.
-async fn boot() -> (axum::Router, AppState, String, tempfile::TempPath) {
+async fn boot() -> (axum::Router, AppState, String, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let app = castify_api::app::build_app(state.clone());
     let response = app

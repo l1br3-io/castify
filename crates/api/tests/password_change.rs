@@ -13,7 +13,7 @@ const NEW_PASSWORD: &str = "staple battery horse correct";
 /// Boot a fresh app, run first-run setup, and return the app + session
 /// cookie (`castify_session=<value>`) + db-path guard. Mirrors the harness
 /// in `tests/session.rs`.
-async fn boot_and_setup() -> (axum::Router, String, tempfile::TempPath) {
+async fn boot_and_setup() -> (axum::Router, String, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let app = build_app(state);
     let response = app

@@ -334,8 +334,8 @@ async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
     // simulate a restart by rebuilding the app over the same on-disk db
     // with the env default still saying "disabled". The persisted value
     // must win (spec AC-3).
-    let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-    let path = named.to_path_buf();
+    let named = tempfile::TempDir::new().unwrap();
+    let path = named.path().join("db.sqlite3");
     let pool = castify_storage::connect(&path).await.unwrap();
     castify_storage::run_migrations(&pool).await.unwrap();
     let secret = castify_auth::SessionSecret::resolve(&pool, None)
@@ -344,7 +344,7 @@ async fn transcode_toggle_db_value_wins_over_env_default_on_restart() {
     let token_key = castify_catalog::TokenKey::resolve(&pool, None)
         .await
         .unwrap();
-    let data_dir = std::env::temp_dir().join("castify-settings-restart-test");
+    let data_dir = named.path().join("data");
     std::fs::create_dir_all(&data_dir).ok();
     let base_config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -407,8 +407,8 @@ async fn transcode_toggle_off_survives_restart_with_env_default_on() {
     use castify_api::state::AppState;
     use castify_core::Config;
 
-    let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-    let path = named.to_path_buf();
+    let named = tempfile::TempDir::new().unwrap();
+    let path = named.path().join("db.sqlite3");
     let pool = castify_storage::connect(&path).await.unwrap();
     castify_storage::run_migrations(&pool).await.unwrap();
     let secret = castify_auth::SessionSecret::resolve(&pool, None)
@@ -417,7 +417,7 @@ async fn transcode_toggle_off_survives_restart_with_env_default_on() {
     let token_key = castify_catalog::TokenKey::resolve(&pool, None)
         .await
         .unwrap();
-    let data_dir = std::env::temp_dir().join("castify-settings-restart-off-test");
+    let data_dir = named.path().join("data");
     std::fs::create_dir_all(&data_dir).ok();
     let base_config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),

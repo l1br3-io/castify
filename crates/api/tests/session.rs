@@ -17,7 +17,7 @@ async fn boot_and_setup() -> (
     axum::Router,
     String,
     castify_api::state::AppState,
-    tempfile::TempPath,
+    tempfile::TempDir,
 ) {
     let (state, guard, _path) = common::fresh_state().await;
     let app = build_app(state.clone());
@@ -334,10 +334,13 @@ async fn session_survives_restart_with_persisted_secret() {
     let token_key = castify_catalog::TokenKey::resolve(&pool, None)
         .await
         .unwrap();
+    // Reuse the harness TempDir (parent of the db path) for the restart's
+    // data dir so everything lives under the one guard.
+    let data_dir = path.parent().unwrap().join("data");
     let config = castify_core::Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         log_level: "warn".to_string(),
-        data_dir: std::env::temp_dir().join("castify-restart-test"),
+        data_dir: data_dir.clone(),
         database_path: path.clone(),
         app_base_url: None,
         cookie_secure: false,
@@ -347,7 +350,7 @@ async fn session_survives_restart_with_persisted_secret() {
         video_cache: castify_core::VideoCacheConfig {
             enabled: false,
             max_bytes: 0,
-            dir: std::env::temp_dir().join("castify-restart-test-video-cache"),
+            dir: data_dir.join("video-cache"),
         },
         probe: castify_core::ProbeConfig::default(),
         transcode: castify_core::TranscodeConfig {

@@ -31,7 +31,7 @@ async fn boot_with_caches() -> (
     castify_api::state::AppState,
     CatalogRepository,
     std::path::PathBuf,
-    tempfile::TempPath,
+    tempfile::TempDir,
 ) {
     use castify_api::app::build_app;
     use castify_api::state::AppState;
@@ -39,8 +39,8 @@ async fn boot_with_caches() -> (
     use castify_storage::{connect, run_migrations};
     use sqlx::SqlitePool;
 
-    let named = tempfile::NamedTempFile::new().unwrap().into_temp_path();
-    let path = named.to_path_buf();
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("db.sqlite3");
     let pool: SqlitePool = connect(&path).await.unwrap();
     run_migrations(&pool).await.unwrap();
     let secret = castify_auth::SessionSecret::resolve(&pool, None)
@@ -49,7 +49,7 @@ async fn boot_with_caches() -> (
     let token_key = castify_catalog::TokenKey::resolve(&pool, None)
         .await
         .unwrap();
-    let data_dir = std::env::temp_dir().join(format!("castify-api-prune-test-{}", next_id("dir")));
+    let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir).ok();
     let config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -96,7 +96,7 @@ async fn boot_with_caches() -> (
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    (app, state, repo, data_dir, named)
+    (app, state, repo, data_dir, dir)
 }
 
 /// Seed a connection + video; returns (connection_id, video_id).

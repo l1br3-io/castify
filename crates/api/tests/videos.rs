@@ -17,7 +17,7 @@ async fn boot_and_setup_full() -> (
     String,
     CatalogRepository,
     std::path::PathBuf,
-    tempfile::TempPath,
+    tempfile::TempDir,
 ) {
     let (state, guard, _path) = common::fresh_state().await;
     let data_dir = state.config().data_dir.clone();
@@ -49,7 +49,7 @@ async fn boot_and_setup_full() -> (
     (app, cookie, repo, data_dir, guard)
 }
 
-async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempPath) {
+async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempDir) {
     let (app, cookie, repo, _dir, guard) = boot_and_setup_full().await;
     (app, cookie, repo, guard)
 }
@@ -1218,7 +1218,7 @@ async fn boot_with_csrf_and_video() -> (
     String,
     CatalogRepository,
     String,
-    tempfile::TempPath,
+    tempfile::TempDir,
 ) {
     let (app, cookie, repo, guard) = boot_and_setup().await;
     let (csrf_token, csrf_cookie) = get_csrf(&app, &cookie).await;

@@ -14,7 +14,7 @@ async fn boot_and_setup() -> (
     axum::Router,
     String,
     castify_catalog::CatalogRepository,
-    tempfile::TempPath,
+    tempfile::TempDir,
 ) {
     let (state, guard, _path) = common::fresh_state().await;
     let repo = state.catalog_repository().clone();

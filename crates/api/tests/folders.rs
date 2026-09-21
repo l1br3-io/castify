@@ -30,7 +30,7 @@ fn sample_bundle() -> TokenBundle {
     }
 }
 
-async fn boot_and_setup() -> (Router, String, CatalogRepository, tempfile::TempPath) {
+async fn boot_and_setup() -> (Router, String, CatalogRepository, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let repo = state.catalog_repository().clone();
     let app = castify_api::app::build_app(state);

@@ -24,7 +24,7 @@ use tower::ServiceExt;
 
 /// Boot a fresh app with first-run setup done (an owner row must exist for
 /// shares to reference). Recipient requests never use the session cookie.
-async fn boot() -> (axum::Router, AppState, tempfile::TempPath) {
+async fn boot() -> (axum::Router, AppState, tempfile::TempDir) {
     boot_with(|_| {}).await
 }
 
@@ -32,7 +32,7 @@ async fn boot() -> (axum::Router, AppState, tempfile::TempPath) {
 /// the transcode/cached-stream mirror tests need those features enabled.
 async fn boot_with(
     configure: impl FnOnce(&mut castify_core::Config),
-) -> (axum::Router, AppState, tempfile::TempPath) {
+) -> (axum::Router, AppState, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state_with(configure).await;
     let app = castify_api::app::build_app(state.clone());
     let response = app
@@ -633,7 +633,7 @@ struct DenialFixture {
     locked: String,
     member: String,
     outsider: String,
-    _guard: tempfile::TempPath,
+    _guard: tempfile::TempDir,
 }
 
 async fn denial_fixture() -> DenialFixture {
@@ -1275,7 +1275,7 @@ struct TranscodeFixture {
     token: String,
     video: String,
     #[allow(dead_code)]
-    guard: tempfile::TempPath,
+    guard: tempfile::TempDir,
 }
 
 async fn transcode_fixture() -> TranscodeFixture {
@@ -1769,11 +1769,20 @@ async fn recipient_items_carry_the_folder_tree() {
         .await
         .unwrap()
         .unwrap();
-    for (vid, folder) in [(&videos[1], Some(&trip.id)), (&videos[2], Some(&trip.id)), (&videos[3], Some(&night.id))] {
-        repo.move_item(&owner.to_string(), &share.id, vid, folder.map(|s| s.as_str()))
-            .await
-            .unwrap()
-            .unwrap();
+    for (vid, folder) in [
+        (&videos[1], Some(&trip.id)),
+        (&videos[2], Some(&trip.id)),
+        (&videos[3], Some(&night.id)),
+    ] {
+        repo.move_item(
+            &owner.to_string(),
+            &share.id,
+            vid,
+            folder.map(|s| s.as_str()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     }
 
     let (status, body) = get(app, &format!("/api/share/{}/items", share.token), None).await;
@@ -1795,14 +1804,27 @@ async fn recipient_items_carry_the_folder_tree() {
     // order is what the client rebuilds the tree from.
     let items = body["items"].as_array().expect("items is an array");
     let ids: Vec<&str> = items.iter().map(|v| v["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, vec![videos[0].as_str(), videos[1].as_str(), videos[2].as_str(), videos[3].as_str()]);
+    assert_eq!(
+        ids,
+        vec![
+            videos[0].as_str(),
+            videos[1].as_str(),
+            videos[2].as_str(),
+            videos[3].as_str()
+        ]
+    );
     let folder_ids: Vec<&str> = items
         .iter()
         .map(|v| v["folder_id"].as_str().unwrap_or("ROOT"))
         .collect();
     assert_eq!(
         folder_ids,
-        vec!["ROOT", trip.id.as_str(), trip.id.as_str(), night.id.as_str()],
+        vec![
+            "ROOT",
+            trip.id.as_str(),
+            trip.id.as_str(),
+            night.id.as_str()
+        ],
         "folder placement travels per item; root is null"
     );
 }

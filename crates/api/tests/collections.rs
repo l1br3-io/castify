@@ -23,7 +23,7 @@ fn sample_credential() -> Credential {
     })
 }
 
-async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempPath) {
+async fn boot_and_setup() -> (axum::Router, String, CatalogRepository, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let repo = state.catalog_repository().clone();
     let app = castify_api::app::build_app(state);
@@ -182,7 +182,15 @@ async fn seed_video(repo: &CatalogRepository, conn: &str, key: &str, name: &str)
 // ── Collections CRUD + membership (spec F3) ──────────────────────────
 
 /// Boot the app + session and seed one connection with three videos.
-async fn boot_with_videos() -> (axum::Router, String, CatalogRepository, tempfile::TempPath, String, String, String) {
+async fn boot_with_videos() -> (
+    axum::Router,
+    String,
+    CatalogRepository,
+    tempfile::TempDir,
+    String,
+    String,
+    String,
+) {
     let (app, cookie, repo, guard) = boot_and_setup().await;
     let conn = seed_connection(&repo).await;
     let v1 = seed_video(&repo, &conn, "v1", "alpha.mp4").await;
@@ -316,7 +324,10 @@ async fn manual_collection_crud_and_membership_roundtrip() {
     assert_eq!(status, StatusCode::OK);
     let members = detail["members"].as_array().unwrap();
     assert_eq!(
-        members.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(),
+        members
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
         vec!["alpha.mp4", "beta.mp4", "gamma.mp4"]
     );
 
@@ -341,7 +352,10 @@ async fn manual_collection_crud_and_membership_roundtrip() {
     .await;
     let members = detail["members"].as_array().unwrap();
     assert_eq!(
-        members.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(),
+        members
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
         vec!["gamma.mp4", "alpha.mp4", "beta.mp4"]
     );
 

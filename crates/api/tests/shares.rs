@@ -23,7 +23,7 @@ const FUTURE_EXPIRY: &str = "2099-01-01T00:00:00Z";
 /// Boot a fresh app, run first-run setup, and return `(app, state, session
 /// cookie, db guard)`. `state` is needed to seed catalog rows through the
 /// pool and to inspect persisted bytes directly.
-async fn boot() -> (axum::Router, AppState, String, tempfile::TempPath) {
+async fn boot() -> (axum::Router, AppState, String, tempfile::TempDir) {
     let (state, guard, _path) = common::fresh_state().await;
     let app = castify_api::app::build_app(state.clone());
     let response = app
@@ -1597,9 +1597,9 @@ async fn patch_folder_renames_reparents_and_leaves_absent_fields_untouched() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
     let holder = mutate(
         &app,
         "POST",
@@ -1609,9 +1609,9 @@ async fn patch_folder_renames_reparents_and_leaves_absent_fields_untouched() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Rename only: parent and position untouched.
     let (status, body) = mutate(
@@ -1681,9 +1681,9 @@ async fn delete_folder_lifts_items_to_root_and_answers_204() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
 
     for video in &videos {
         let (status, _) = mutate(
@@ -1736,12 +1736,23 @@ async fn folder_validation_matrix_maps_each_rejection() {
         let session = session.clone();
         let id = id.clone();
         async move {
-            mutate(&app, "POST", &format!("/api/shares/{id}/folders"), &session, Some(name)).await
+            mutate(
+                &app,
+                "POST",
+                &format!("/api/shares/{id}/folders"),
+                &session,
+                Some(name),
+            )
+            .await
         }
     };
 
     let (status, body) = post(json!({"name": "   "})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "whitespace-only name — {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "whitespace-only name — {body}"
+    );
     let (status, body) = post(json!({"name": "x".repeat(201)})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "201 chars — {body}");
     let (status, body) = post(json!({"name": "trip"})).await;
@@ -1766,9 +1777,9 @@ async fn folder_validation_matrix_maps_each_rejection() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
     for depth in 2..=8 {
         parent = mutate(
             &app,
@@ -1779,9 +1790,9 @@ async fn folder_validation_matrix_maps_each_rejection() {
         )
         .await
         .1["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+            .as_str()
+            .unwrap()
+            .to_string();
     }
     let (status, body) = mutate(
         &app,
@@ -1793,13 +1804,12 @@ async fn folder_validation_matrix_maps_each_rejection() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "depth cap — {body}");
 
-    let d1_row: String = sqlx::query_scalar(
-        "SELECT id FROM share_folders WHERE share_id = ? AND name = 'd1'",
-    )
-    .bind(&id)
-    .fetch_one(state.pool())
-    .await
-    .unwrap();
+    let d1_row: String =
+        sqlx::query_scalar("SELECT id FROM share_folders WHERE share_id = ? AND name = 'd1'")
+            .bind(&id)
+            .fetch_one(state.pool())
+            .await
+            .unwrap();
     let (status, body) = mutate(
         &app,
         "PATCH",
@@ -1808,7 +1818,11 @@ async fn folder_validation_matrix_maps_each_rejection() {
         Some(json!({"parent_id": parent})),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "reparent into own subtree — {body}");
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "reparent into own subtree — {body}"
+    );
     assert!(
         body["message"]
             .as_str()
@@ -1865,17 +1879,17 @@ async fn folder_and_item_mutations_gate_session_and_csrf() {
 async fn folder_and_item_mutations_scope_owner_share_folder_and_video() {
     let (app, state, session, _guard) = boot().await;
     let videos = seed_videos(state.pool(), &["a.mp4", "b.mp4"]).await;
-    let (_, created) = create_share(&app, &session, json!({"video_ids": videos[..1].to_vec()})).await;
+    let (_, created) =
+        create_share(&app, &session, json!({"video_ids": videos[..1].to_vec()})).await;
     let id = created["id"].as_str().unwrap().to_string();
     let stranger_id = seed_stranger_share(state.pool(), &videos).await;
     // A folder that exists — but in the stranger's share (created with
     // the stranger's own owner id so the repo guard accepts it).
-    let stranger_owner: String =
-        sqlx::query_scalar("SELECT owner_id FROM shares WHERE id = ?")
-            .bind(&stranger_id)
-            .fetch_one(state.pool())
-            .await
-            .unwrap();
+    let stranger_owner: String = sqlx::query_scalar("SELECT owner_id FROM shares WHERE id = ?")
+        .bind(&stranger_id)
+        .fetch_one(state.pool())
+        .await
+        .unwrap();
     let foreign_folder = castify_api::shares::ShareRepository::new(state.pool().clone())
         .create_folder(&stranger_owner, &stranger_id, None, "theirs")
         .await
@@ -1940,7 +1954,11 @@ async fn folder_and_item_mutations_scope_owner_share_folder_and_video() {
 
     // Revoked share: 409 naming the state (owner can see it in their list).
     for (method, uri, body) in [
-        ("POST", format!("/api/shares/{revoked_id}/folders"), Some(json!({"name": "x"}))),
+        (
+            "POST",
+            format!("/api/shares/{revoked_id}/folders"),
+            Some(json!({"name": "x"})),
+        ),
         (
             "DELETE",
             format!("/api/shares/{revoked_id}/folders/whatever"),
@@ -2040,9 +2058,9 @@ async fn patch_item_moves_membership_between_scopes() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let (status, _) = mutate(
         &app,
@@ -2068,7 +2086,10 @@ async fn patch_item_moves_membership_between_scopes() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(persisted_placement(state.pool(), &id, &videos[0]).await, None);
+    assert_eq!(
+        persisted_placement(state.pool(), &id, &videos[0]).await,
+        None
+    );
 
     // Membership never changes through a move.
     assert_eq!(persisted_items(state.pool(), &id).await.len(), 2);
@@ -2090,7 +2111,10 @@ async fn remove_item_deletes_and_guards_the_last_item() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert_eq!(persisted_items(state.pool(), &id).await, vec![videos[1].clone()]);
+    assert_eq!(
+        persisted_items(state.pool(), &id).await,
+        vec![videos[1].clone()]
+    );
 
     // The last item cannot leave — a share must keep at least 1 item.
     let (status, body) = mutate(
@@ -2123,9 +2147,9 @@ async fn get_items_carries_the_folder_tree_for_the_owner_too() {
     )
     .await
     .1["id"]
-    .as_str()
-    .unwrap()
-    .to_string();
+        .as_str()
+        .unwrap()
+        .to_string();
     let (status, _) = mutate(
         &app,
         "PATCH",
