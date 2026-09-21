@@ -90,10 +90,15 @@
 
 /* The only scroll context: the stage is fixed, so long lists scroll
  * inside this column — page-level scrolling is gone with the old
- * centered-flex layout. */
+ * centered-flex layout. Flex column so message cards can center via
+ * margin: auto (the overflow-safe pattern — no justify-content). */
 #castify-legacy .tv-content {
   height: 100%;
   overflow-y: auto;
+  display: -webkit-flex;
+  display: flex;
+  -webkit-flex-direction: column;
+  flex-direction: column;
 }
 
 /* Headings carry the Cormorant voice; body stays Lora (stack on
@@ -109,7 +114,7 @@
 #castify-legacy .tv-loading {
   color: rgba(32, 31, 29, 0.55);
   font-size: 24px;
-  margin: 0;
+  margin: auto;
 }
 
 /* GOTCHA: no `gap` anywhere — flexbox gap is Chromium 84+ and silently
@@ -144,68 +149,97 @@
 }
 
 #castify-legacy .tv-meta {
-  color: #9096a5;
-  font-size: 14px;
+  color: rgba(32, 31, 29, 0.5);
+  font-size: 20px;
   margin: 0;
 }
 
+/* Message family (dead shares, errors, transcode/can't-play, the
+ * share-links notice, unlock): one centered bordered card on the
+ * canvas. margin: auto centers it in the flexed content column and
+ * degrades to top-aligned when the card outgrows the viewport — no
+ * clipped tops. */
 #castify-legacy .tv-message {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 720px;
+  margin: auto;
   text-align: center;
-  max-width: 480px;
+  border: 2px solid rgba(32, 31, 29, 0.16);
+  border-radius: 7px;
+  padding: 48px 56px;
 }
 
 #castify-legacy .tv-message-title {
-  font-size: 20px;
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 34px;
   font-weight: 600;
-  margin: 0 0 8px 0;
+  line-height: 1.12;
+  margin: 0 0 12px 0;
 }
 
 #castify-legacy .tv-message-body {
-  color: #9096a5;
-  font-size: 14px;
-  margin: 0 0 20px 0;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 20px;
+  margin: 0 0 24px 0;
 }
 
+/* Back link of the message/watch family, in the .ml-back voice:
+ * accent-700 text on paper, wash + underline under the cursor. */
 #castify-legacy .tv-back {
-  color: #f0a93a;
-  font-size: 14px;
+  color: #7d5411;
+  font-size: 20px;
   text-decoration: none;
   display: inline-block;
+  padding: 6px 4px;
+  border-radius: 2px;
 }
 
+#castify-legacy .tv-back:hover,
+#castify-legacy .tv-back:focus {
+  outline: none;
+  background: rgba(182, 130, 53, 0.15);
+  text-decoration: underline;
+}
+
+/* Outline button in the .btn-primary manner: accent border + accent
+ * text on transparent, tinted washes on hover/active — Retry, Unlock,
+ * Clear-search all inherit it. */
 #castify-legacy .tv-button {
-  background: #f0a93a;
-  color: #10131a;
-  border: none;
-  border-radius: 6px;
-  font-size: 16px;
+  background: transparent;
+  border: 1px solid #b68235;
+  border-radius: 4px;
+  color: #b68235;
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 20px;
   font-weight: 600;
   padding: 10px 24px;
   cursor: pointer;
 }
 
+#castify-legacy .tv-button:hover {
+  background: rgba(182, 130, 53, 0.12);
+}
+
+#castify-legacy .tv-button:active {
+  background: rgba(182, 130, 53, 0.22);
+}
+
 #castify-legacy .tv-button[disabled] {
-  background: #3a2e13;
-  color: #9096a5;
+  opacity: 0.45;
   cursor: default;
 }
 
-/* Focus floor for controls: visible outlines on buttons, an amber
- * border on inputs, underline on the back link — the row treatment
- * above covers lists. Same single accent, three honest shapes. */
+/* Focus floor for controls: visible outlines on buttons, an accent
+ * border on inputs, wash + underline on back links. Same single
+ * accent, three honest shapes. */
 #castify-legacy .tv-button:focus {
-  outline: 2px solid #f0a93a;
+  outline: 2px solid #b68235;
 }
 
 #castify-legacy .tv-input:focus {
   outline: none;
-  border-color: #f0a93a;
-}
-
-#castify-legacy .tv-back:focus {
-  outline: none;
-  color: #e7e9ee;
-  text-decoration: underline;
+  border-color: #b68235;
 }
 
 #castify-legacy .tv-landing {
@@ -571,26 +605,29 @@
   box-shadow: inset 0 0 0 2px #b68235;
 }
 
-/* Search chrome: a quiet count header, and result rows that say where
- * each hit lives (same muted voice as the crumb trail). */
+/* Search chrome: a quiet muted count label, and result cards that say
+ * where each hit lives (small muted line under the name). */
 #castify-legacy .tv-results-count {
-  color: #9096a5;
-  font-size: 14px;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 20px;
   font-weight: 600;
-  margin: 0 0 12px 0;
+  margin: 0 0 16px 0;
 }
 
 #castify-legacy .tv-item-path {
   display: block;
-  color: #9096a5;
-  font-size: 12px;
+  color: rgba(32, 31, 29, 0.55);
+  font-size: 16px;
   margin-top: 2px;
 }
 
 #castify-legacy .tv-clear {
-  margin-top: 12px;
+  margin-top: 16px;
 }
 
+/* Unlock form: the .tv-message card wraps it; label per the standalone's
+ * .field > label (small, 70% ink), input in the .input look at TV scale
+ * (transparent, divider border, accent caret). */
 #castify-legacy .tv-unlock-form {
   display: -webkit-flex;
   display: flex;
@@ -601,26 +638,29 @@
 }
 
 #castify-legacy .tv-label {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 18px;
+  color: rgba(32, 31, 29, 0.7);
   margin-bottom: 12px;
 }
 
 #castify-legacy .tv-input {
-  background: #171b24;
-  border: 1px solid #2a3040;
-  border-radius: 6px;
-  color: #e7e9ee;
-  font-size: 16px;
-  padding: 10px 12px;
-  width: 240px;
+  background: transparent;
+  border: 2px solid rgba(32, 31, 29, 0.16);
+  border-radius: 4px;
+  color: #201f1d;
+  caret-color: #b68235;
+  font-size: 22px;
+  padding: 10px 16px;
+  width: 420px;
   box-sizing: border-box;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 
+/* GOTCHA: the inline unlock error is #7d5411 (accent-700, the palette's
+ * serious bronze) — no new color enters the table for errors. */
 #castify-legacy .tv-unlock-error {
-  color: #f0a93a;
-  font-size: 14px;
-  min-height: 20px;
+  color: #7d5411;
+  font-size: 18px;
+  min-height: 24px;
   margin: 12px 0 0 0;
 }

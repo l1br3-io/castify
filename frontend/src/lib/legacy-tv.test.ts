@@ -1772,3 +1772,53 @@ describe("legacy tv classical browse surfaces (classical task 002)", () => {
     expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/:focus-visible/);
   });
 });
+
+describe("legacy tv classical states (classical task 003)", () => {
+  const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  function classicalCss(): string {
+    return stripComments(readFileSync(legacyCssPath, "utf8"));
+  }
+
+  it("messages render as centered bordered cards inside a flexed content column", () => {
+    const css = classicalCss();
+    expect(css).toMatch(/#castify-legacy \.tv-content\s*\{[^}]*display:\s*-webkit-flex/);
+    expect(css).toMatch(/#castify-legacy \.tv-content\s*\{[^}]*-webkit-flex-direction:\s*column/);
+    expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*max-width:\s*720px/);
+    expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*border:\s*2px solid rgba\(32, 31, 29, 0\.16\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*border-radius:\s*7px/);
+    expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*margin:\s*auto/);
+    // Cormorant title, muted Lora body.
+    expect(css).toMatch(/#castify-legacy \.tv-message-title\s*\{[^}]*font-family:\s*"Cormorant Garamond"/);
+    expect(css).toMatch(/#castify-legacy \.tv-message-title\s*\{[^}]*font-size:\s*34px/);
+    expect(css).toMatch(/#castify-legacy \.tv-message-body\s*\{[^}]*color:\s*rgba\(32, 31, 29, 0\.55\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-message-body\s*\{[^}]*font-size:\s*20px/);
+  });
+
+  it("buttons take the outline .btn-primary manner with washes, disabled, focus", () => {
+    const css = classicalCss();
+    expect(css).toMatch(/#castify-legacy \.tv-button\s*\{[^}]*background:\s*transparent/);
+    expect(css).toMatch(/#castify-legacy \.tv-button\s*\{[^}]*border:\s*1px solid #b68235/);
+    expect(css).toMatch(/#castify-legacy \.tv-button\s*\{[^}]*color:\s*#b68235/);
+    expect(css).toMatch(/#castify-legacy \.tv-button:hover\s*\{[^}]*background:\s*rgba\(182, 130, 53, 0\.12\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-button:active\s*\{[^}]*background:\s*rgba\(182, 130, 53, 0\.22\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-button\[disabled\]\s*\{[^}]*opacity:\s*0\.45/);
+    expect(css).toMatch(/#castify-legacy \.tv-button:focus\s*\{[^}]*outline:\s*2px solid #b68235/);
+  });
+
+  it("unlock form and error take the classical treatment (accent-700 error)", () => {
+    const css = classicalCss();
+    expect(css).toMatch(/#castify-legacy \.tv-input\s*\{[^}]*background:\s*transparent/);
+    expect(css).toMatch(/#castify-legacy \.tv-input\s*\{[^}]*caret-color:\s*#b68235/);
+    expect(css).toMatch(/#castify-legacy \.tv-input:focus\s*\{[^}]*border-color:\s*#b68235/);
+    // Serious bronze for the inline unlock error — no new palette entry.
+    expect(css).toMatch(/#castify-legacy \.tv-unlock-error\s*\{[^}]*color:\s*#7d5411/);
+  });
+
+  it("search chrome is styled: count label, path lines, back link in the ml-back voice", () => {
+    const css = classicalCss();
+    expect(css).toMatch(/#castify-legacy \.tv-results-count\s*\{[^}]*color:\s*rgba\(32, 31, 29, 0\.55\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-item-path\s*\{[^}]*color:\s*rgba\(32, 31, 29, 0\.55\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-back\s*\{[^}]*color:\s*#7d5411/);
+  });
+});
