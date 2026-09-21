@@ -1594,20 +1594,21 @@ describe("legacy tv classical canvas (classical task 001)", () => {
 
   const fontsDir = resolve(import.meta.dirname, "../../public/tv/fonts");
 
+  // The app's own typeface (user pivot 2026-09-21): Spline Sans Variable,
+  // not the standalone's Cormorant/Lora.
   const FONT_FILES: Array<[family: string, file: string]> = [
-    ["Cormorant Garamond", "cormorant-garamond-latin.woff2"],
-    ["Lora", "lora-latin.woff2"],
+    ["Spline Sans Variable", "spline-sans-latin.woff2"],
   ];
 
-  it("ships the two latin woff2 fonts — real files with wOF2 magic bytes", () => {
+  it("ships the app's Spline Sans variable latin font — real file with wOF2 magic", () => {
     for (const [, file] of FONT_FILES) {
       const bytes = readFileSync(resolve(fontsDir, file));
-      expect(bytes.length, `${file} size`).toBeGreaterThan(30000);
+      expect(bytes.length, `${file} size`).toBeGreaterThan(50000);
       expect(bytes.subarray(0, 4).toString("latin1"), `${file} magic`).toBe("wOF2");
     }
   });
 
-  it("declares Cormorant + Lora at 400 and 600 against the shipped files", () => {
+  it("declares Spline Sans Variable at 400 and 600 against the shipped file", () => {
     const css = readFileSync(legacyCssPath, "utf8");
     for (const [family, file] of FONT_FILES) {
       for (const weight of ["400", "600"]) {
@@ -1618,6 +1619,8 @@ describe("legacy tv classical canvas (classical task 001)", () => {
         expect(css, `${family} ${weight} @font-face → ${file}`).toMatch(face);
       }
     }
+    // No reference font files may linger (comments may note the pivot).
+    expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/Cormorant|Lora/);
   });
 
   it("mounts the 1920x1080 stage scaffold and renders into the #tv-content column", () => {
@@ -1754,6 +1757,35 @@ describe("legacy tv classical browse surfaces (classical task 002)", () => {
     expect(container.querySelector(".tv-hr")).not.toBeNull();
   });
 
+  it("focusing the search lights the wrap via a tv-search-focus class (no :has on Ch38)", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    const input = container.querySelector("#tv-search") as HTMLInputElement;
+    const wrap = container.querySelector(".tv-search-wrap") as HTMLElement;
+    expect(wrap.classList.contains("tv-search-focus")).toBe(false);
+
+    input.focus();
+    expect(wrap.classList.contains("tv-search-focus")).toBe(true);
+
+    input.blur();
+    expect(wrap.classList.contains("tv-search-focus")).toBe(false);
+  });
+
+  it("a failed thumbnail degrades to stripes + play icon, never a broken glyph", async () => {
+    stubBrowseShare("/share/tok_cb");
+    const container = await renderLanding();
+
+    const thumb = container.querySelector("img.tv-item-thumb") as HTMLImageElement;
+    expect(thumb.style.display).toBe("");
+
+    // The thumbnail request can 404 (pending generation) or decode-fail —
+    // the img must get out of the plate's way either way.
+    fireEvent.error(thumb);
+
+    expect(thumb.style.display).toBe("none");
+  });
+
   it("classical CSS: plate grade, focus treatment on hover AND focus, no :focus-visible", () => {
     const css = readFileSync(legacyCssPath, "utf8");
 
@@ -1788,9 +1820,9 @@ describe("legacy tv classical states (classical task 003)", () => {
     expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*border:\s*2px solid rgba\(32, 31, 29, 0\.16\)/);
     expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*border-radius:\s*7px/);
     expect(css).toMatch(/#castify-legacy \.tv-message\s*\{[^}]*margin:\s*auto/);
-    // Cormorant title, muted Lora body.
-    expect(css).toMatch(/#castify-legacy \.tv-message-title\s*\{[^}]*font-family:\s*"Cormorant Garamond"/);
+    // App family title, muted body.
     expect(css).toMatch(/#castify-legacy \.tv-message-title\s*\{[^}]*font-size:\s*34px/);
+    expect(css).toMatch(/#castify-legacy \.tv-message-title\s*\{[^}]*font-weight:\s*600/);
     expect(css).toMatch(/#castify-legacy \.tv-message-body\s*\{[^}]*color:\s*rgba\(32, 31, 29, 0\.55\)/);
     expect(css).toMatch(/#castify-legacy \.tv-message-body\s*\{[^}]*font-size:\s*20px/);
   });

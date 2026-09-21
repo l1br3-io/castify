@@ -834,6 +834,7 @@
       html += "</div>";
       container.innerHTML = html;
       wireFolderNav(container);
+      wireThumbs(container);
       wireBackNav(container);
     } else {
       html += '<ul class="tv-items">';
@@ -847,6 +848,7 @@
       html += "</ul></div>";
       container.innerHTML = html;
       wireFolderNav(container);
+      wireThumbs(container);
       wireBackNav(container);
     }
   }
@@ -879,6 +881,7 @@
     html += "</div>";
     container.innerHTML = html;
     wireFolderNav(container);
+    wireThumbs(container);
     wireBackNav(container);
     wireClearSearch();
   }
@@ -948,6 +951,18 @@
     if (!input) {
       return;
     }
+    /* The wrap carries the border; light it from the input's focus
+     * (Chromium 38 has no :has to do this from CSS alone). */
+    input.onfocus = function () {
+      if (this.parentNode) {
+        this.parentNode.classList.add("tv-search-focus");
+      }
+    };
+    input.onblur = function () {
+      if (this.parentNode) {
+        this.parentNode.classList.remove("tv-search-focus");
+      }
+    };
     input.oninput = function () {
       var value = this.value;
       clearSearchTimer();
@@ -1005,6 +1020,21 @@
     var found = root.getElementsByClassName(className);
     for (var i = 0; i < found.length; i++) {
       out.push(found[i]);
+    }
+  }
+
+  /*
+   * Graceful plate thumbnails (classical task 002): a thumb that 404s
+   * (pending generation) or decode-fails must vanish so the plate's
+   * stripes + play icon read instead of a broken-image glyph. Wired per
+   * render (rows are innerHTML strings); display:none keeps layout.
+   */
+  function wireThumbs(container) {
+    var thumbs = container.querySelectorAll(".tv-item-thumb");
+    for (var i = 0; i < thumbs.length; i++) {
+      thumbs[i].onerror = function () {
+        this.style.display = "none";
+      };
     }
   }
 

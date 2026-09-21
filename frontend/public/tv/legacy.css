@@ -15,54 +15,40 @@
  * isn't in the table.
  */
 
-/* Latin subsets extracted from the standalone manifest. Both 400 and 600
- * weights declare the SAME file per family (weight synthesis), exactly as
- * the standalone does. woff2 + @font-face are Chromium 36+; font-display
- * is ignored by the old engine (harmless). */
+/* Fonts (pivot, 2026-09-21): the page uses the APPLICATION's typeface —
+ * "Spline Sans Variable" via @fontsource-variable — not the standalone's
+ * Cormorant/Lora. The variable latin file ships verbatim from the app's
+ * node_modules to /tv/fonts/. Both 400 and 600 declare the SAME file
+ * (weight synthesis — the pattern the Tizen engine handles; modern
+ * engines resolve the real wght axis). GOTCHA: the src hint must stay
+ * format("woff2") — the variable-flavored "woff2-variations" hint is
+ * skipped as unsupported by the old engine. */
 @font-face {
-  font-family: "Cormorant Garamond";
+  font-family: "Spline Sans Variable";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/tv/fonts/cormorant-garamond-latin.woff2") format("woff2");
+  src: url("/tv/fonts/spline-sans-latin.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 @font-face {
-  font-family: "Cormorant Garamond";
+  font-family: "Spline Sans Variable";
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url("/tv/fonts/cormorant-garamond-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: "Lora";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/tv/fonts/lora-latin.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: "Lora";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/tv/fonts/lora-latin.woff2") format("woff2");
+  src: url("/tv/fonts/spline-sans-latin.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* Letterbox behind the 16:9 stage — visible only on non-16:9 viewports
- * (standalone --color-neutral-900). */
+ * (standalone --color-neutral-900). Type is the app's sans stack. */
 #castify-legacy {
   margin: 0;
   min-height: 100vh;
   background: #2d2b2b;
   color: #201f1d;
-  font-family: "Lora", Georgia, serif;
+  font-family: "Spline Sans Variable", system-ui, sans-serif;
 }
 
 /* Fixed 1920x1080 logical stage scaled to the container width by
@@ -101,13 +87,12 @@
   flex-direction: column;
 }
 
-/* Headings carry the Cormorant voice; body stays Lora (stack on
- * #castify-legacy). Sizes land with each surface's restyle. */
+/* Headings carry 600 on the app's single family (the app keeps
+ * --font-display/--font-sans identical today; weights do the voicing). */
 #castify-legacy h1,
 #castify-legacy h2,
 #castify-legacy h3,
 #castify-legacy .tv-title {
-  font-family: "Cormorant Garamond", Georgia, serif;
   font-weight: 600;
 }
 
@@ -120,7 +105,7 @@
 /* GOTCHA: no `gap` anywhere — flexbox gap is Chromium 84+ and silently
  * no-ops on the Tizen engine; spacing is margins. */
 /* Watch page (classical task 004): full measure in the content column,
- * Cormorant title, framed video, muted meta, ml-back-voiced back link.
+ * 600-weight title, framed video, muted meta, ml-back-voiced back link.
  * The <video> keeps the engine's own native controls layer — the scaled
  * canvas doesn't interfere with it. Expiry recovery + subtitle wiring
  * live in legacy.js, untouched by this skin. */
@@ -174,7 +159,6 @@
 }
 
 #castify-legacy .tv-message-title {
-  font-family: "Cormorant Garamond", Georgia, serif;
   font-size: 34px;
   font-weight: 600;
   line-height: 1.12;
@@ -213,7 +197,6 @@
   border: 1px solid #b68235;
   border-radius: 4px;
   color: #b68235;
-  font-family: "Cormorant Garamond", Georgia, serif;
   font-size: 20px;
   font-weight: 600;
   padding: 10px 24px;
@@ -526,7 +509,7 @@
 
 /* ── header band + search (legacy-tv-nav-search task 002) ─────────── */
 
-/* The signature band: 60px Cormorant title and the bordered search box
+/* The signature band: 60px 600-weight title and the bordered search box
  * in one row (standalone TV layout). The title flexes and shrinks
  * (min-width: 0 so long names ellipsize instead of pushing the box
  * out); the box keeps its 420x68 frame. */
@@ -601,11 +584,16 @@
   display: none;
 }
 
-/* Focus feedback lives on the input itself (Chromium 38 has no :has to
- * light the parent): an inset accent band hugging the wrap's border. */
+/* Focus feedback on the search box: Chromium 38 has no :has() to light
+ * the parent from the input's own :focus, so wireSearch toggles a class
+ * on the wrap — the tv-focus ring in border form. */
 #castify-legacy .tv-search:focus {
   outline: none;
-  box-shadow: inset 0 0 0 2px #b68235;
+}
+
+#castify-legacy .tv-search-wrap.tv-search-focus {
+  border-color: #b68235;
+  box-shadow: 0 0 0 4px rgba(182, 130, 53, 0.3);
 }
 
 /* Search chrome: a quiet muted count label, and result cards that say
