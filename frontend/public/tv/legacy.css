@@ -119,20 +119,29 @@
 
 /* GOTCHA: no `gap` anywhere — flexbox gap is Chromium 84+ and silently
  * no-ops on the Tizen engine; spacing is margins. */
+/* Watch page (classical task 004): full measure in the content column,
+ * Cormorant title, framed video, muted meta, ml-back-voiced back link.
+ * The <video> keeps the engine's own native controls layer — the scaled
+ * canvas doesn't interfere with it. Expiry recovery + subtitle wiring
+ * live in legacy.js, untouched by this skin. */
 #castify-legacy .tv-watch {
   width: 100%;
-  max-width: 960px;
 }
 
 #castify-legacy .tv-watch .tv-title {
-  margin-bottom: 12px;
+  font-size: 40px;
+  line-height: 1.12;
+  margin: 0 0 16px 0;
 }
 
+/* Framed presentation, plate echo kept to a hairline so the native
+ * controls stay the star. */
 #castify-legacy .tv-video {
   width: 100%;
   background: #000000;
-  border-radius: 8px;
-  margin-bottom: 12px;
+  border: 1px solid rgba(32, 31, 29, 0.16);
+  border-radius: 7px;
+  margin-bottom: 16px;
 }
 
 #castify-legacy .tv-title {
@@ -140,12 +149,6 @@
   font-weight: 600;
   margin: 0;
   word-wrap: break-word;
-}
-
-#castify-legacy .tv-video {
-  width: 100%;
-  background: #000000;
-  border-radius: 8px;
 }
 
 #castify-legacy .tv-meta {

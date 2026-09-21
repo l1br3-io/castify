@@ -1822,3 +1822,16 @@ describe("legacy tv classical states (classical task 003)", () => {
     expect(css).toMatch(/#castify-legacy \.tv-back\s*\{[^}]*color:\s*#7d5411/);
   });
 });
+
+describe("legacy tv classical watch page (classical task 004)", () => {
+  it("watch takes the classical skin: full measure, 40px serif title, framed video", () => {
+    const css = readFileSync(legacyCssPath, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/#castify-legacy \.tv-watch\s*\{[^}]*width:\s*100%/);
+    expect(css).not.toMatch(/#castify-legacy \.tv-watch\s*\{[^}]*max-width/);
+    expect(css).toMatch(/#castify-legacy \.tv-watch \.tv-title\s*\{[^}]*font-size:\s*40px/);
+    expect(css).toMatch(/#castify-legacy \.tv-video\s*\{[^}]*border:\s*1px solid rgba\(32, 31, 29, 0\.16\)/);
+    expect(css).toMatch(/#castify-legacy \.tv-video\s*\{[^}]*border-radius:\s*7px/);
+    // The old dark-theme amber/blue values must be gone for good.
+    expect(css).not.toMatch(/#f0a93a|#9096a5|#171b24/);
+  });
+});
