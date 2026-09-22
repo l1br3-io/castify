@@ -84,6 +84,30 @@ export function LibraryIcon({ className }: PlayerIconProps) {
   );
 }
 
+/** List view — three ruled rows with leading dots (ledger rows, not a
+ *  hamburger; sits beside the four-pane `LibraryIcon` in ViewToggle). */
+export function ListIcon({ className }: PlayerIconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className ?? "h-full w-full"}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <circle cx="5" cy="6" r="0.5" />
+      <path d="M9 6h12" />
+      <circle cx="5" cy="12" r="0.5" />
+      <path d="M9 12h12" />
+      <circle cx="5" cy="18" r="0.5" />
+      <path d="M9 18h12" />
+    </svg>
+  );
+}
+
 /** Sources — cloud (sidebar nav). */
 export function CloudIcon({ className }: PlayerIconProps) {
   return (
