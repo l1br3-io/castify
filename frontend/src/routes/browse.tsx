@@ -10,7 +10,7 @@
 //      queries. The design's 4th cell (Favorites) has no count API either.
 //   2. Rails: Continue watching & listening (IndexedDB-backed, hidden when
 //      empty), Recently added, Favorites (when any).
-//   3. All-videos section: heading + mono result count + sort + filter
+//   3. All-files section: heading + mono result count + sort + filter
 //      panel + poster grid + pagination. Search lives in the app topbar
 //      (the design's placement) and writes this page's `?q=` param.
 //   4. Folder organizer (sidebar tree + contents + provider chips).
@@ -28,8 +28,8 @@
 //
 // Empty states:
 //   * Library truly empty (recentlyAdded has 0 videos): scan-aware CTA.
-//   * Grid empty due to active filter: "No videos match this filter."
-//   * Grid empty due to search query: 'No videos match "q".'
+//   * Grid empty due to active filter: "No files match this filter."
+//   * Grid empty due to search query: 'No files match "q".'
 //
 // Multi-select share mode (task 012): "Select" in the grid header toggles
 // a selection mode where PosterCards toggle instead of navigating; the
@@ -183,7 +183,7 @@ export function BrowsePage() {
     filters.clearAll();
     if (filter.favoritesOnly) filters.setFavoritesOnly(true);
     document
-      .getElementById("all-videos")
+      .getElementById("all-files")
       ?.scrollIntoView({ behavior: "smooth" });
   }
 
@@ -201,7 +201,7 @@ export function BrowsePage() {
   if (recentlyAdded.isError) {
     return (
       <ErrorState
-        title="Couldn't load videos."
+        title="Couldn't load your library."
         body={describeError(recentlyAdded.error)}
         onRetry={() => recentlyAdded.refetch()}
       />
@@ -287,7 +287,7 @@ export function BrowsePage() {
       {/* Stagger step 3: the All-files section — heading, search field
           (demo placement: above the grid), select/sort, filters, grid. */}
       <div
-        id="all-videos"
+        id="all-files"
         className="animate-stagger-in space-y-4 pt-2 [animation-delay:120ms] motion-reduce:animate-none"
       >
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -306,11 +306,11 @@ export function BrowsePage() {
               </>
             ) : (
               <>
-                <h2 className="text-xl">All videos</h2>
+                <h2 className="text-xl">All files</h2>
                 {videos.data && (
                   <p className="figure font-mono text-xs text-[var(--color-castify-muted)]">
                     {videos.data.total.toLocaleString()}{" "}
-                    {videos.data.total === 1 ? "video" : "videos"}
+                    {videos.data.total === 1 ? "file" : "files"}
                   </p>
                 )}
               </>
@@ -334,7 +334,7 @@ export function BrowsePage() {
               <label className="flex items-center gap-2 text-sm">
                 <span className="text-[var(--color-castify-muted)]">Sort</span>
                 <select
-                  aria-label="Sort videos"
+                  aria-label="Sort files"
                   value={filters.values.sort}
                   onChange={(e) =>
                     filters.setSort(e.target.value as VideoSortKey)
@@ -600,7 +600,7 @@ function BrowseGrid({
   if (videos.isError) {
     return (
       <ErrorState
-        title="Couldn't load videos."
+        title="Couldn't load files."
         body={describeError(videos.error)}
         onRetry={() => videos.refetch()}
       />
@@ -612,7 +612,7 @@ function BrowseGrid({
     if (searchQuery) {
       return (
         <EmptyState
-          title={`No videos match \u201c${searchQuery}\u201d`}
+          title={`No files match \u201c${searchQuery}\u201d`}
           body="Try a different search term."
           onAction={onClearSearch}
           actionLabel="Clear search"
@@ -622,7 +622,7 @@ function BrowseGrid({
     if (hasActiveFilter) {
       return (
         <EmptyState
-          title="No videos match this filter"
+          title="No files match this filter"
           body="Try adjusting or clearing your filters."
           onAction={onClearFilters}
           actionLabel="Clear filters"
@@ -696,7 +696,7 @@ function BrowseGrid({
       >
         <ListView
           rows={rows}
-          ariaLabel={searchQuery ? "Search results" : "All videos"}
+          ariaLabel={searchQuery ? "Search results" : "All files"}
           nameSortKey="name"
           sort={listSort}
           selection={
@@ -816,13 +816,13 @@ function LibraryEmptyState() {
     return (
       <EmptyState
         title={"Scanning your cloud\u2026"}
-        body="Videos will appear here as the scan progresses."
+        body="Files will appear here as the scan progresses."
       />
     );
   }
   return (
     <EmptyState
-      title="No videos yet"
+      title="Your library is empty"
       body="Connect a cloud provider to populate your library."
       onAction={() => navigate("/connections")}
       actionLabel="Connect a provider"

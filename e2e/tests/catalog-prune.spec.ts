@@ -227,9 +227,9 @@ test.describe("catalog prune (MinIO, task 008)", () => {
 
       // …and from browse.
       await page.goto("/");
-      await expect(page.getByRole("heading", { name: "All videos" })).toBeVisible();
-      await expect(page.locator("#all-videos")).toContainText("holiday.mp4");
-      await expect(page.locator("#all-videos")).not.toContainText("teaser.mkv");
+      await expect(page.getByRole("heading", { name: "All files" })).toBeVisible();
+      await expect(page.locator("#all-files")).toContainText("holiday.mp4");
+      await expect(page.locator("#all-files")).not.toContainText("teaser.mkv");
     } finally {
       // Fresh CSRF: the UI navigations above rotate the csrf cookie, and
       // a stale token would silently fail the restore + disconnect —

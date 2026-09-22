@@ -167,9 +167,9 @@ describe("ListView", () => {
   });
 
   it("labels the table for screen readers", () => {
-    renderView(<ListView rows={[makeRow()]} ariaLabel="All videos" />);
+    renderView(<ListView rows={[makeRow()]} ariaLabel="All files" />);
     expect(
-      screen.getByRole("table", { name: "All videos" }),
+      screen.getByRole("table", { name: "All files" }),
     ).toBeInTheDocument();
   });
 });

@@ -168,7 +168,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
 
     const vacation = gdByName("vacation.mp4");
@@ -315,7 +315,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
 
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
 
     // Click the FIRST playable PosterCard in the All files grid. The grid's
@@ -329,7 +329,7 @@ test.describe("Play lifecycle (M3 T14)", () => {
     // first non-concert card still can't be the queue's tail (3 other
     // unique videos follow it in some order), so Next stays enabled.
     const firstCard = page
-      .locator("#all-videos")
+      .locator("#all-files")
       .getByRole("link", { name: /^Play (?!concert\.mp4$)/ })
       .first();
     const firstHref = await firstCard.getAttribute("href");

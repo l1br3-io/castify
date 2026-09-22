@@ -41,10 +41,10 @@ test.describe("Catalog flow (e2e mock)", () => {
     // Verify 3 videos on the home page (vacation, concert, shared-doc)
     await page.goto("/");
     await expect(
-      page.getByRole("heading", { name: "All videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
     await expect(
-      page.locator("#all-videos").getByText("3 videos"),
+      page.locator("#all-files").getByText("3 files"),
     ).toBeVisible();
     await expect(page.getByText("vacation.mp4").first()).toBeVisible();
     await expect(page.getByText("concert.mp4").first()).toBeVisible();
@@ -56,12 +56,12 @@ test.describe("Catalog flow (e2e mock)", () => {
     // 4 unique videos: 3 GD + 2 DB − 1 shared deduped
     await page.reload();
     await expect(
-      page.getByRole("heading", { name: "All videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
-    // Scope to the grid — M9's library header ("Your library · 4 videos …")
+    // Scope to the grid section — the stat row also carries the total.
     // also matches the substring.
     await expect(
-      page.locator("#all-videos").getByText("4 videos"),
+      page.locator("#all-files").getByText("4 files"),
     ).toBeVisible();
 
     // Dedup badge on the shared video. Multiple shelves (Recently Added,
@@ -83,7 +83,7 @@ test.describe("Catalog flow (e2e mock)", () => {
     // 2 videos remain: screenshots.mp4 + shared-doc.mp4 (from Dropbox)
     await page.reload();
     await expect(
-      page.locator("#all-videos").getByText("2 videos"),
+      page.locator("#all-files").getByText("2 files"),
     ).toBeVisible();
     // vacation.mp4 is gone everywhere (its only copy was on Google Drive).
     await expect(page.getByText("vacation.mp4")).toHaveCount(0);

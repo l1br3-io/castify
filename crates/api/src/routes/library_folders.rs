@@ -5,7 +5,7 @@
 //! stack, CSRF on mutations — no allowlist entry, mirroring the shares
 //! mutation contract). Folders are organization, never authorization:
 //! nothing in this module gates playback, shares, search, or the
-//! all-videos grid — placement is a presentation axis the batch-move
+//! "All files" grid — placement is a presentation axis the batch-move
 //! endpoint is the sole writer of.
 
 use axum::extract::{Path, Query, State};
@@ -237,7 +237,7 @@ pub async fn update(
 /// return to Unfiled and its subfolders flatten to the root.
 ///
 /// Folder deletion is organization, never catalog: no `videos`/`files`
-/// row is removed, so playback, shares, search, and the all-videos grid
+/// row is removed, so playback, shares, search, and the "All files" grid
 /// are untouched. The repository's single transaction lifts items (plain
 /// placement clear — only folders have positions), flattens subfolders
 /// to root with deterministic de-collision, then deletes the row; a

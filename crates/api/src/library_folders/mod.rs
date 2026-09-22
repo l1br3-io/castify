@@ -11,7 +11,7 @@
 //!
 //! Invariants, enforced here and relied on by every route:
 //!   * Folders are organization, never authorization — playback, shares,
-//!     search, filters, and the all-videos grid never read placement.
+//!     search, filters, and the "All files" grid never read placement.
 //!     The only writer of `library_folder_id` is the batch-move path.
 //!   * One transaction per owner action (create / rename+reparent /
 //!     delete / batch move) — a partial folder operation can never land.

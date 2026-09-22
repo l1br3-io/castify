@@ -80,7 +80,7 @@ export type ListViewSort = {
 
 type ListViewProps = {
   rows: ListViewRow[];
-  /** The table's accessible name (e.g. "All videos"). */
+  /** The table's accessible name (e.g. "All files"). */
   ariaLabel: string;
   /** Pass to make the Name header sortable (its sort key — browse: "name"). */
   nameSortKey?: string;
@@ -277,7 +277,7 @@ function ListViewBodyRow({
           title={typeof col.value === "string" ? col.value : undefined}
           className={`whitespace-nowrap px-3 py-2 align-middle text-sm ${
             col.numeric ? "text-right" : ""
-          } ${col.mono ? "figure" : "text-[var(--color-castify-muted)]"} ${col.className ?? ""}`}
+          } ${col.mono ? "figure font-mono" : "text-[var(--color-castify-muted)]"} ${col.className ?? ""}`}
         >
           {col.value}
         </td>

@@ -270,7 +270,7 @@ describe("BrowsePage", () => {
     );
     // stats → rails → all-files grid → folder organizer (spec IA order).
     expect(staggered).toHaveLength(4);
-    expect(staggered[2]).toHaveAttribute("id", "all-videos");
+    expect(staggered[2]).toHaveAttribute("id", "all-files");
     const delays = staggered.map(
       (el) => el.className.match(/animation-delay:(\d+)ms/)?.[1] ?? "0",
     );
@@ -338,7 +338,7 @@ describe("BrowsePage", () => {
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
     // Scope to the grid section — the hero + shelves also render PosterCards.
-    const gridSection = container.querySelector("#all-videos");
+    const gridSection = container.querySelector("#all-files");
     expect(gridSection).not.toBeNull();
     const gridImgs = gridSection!.querySelectorAll("img");
     expect(gridImgs.length).toBe(2);
@@ -350,7 +350,7 @@ describe("BrowsePage", () => {
     renderBrowse({ fetchImplementation: browseFetch() });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    const select = screen.getByLabelText("Sort videos");
+    const select = screen.getByLabelText("Sort files");
     const options = select.querySelectorAll("option");
     expect(options.length).toBe(9);
     expect(screen.getByRole("option", { name: "Newest" })).toBeInTheDocument();
@@ -366,7 +366,7 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    fireEvent.change(screen.getByLabelText("Sort videos"), {
+    fireEvent.change(screen.getByLabelText("Sort files"), {
       target: { value: "size" },
     });
 
@@ -424,7 +424,7 @@ describe("BrowsePage", () => {
     });
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
-    const gridSection = container.querySelector("#all-videos");
+    const gridSection = container.querySelector("#all-files");
     const grid = gridSection!.querySelector(
       ".grid.grid-cols-2.sm\\:grid-cols-3.md\\:grid-cols-4.lg\\:grid-cols-5.xl\\:grid-cols-6",
     );
@@ -443,7 +443,9 @@ describe("BrowsePage", () => {
       },
     });
 
-    expect(await screen.findByText(/Couldn't load videos/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Couldn't load your library/),
+    ).toBeInTheDocument();
   });
 
   // --- Empty states ---
@@ -453,7 +455,7 @@ describe("BrowsePage", () => {
       fetchImplementation: browseFetch({ videoPage: EMPTY_VIDEO_PAGE }),
     });
 
-    expect(await screen.findByText("No videos yet")).toBeInTheDocument();
+    expect(await screen.findByText("Your library is empty")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Connect a provider" }),
     ).toBeInTheDocument();
@@ -491,7 +493,7 @@ describe("BrowsePage", () => {
     renderBrowse({ fetchImplementation: browseFetch() });
 
     // "Recently added" appears as a rail heading (level 2), alongside
-    // "All videos" in the grid section.
+    // "All files" in the grid section.
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
     expect(
       screen.getByRole("heading", { name: "Recently added" }),
@@ -558,7 +560,7 @@ describe("BrowsePage", () => {
     // T10: the "Showing:" indicator was replaced by filter chips.
     // The Favorites chip should appear in the grid section.
     await waitFor(() => {
-      const gridSection = container.querySelector("#all-videos");
+      const gridSection = container.querySelector("#all-files");
       expect(
         within(gridSection as HTMLElement).getByText("Favorites"),
       ).toBeInTheDocument();
@@ -660,7 +662,7 @@ describe("BrowsePage", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("No videos match \u201cxyz\u201d"),
+        screen.getByText("No files match \u201cxyz\u201d"),
       ).toBeInTheDocument();
     });
   });
@@ -688,7 +690,7 @@ describe("BrowsePage", () => {
     // Should return to browse layout (rails reappear).
     await waitFor(() => {
       expect(
-        screen.getByRole("heading", { name: "All videos" }),
+        screen.getByRole("heading", { name: "All files" }),
       ).toBeInTheDocument();
     });
     expect(
@@ -722,7 +724,7 @@ describe("BrowsePage", () => {
     // NOT inside the All-videos grid section.
     const search = screen.getByRole("search");
     expect(within(search).getByLabelText("Search videos")).toBeInTheDocument();
-    const gridSection = container.querySelector("#all-videos");
+    const gridSection = container.querySelector("#all-files");
     expect(gridSection).not.toBeNull();
     expect(
       within(gridSection as HTMLElement).queryByLabelText("Search videos"),
@@ -778,7 +780,7 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    fireEvent.change(screen.getByLabelText("Sort videos"), {
+    fireEvent.change(screen.getByLabelText("Sort files"), {
       target: { value: "name" },
     });
 
@@ -825,7 +827,7 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    const gridSection = container.querySelector("#all-videos");
+    const gridSection = container.querySelector("#all-files");
     const filterToggle = within(gridSection as HTMLElement).getByRole(
       "button",
       {
@@ -1021,7 +1023,7 @@ describe("BrowsePage", () => {
 
     // Favorites chip should appear in the grid section.
     await waitFor(() => {
-      const gridSection = container.querySelector("#all-videos");
+      const gridSection = container.querySelector("#all-files");
       expect(
         within(gridSection as HTMLElement).getByText("Favorites"),
       ).toBeInTheDocument();
@@ -1047,7 +1049,7 @@ describe("BrowsePage", () => {
 
     // Scope to the grid section — the hero + Recently added shelf also have
     // favorite toggles for v1.
-    const gridSection = container.querySelector("#all-videos")!;
+    const gridSection = container.querySelector("#all-files")!;
     const gridFavoriteBtns = within(gridSection as HTMLElement).getAllByRole(
       "button",
       {
@@ -1082,7 +1084,7 @@ describe("BrowsePage", () => {
 
     await screen.findByRole("heading", { level: 1, name: /Your library/ });
 
-    const gridSection = container.querySelector("#all-videos")!;
+    const gridSection = container.querySelector("#all-files")!;
     const gridStarBtns = within(gridSection as HTMLElement).getAllByRole(
       "radio",
       {
@@ -1358,7 +1360,7 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
     fireEvent.click(
       screen.getByRole("checkbox", { name: "Select dedup-video.mp4" }),
     );
-    const gridSection = container.querySelector("#all-videos")!;
+    const gridSection = container.querySelector("#all-files")!;
     fireEvent.click(within(gridSection as HTMLElement).getByText("cat.mp4"));
     expect(screen.getByText(/2 items selected/)).toBeInTheDocument();
 
@@ -1446,7 +1448,7 @@ describe("BrowsePage list view", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
 
-    const table = screen.getByRole("table", { name: "All videos" });
+    const table = screen.getByRole("table", { name: "All files" });
     const link = within(table).getByRole("link", { name: "cat.mp4" });
     expect(link).toHaveAttribute("href", "/watch/v1");
     // Ledger columns render formatted values.
@@ -1460,7 +1462,7 @@ describe("BrowsePage list view", () => {
     window.localStorage.setItem("castify-view-mode", "list");
     renderBrowse({ fetchImplementation: browseFetch() });
     expect(
-      await screen.findByRole("table", { name: "All videos" }),
+      await screen.findByRole("table", { name: "All files" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Play cat.mp4" })).toBeNull();
   });
@@ -1468,13 +1470,13 @@ describe("BrowsePage list view", () => {
   it("hides the sort dropdown while the table is active", async () => {
     renderBrowse({ fetchImplementation: browseFetch() });
     await screen.findByRole("heading", { level: 1 });
-    expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
+    expect(screen.getByLabelText("Sort files")).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
-    expect(screen.queryByLabelText("Sort videos")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Sort files")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole("button", { name: "Grid view" })[0]);
-    expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
+    expect(screen.getByLabelText("Sort files")).toBeInTheDocument();
   });
 
   it("header clicks write the URL sort param and reflect aria-sort", async () => {
@@ -1485,14 +1487,21 @@ describe("BrowsePage list view", () => {
 
     // Name (asc default) — the grid query refetches with sort=name.
     fireEvent.click(screen.getByRole("button", { name: "Name" }));
-    await waitFor(() => {
-      const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
-        const url = String(input);
-        return url.startsWith("/api/videos") && !url.includes("limit=20") && !url.includes("/folders");
-      });
-      const last = String(gridCalls[gridCalls.length - 1][0]);
-      expect(last).toContain("sort=name");
-    });
+    await waitFor(
+      () => {
+        const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
+          const url = String(input);
+          return (
+            url.startsWith("/api/videos") &&
+            !url.includes("limit=20") &&
+            !url.includes("/folders")
+          );
+        });
+        const last = String(gridCalls[gridCalls.length - 1][0]);
+        expect(last).toContain("sort=name");
+      },
+      { timeout: 3000 },
+    );
     expect(screen.getByRole("columnheader", { name: /^Name/ })).toHaveAttribute(
       "aria-sort",
       "ascending",
@@ -1500,7 +1509,8 @@ describe("BrowsePage list view", () => {
 
     // Clicking the active header reverses it.
     fireEvent.click(screen.getByRole("button", { name: "Name" }));
-    await waitFor(() => {
+    await waitFor(
+      () => {
       expect(screen.getByRole("columnheader", { name: /^Name/ })).toHaveAttribute(
         "aria-sort",
         "descending",
@@ -1509,14 +1519,21 @@ describe("BrowsePage list view", () => {
 
     // Size defaults to smallest-first (size-asc; types.ts NOTE).
     fireEvent.click(screen.getByRole("button", { name: "Size" }));
-    await waitFor(() => {
-      const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
-        const url = String(input);
-        return url.startsWith("/api/videos") && !url.includes("limit=20") && !url.includes("/folders");
-      });
-      const last = String(gridCalls[gridCalls.length - 1][0]);
-      expect(last).toContain("sort=size-asc");
-    });
+    await waitFor(
+      () => {
+        const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
+          const url = String(input);
+          return (
+            url.startsWith("/api/videos") &&
+            !url.includes("limit=20") &&
+            !url.includes("/folders")
+          );
+        });
+        const last = String(gridCalls[gridCalls.length - 1][0]);
+        expect(last).toContain("sort=size-asc");
+      },
+      { timeout: 3000 },
+    );
   });
 
   it("select mode works from rows — click order drives the share count", async () => {

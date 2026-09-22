@@ -96,11 +96,11 @@ test.describe("Browse page (e2e mock)", () => {
 
     // ── Poster grid ────────────────────────────────────────────────
     await expect(
-      page.getByRole("heading", { name: "All videos" }),
+      page.getByRole("heading", { name: "All files" }),
     ).toBeVisible();
-    // Scope to the grid — the M9 library header also contains "4 videos".
+    // Scope to the grid section — the stat row also carries the total.
     await expect(
-      page.locator("#all-videos").getByText("4 videos"),
+      page.locator("#all-files").getByText("4 files"),
     ).toBeVisible();
     // All 4 video names are visible somewhere on the page (rail/organizer/grid)
     for (const name of [
@@ -138,23 +138,23 @@ test.describe("Browse page (e2e mock)", () => {
       page.getByRole("heading", { name: "Recently added" }),
     ).toBeVisible();
     await expect(
-      page.locator("#all-videos").getByText("4 videos"),
+      page.locator("#all-files").getByText("4 files"),
     ).toBeVisible();
 
     // ── Filter by provider ─────────────────────────────────────────
     // Provider preset chips are always visible inline (All / Google Drive /
     // Dropbox). No need to open the "More filters" drawer.
     await page
-      .locator("#all-videos")
+      .locator("#all-files")
       .getByRole("group", { name: "Filter by provider" })
       .getByRole("button", { name: "Dropbox", exact: true })
       .click();
     // Grid updates: 2 Dropbox videos (screenshots.mp4 + shared-doc.mp4).
-    // Scope negative assertions to the #all-videos grid — the rails and
+    // Scope negative assertions to the #all-files grid — the rails and
     // organizer above the grid still show All-videos content.
-    const grid = page.locator("#all-videos");
+    const grid = page.locator("#all-files");
     await expect(
-      page.locator("#all-videos").getByText("2 videos"),
+      page.locator("#all-files").getByText("2 files"),
     ).toBeVisible();
     await expect(grid.getByText("screenshots.mp4").first()).toBeVisible();
     await expect(grid.getByText("shared-doc.mp4").first()).toBeVisible();
@@ -164,14 +164,14 @@ test.describe("Browse page (e2e mock)", () => {
     // Clear filter
     await page.getByRole("button", { name: "Clear all" }).click();
     await expect(
-      page.locator("#all-videos").getByText("4 videos"),
+      page.locator("#all-files").getByText("4 files"),
     ).toBeVisible();
     await expect(page.getByText("vacation.mp4").first()).toBeVisible();
 
     // ── Favorite + rating via a grid card (M9: hero variant is gone) ──
     // Hover the first grid card to reveal its favorite toggle + stars.
     const card = page
-      .locator("#all-videos article")
+      .locator("#all-files article")
       .filter({ hasText: "vacation.mp4" })
       .first();
     await card.hover();
@@ -199,7 +199,7 @@ test.describe("Browse page (e2e mock)", () => {
       page.getByRole("heading", { name: "Favorites", exact: true }),
     ).toBeVisible();
     const reloadedCard = page
-      .locator("#all-videos article")
+      .locator("#all-files article")
       .filter({ hasText: "vacation.mp4" })
       .first();
     await reloadedCard.hover();

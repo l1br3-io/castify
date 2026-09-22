@@ -362,7 +362,7 @@ impl LibraryFolderRepository {
     /// its contained items return to **Unfiled** and its subfolders
     /// flatten to the root. Folder deletion is organization, never
     /// catalog: no `videos`/`files` row is removed, so playback, shares,
-    /// search, and the all-videos grid are untouched. One transaction,
+    /// search, and the "All files" grid are untouched. One transaction,
     /// ordered so the migration's `ON DELETE CASCADE` never fires:
     /// (1) collect the subtree with a single recursive CTE and pre-order
     /// it in memory (siblings by `position`, children before next
