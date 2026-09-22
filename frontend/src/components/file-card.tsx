@@ -34,6 +34,7 @@ import { type ReactNode } from "react";
 import { FILE_KIND_LABELS, type FileEntryDto, type FileKindKey } from "../api/types";
 import { fileDownloadUrl } from "../api/folders";
 import { formatSize } from "../lib/format";
+import { KIND_HUES } from "./kind-hues";
 import {
   ArchiveIcon,
   AudioIcon,
@@ -51,19 +52,9 @@ type SelectionProps = {
   menuSlot?: ReactNode;
 };
 
-// Kind → hue utilities. Static literal strings (one per kind) so the
-// Tailwind scanner emits every arbitrary value; per-theme resolution comes
-// free from the `--color-kind-*` token cascade (dark/light, Task 001).
-const KIND_HUES: Record<FileKindKey, { icon: string; tab: string }> = {
-  audio: { icon: "text-[var(--color-kind-audio)]", tab: "bg-[var(--color-kind-audio)]" },
-  image: { icon: "text-[var(--color-kind-image)]", tab: "bg-[var(--color-kind-image)]" },
-  subtitle: { icon: "text-[var(--color-kind-subtitle)]", tab: "bg-[var(--color-kind-subtitle)]" },
-  document: { icon: "text-[var(--color-kind-document)]", tab: "bg-[var(--color-kind-document)]" },
-  archive: { icon: "text-[var(--color-kind-archive)]", tab: "bg-[var(--color-kind-archive)]" },
-  other: { icon: "text-[var(--color-kind-other)]", tab: "bg-[var(--color-kind-other)]" },
-};
-
-function KindIcon({ kind, className }: { kind: FileKindKey; className: string }) {
+/** The kind glyph, tinted by its hue (see ./kind-hues.ts). Exported for
+ *  the list view (library-list-view task 005) — same taxonomy language. */
+export function KindIcon({ kind, className }: { kind: FileKindKey; className: string }) {
   const classes = `${KIND_HUES[kind].icon} ${className}`;
   switch (kind) {
     case "audio":

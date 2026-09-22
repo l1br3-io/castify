@@ -36,7 +36,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import { FileCard, FileRow } from "./file-card";
+import { FileCard, FileRow, KindIcon } from "./file-card";
+import { KIND_HUES } from "./kind-hues";
 import { FolderNameDialog } from "./folder-name-dialog";
 import { FolderPickerDialog } from "./folder-picker-dialog";
 import { FolderTile } from "./folder-tile";
@@ -44,9 +45,13 @@ import { LibraryFolderMenu } from "./library-folder-menu";
 import { LibraryItemMenu } from "./library-item-menu";
 import { PosterCard } from "./poster-card";
 import { FavoriteToggle } from "./favorite-toggle";
+import { ListView, type ListViewRow } from "./list-view";
+import { ViewToggle } from "./view-toggle";
+import { FolderIcon } from "./icons";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import {
+  FILE_KIND_LABELS,
   PROVIDER_LABELS,
   type FileEntryDto,
   type FolderEntryDto,
@@ -54,8 +59,10 @@ import {
   type LibraryTreeFolderDto,
   type ProviderKey,
 } from "../api/types";
+import { fileDownloadUrl } from "../api/folders";
 import { useFolderContents } from "../hooks/use-folder-contents";
 import { useFolderDir } from "../hooks/use-folder-dir";
+import { useViewMode, type ViewMode } from "../hooks/use-view-mode";
 import {
   useCreateLibraryFolder,
   useDeleteLibraryFolder,
@@ -67,7 +74,7 @@ import {
 } from "../hooks/use-library-folders";
 import type { LibraryMoveItem } from "../api/library-folders";
 import { useDebouncedValue } from "../hooks/use-debounced-value";
-import { describeError } from "../lib/format";
+import { describeError, formatDate, formatDuration, formatSize } from "../lib/format";
 import { onNewFolder as onNewFolderSignal } from "../lib/new-folder-event";
 import { Skeleton } from "./ui/skeleton";
 import { ErrorState } from "./ui/error-state";
@@ -144,6 +151,9 @@ type ContentsBodyProps = {
   page: number;
   onPageChange: (updater: (p: number) => number) => void;
   filtersActive: boolean;
+  /** Current presentation (library-list-view task 005) — the pane above
+   *  owns the toggle + preference; this is the rendered mode. */
+  viewMode: ViewMode;
   /** Select mode (curated pane): when set, cards toggle instead of
    *  navigating and per-item menus hide. */
   selection?: {
@@ -154,6 +164,62 @@ type ContentsBodyProps = {
   itemMenu?: (entry: FolderEntryDto) => ReactNode;
 };
 
+/** One contents entry → one slate row (library-list-view task 005). The
+ *  mixed table wears a uniform column set — the header comes from the
+ *  first row, so video and file rows must agree on keys (videos report
+ *  Kind "Video"; non-media kinds report Duration "—"). */
+function entryToRow(
+  entry: FolderEntryDto,
+  videoQueue: string[],
+  itemMenu?: (entry: FolderEntryDto) => ReactNode,
+): ListViewRow {
+  const providerLabel = PROVIDER_LABELS[entry.provider] ?? entry.provider;
+  if (entry.kind === "video") {
+    return {
+      id: entry.id,
+      name: entry.name,
+      href: `/watch/${entry.id}`,
+      linkState: { queue: videoQueue },
+      thumbnail: { video: entry },
+      columns: [
+        { key: "kind", label: "Kind", className: "hidden lg:table-cell", value: "Video" },
+        { key: "duration", label: "Duration", mono: true, value: entry.duration_ms !== null ? formatDuration(entry.duration_ms) : "—" },
+        { key: "size", label: "Size", mono: true, numeric: true, className: "hidden md:table-cell", value: formatSize(entry.size_bytes) },
+        { key: "provider", label: "Provider", className: "hidden xl:table-cell", value: providerLabel },
+        { key: "modified", label: "Modified", mono: true, className: "hidden lg:table-cell", value: formatDate(entry.created_at) },
+      ],
+      favoriteSlot: <FavoriteToggle video={entry} />,
+      menuSlot: itemMenu?.(entry),
+    };
+  }
+  return {
+    id: entry.id,
+    name: entry.name,
+    kindHue: KIND_HUES[entry.kind].tab,
+    kindIcon: <KindIcon kind={entry.kind} className="h-6 w-6" />,
+    columns: [
+      { key: "kind", label: "Kind", className: "hidden lg:table-cell", value: FILE_KIND_LABELS[entry.kind] },
+      { key: "duration", label: "Duration", mono: true, value: "—" },
+      { key: "size", label: "Size", mono: true, numeric: true, className: "hidden md:table-cell", value: formatSize(entry.size_bytes) },
+      { key: "provider", label: "Provider", className: "hidden xl:table-cell", value: providerLabel },
+      { key: "modified", label: "Modified", mono: true, className: "hidden lg:table-cell", value: entry.modified_at !== null ? formatDate(entry.modified_at) : "—" },
+    ],
+    // The download affordance rides the trailing cell — FileRow's link,
+    // relocated (a click here downloads, never navigates).
+    favoriteSlot: (
+      <a
+        href={fileDownloadUrl(entry.id)}
+        aria-label={`Download ${entry.name}`}
+        download
+        className="rounded-[var(--radius-button)] px-2 py-1 text-xs font-semibold text-[var(--color-castify-accent)] transition hover:bg-[var(--color-castify-accent-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-castify-accent)]"
+      >
+        Download
+      </a>
+    ),
+    menuSlot: itemMenu?.(entry),
+  };
+}
+
 /** The shared contents rendering: grid tiles + list rows + pagination +
  *  loading/error/empty states. Both panes render items through this —
  *  one rendering rule set, per the spec's "no forked siblings". */
@@ -162,6 +228,7 @@ function ContentsBody({
   page,
   onPageChange,
   filtersActive,
+  viewMode,
   selection,
   itemMenu,
 }: ContentsBodyProps) {
@@ -192,7 +259,53 @@ function ContentsBody({
             : "This folder is empty."}
         </p>
       )}
-      {contents.data && contents.data.entries.length > 0 && (
+      {contents.data && contents.data.entries.length > 0 && viewMode === "list" && (
+        <>
+          {/* List mode (library-list-view task 005): every kind as a slate
+              row, display-only headers — the server's name-asc order
+              stands (spec decision: no folder-contents sort param). */}
+          <ListView
+            ariaLabel="Folder contents"
+            rows={contents.data.entries.map((entry) =>
+              entryToRow(entry, videoQueue, itemMenu),
+            )}
+            selection={
+              selection && {
+                isSelected: (row) => selection.selectedIds.has(row.id),
+                onToggle: (row) => {
+                  const entry = contents.data?.entries.find((e) => e.id === row.id);
+                  if (entry !== undefined) selection.onToggle(entry);
+                },
+              }
+            }
+          />
+
+          {contents.data.total > contents.data.limit && (
+            <div className="flex items-center justify-between gap-4 pt-2">
+              <button
+                type="button"
+                onClick={() => onPageChange((p) => Math.max(1, p - 1))}
+                disabled={page <= 1 || contents.isFetching}
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-40"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-[var(--color-castify-muted)]">
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => onPageChange((p) => p + 1)}
+                disabled={page >= totalPages || contents.isFetching}
+                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] px-4 py-2 text-sm transition hover:bg-[var(--color-castify-accent-subtle)] disabled:opacity-40"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
+      )}
+      {contents.data && contents.data.entries.length > 0 && viewMode === "grid" && (
         <>
           {/* Grid children: videos + tile files; list kinds render as rows
               below (a mixed grid breaks on wildly different card heights). */}
@@ -285,6 +398,7 @@ function ProviderPane({ connectedProviders }: { connectedProviders: ProviderKey[
   const [page, setPage] = useState(1);
   const [providerFilter, setProviderFilter] = useState<string | undefined>();
   const [nameQuery, setNameQuery] = useState("");
+  const [viewMode, setViewMode] = useViewMode();
   // Debounced like the global SearchBar (300ms) — one fetch per pause, not
   // per keystroke.
   const debouncedNameQuery = useDebouncedValue(nameQuery, 300);
@@ -390,6 +504,7 @@ function ProviderPane({ connectedProviders }: { connectedProviders: ProviderKey[
             {folderName}
           </h2>
           <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle mode={viewMode} onModeChange={setViewMode} />
             {/* Provider chips (replaces the old By Provider shelves). */}
             <div
               role="group"
@@ -429,6 +544,7 @@ function ProviderPane({ connectedProviders }: { connectedProviders: ProviderKey[
           page={page}
           onPageChange={setPage}
           filtersActive={filtersActive}
+          viewMode={viewMode}
         />
       </div>
     </section>
@@ -477,6 +593,7 @@ function CuratedPane() {
   const [nameQuery, setNameQuery] = useState("");
   const [folderDialog, setFolderDialog] = useState<FolderDialog>(null);
   const debouncedNameQuery = useDebouncedValue(nameQuery, 300);
+  const [viewMode, setViewMode] = useViewMode();
 
   // Select mode (task 009, the browse grid's pattern): mixed selection
   // in click order; one batch mutation per action. Selection is client
@@ -629,6 +746,7 @@ function CuratedPane() {
             {currentName}
           </h2>
           <div className="flex flex-wrap items-center gap-2">
+            <ViewToggle mode={viewMode} onModeChange={setViewMode} />
             {/* Kind chips — the curated pane's filter axis (placement is
                 single-valued; kinds are what a folder holds). */}
             <div
@@ -718,9 +836,65 @@ function CuratedPane() {
         )}
 
         {/* Folder tiles first — from the cached tree, so pagination of
-            the item listing never drops a folder off a page boundary. */}
+            the item listing never drops a folder off a page boundary.
+            List mode renders them as slate rows instead (task 005): the
+            Unfiled pin is the current-location row, subfolders navigate
+            via the name button (the tile's click, relocated). */}
         {tree.isLoading && <Skeleton className="h-24 w-full" />}
-        {tree.data && (
+        {tree.data && viewMode === "list" && subfolders.length + (selectedFolder === null ? 1 : 0) > 0 && (
+          <ListView
+            ariaLabel="Folders"
+            rows={[
+              ...(selectedFolder === null
+                ? [{
+                    id: "unfiled",
+                    name: "Unfiled",
+                    current: true,
+                    kindIcon: <FolderIcon className="h-6 w-6" />,
+                    columns: [
+                      {
+                        key: "items",
+                        label: "Items",
+                        value: tree.data.unfiled_count,
+                        mono: true,
+                        numeric: true,
+                      },
+                    ],
+                    menuSlot: (
+                      <LibraryFolderMenu
+                        label="Unfiled"
+                        onNewFolder={() => setFolderDialog({ kind: "create" })}
+                      />
+                    ),
+                  }]
+                : []),
+              ...subfolders.map((folder) => ({
+                id: folder.id,
+                name: folder.name,
+                nameAction: { onClick: () => selectCurated(folder.id) },
+                kindIcon: <FolderIcon className="h-6 w-6" />,
+                columns: [
+                  {
+                    key: "items",
+                    label: "Items",
+                    value: folder.item_count,
+                    mono: true,
+                    numeric: true,
+                  },
+                ],
+                menuSlot: (
+                  <LibraryFolderMenu
+                    label={folder.name}
+                    onRename={() => setFolderDialog({ kind: "rename", folder })}
+                    onMove={() => setFolderDialog({ kind: "move", folder })}
+                    onDelete={() => setFolderDialog({ kind: "delete", folder })}
+                  />
+                ),
+              })),
+            ]}
+          />
+        )}
+        {tree.data && viewMode === "grid" && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
             {selectedFolder === null && (
               <article className="group relative flex flex-col gap-2">
@@ -805,6 +979,7 @@ function CuratedPane() {
           page={page}
           onPageChange={setPage}
           filtersActive={filtersActive}
+          viewMode={viewMode}
           selection={
             selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
           }

@@ -1444,7 +1444,7 @@ describe("BrowsePage list view", () => {
     // Grid mode: poster cards, no table.
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
 
     const table = screen.getByRole("table", { name: "All videos" });
     const link = within(table).getByRole("link", { name: "cat.mp4" });
@@ -1470,10 +1470,10 @@ describe("BrowsePage list view", () => {
     await screen.findByRole("heading", { level: 1 });
     expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
     expect(screen.queryByLabelText("Sort videos")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Grid view" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Grid view" })[0]);
     expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
   });
 
@@ -1481,7 +1481,7 @@ describe("BrowsePage list view", () => {
     const fetchSpy = vi.fn(browseFetch());
     renderBrowse({ fetchImplementation: fetchSpy });
     await screen.findByRole("heading", { level: 1 });
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
 
     // Name (asc default) — the grid query refetches with sort=name.
     fireEvent.click(screen.getByRole("button", { name: "Name" }));
@@ -1522,7 +1522,7 @@ describe("BrowsePage list view", () => {
   it("select mode works from rows — click order drives the share count", async () => {
     renderBrowse({ fetchImplementation: browseFetch() });
     await screen.findByRole("heading", { level: 1 });
-    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "List view" })[0]);
 
     fireEvent.click(screen.getByRole("button", { name: "Select" }));
     // Rows toggle instead of navigating.

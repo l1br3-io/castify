@@ -8,9 +8,9 @@
 // boot with `/?dir=` — provider root); the curated pane is the default
 // at "/", with its own suite below.
 
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 import { FolderOrganizer } from "./folder-organizer";
 import type {
@@ -906,5 +906,105 @@ describe("FolderOrganizer curated pane", () => {
         folder_id: null,
       });
     });
+  });
+});
+
+// --- List view (library-list-view task 005) ---
+//
+// Both panes render ContentsBody; in list mode every entry kind becomes a
+// slate row (videos with thumbnails, files with kind icons + download),
+// headers are display-only (server order stands), and the curated pane
+// stacks folder rows above item rows. View mode is the global per-device
+// preference — cleared around each test so the grid tests above stay
+// deterministic.
+
+describe("FolderOrganizer list view", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("provider pane renders every entry kind as rows with display-only headers", async () => {
+    renderOrganizer();
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    const table = await screen.findByRole("table", { name: "Folder contents" });
+    // Video row navigates; audio + document rows render as text rows.
+    expect(
+      within(table).getByRole("link", { name: "Zeta.mp4" }),
+    ).toHaveAttribute("href", "/watch/v1");
+    expect(within(table).getByText("Alpha.mp3")).toBeInTheDocument();
+    expect(within(table).getByText("Notes.pdf")).toBeInTheDocument();
+    // Ledger values render formatted.
+    expect(within(table).getByText("1000 B")).toBeInTheDocument();
+    // Non-video rows keep their download affordance.
+    expect(
+      within(table).getByRole("link", { name: "Download Notes.pdf" }),
+    ).toBeInTheDocument();
+    // Display-only headers — no sort buttons anywhere.
+    expect(screen.queryByRole("button", { name: "Name" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Size" })).toBeNull();
+  });
+
+  it("curated pane stacks folder rows above item rows; Unfiled is the current row", async () => {
+    const fetchSpy = vi.fn(
+      organizerFetch({ libraryContents: UNFILED_PAGE }),
+    );
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        <FolderOrganizer connectedProviders={["google_drive"]} />
+      </>,
+      { fetchImplementation: fetchSpy, initialEntries: ["/"] },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    const foldersTable = await screen.findByRole("table", { name: "Folders" });
+    // Root level: Unfiled (current location, no navigation) + root folders.
+    const unfiled = within(foldersTable).getByText("Unfiled");
+    expect(unfiled).toHaveAttribute("aria-current", "page");
+    expect(within(foldersTable).getByText("Trip")).toBeInTheDocument();
+    expect(within(foldersTable).getByText("Docs")).toBeInTheDocument();
+
+    // A folder row navigates via its name button — contents refetch for it.
+    fireEvent.click(within(foldersTable).getByRole("button", { name: "Trip" }));
+    await waitFor(() => {
+      const contentsCalls = fetchSpy.mock.calls.filter(([input]) =>
+        String(input).startsWith("/api/library-folders/contents"),
+      );
+      expect(String(contentsCalls[contentsCalls.length - 1][0])).toContain(
+        "folder_id=f-trip",
+      );
+    });
+
+    // Item rows below the folder table.
+    const itemsTable = await screen.findByRole("table", {
+      name: "Folder contents",
+    });
+    expect(
+      within(itemsTable).getByRole("link", { name: "Loose.mp4" }),
+    ).toBeInTheDocument();
+  });
+
+  it("select mode works from rows — the curated move batch", async () => {
+    renderOrganizer({}, ["/"]);
+    fireEvent.click(await screen.findByRole("button", { name: "List view" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select Loose.mp4" }),
+    );
+    expect(screen.getByText(/1 item selected/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move to folder" })).toBeEnabled();
+
+    // Escape cancels select mode — rows navigate again.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("checkbox", { name: "Select Loose.mp4" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Loose.mp4" })).toBeInTheDocument();
   });
 });

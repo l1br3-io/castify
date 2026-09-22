@@ -8,37 +8,66 @@
 // pattern, minus system-follow and the pre-paint script — view mode is
 // never a FOUC concern).
 //
-// Single-writer assumption: each surface renders one toggle; two mounted
-// instances on one page would not see each other's writes without a
-// storage event listener. No such page exists today; add one only if a
-// surface ever stacks two independent grids with separate toggles.
+// The browse page stacks two independently-owned toggles (the All-videos
+// section and the folder organizer below it), so hook instances must see
+// each other's writes. `useSyncExternalStore` over an in-page emitter +
+// the storage event: the emitter covers same-document writes (the storage
+// event fires only in OTHER documents), the storage event covers other
+// tabs.
 
-import { useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 export type ViewMode = "grid" | "list";
 
 const STORAGE_KEY = "castify-view-mode";
 
-function readStoredMode(): ViewMode | null {
+const listeners = new Set<() => void>();
+
+// In-page fallback for when the storage write fails (quota, private
+// mode): pins the mode so this page still updates. When writes land,
+// storage stays the single source of truth — the mirror stays empty.
+let memoryMode: ViewMode | null = null;
+
+function subscribe(onChange: () => void): () => void {
+  listeners.add(onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    listeners.delete(onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function readStoredMode(): ViewMode {
+  if (memoryMode !== null) return memoryMode;
   try {
     const value = localStorage.getItem(STORAGE_KEY);
-    return value === "grid" || value === "list" ? value : null;
+    return value === "grid" || value === "list" ? value : "grid";
   } catch {
-    return null;
+    return "grid";
+  }
+}
+
+function writeStoredMode(mode: ViewMode): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+    memoryMode = null;
+  } catch {
+    memoryMode = mode;
   }
 }
 
 export function useViewMode(): [ViewMode, (mode: ViewMode) => void] {
-  const [mode, setModeState] = useState<ViewMode>(() => readStoredMode() ?? "grid");
+  const mode = useSyncExternalStore(
+    subscribe,
+    readStoredMode,
+    (): ViewMode => "grid",
+  );
 
-  function setMode(next: ViewMode): void {
-    setModeState(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      /* localStorage unavailable — keep the in-memory state. */
-    }
-  }
+  const setMode = useCallback((next: ViewMode) => {
+    writeStoredMode(next);
+    // Same-document notify — the storage event never fires for the writer.
+    for (const listener of listeners) listener();
+  }, []);
 
   return [mode, setMode];
 }

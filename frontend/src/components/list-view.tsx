@@ -53,6 +53,9 @@ export type ListViewRow = {
   /** Router state for the name link — browse passes `{ queue }` so the
    *  watch page keeps its next/prev context from list mode too. */
   linkState?: Record<string, unknown>;
+  /** Folder rows (curated navigation): renders a button in the name cell
+   *  instead of a link — same styling, same keyboard path. */
+  nameAction?: { onClick: () => void };
   /** Video rows: the matted frame + corner duration badge. */
   thumbnail?: { video: ThumbnailVideo; src?: string };
   /** The kind tab's bg class (e.g. `KIND_HUES[kind].tab`). */
@@ -246,6 +249,16 @@ function ListViewBodyRow({
           >
             {row.name}
           </Link>
+        ) : row.nameAction !== undefined && !selection ? (
+          <button
+            type="button"
+            onClick={row.nameAction.onClick}
+            aria-current={row.current ? "page" : undefined}
+            title={row.name}
+            className="flex items-center gap-1 truncate text-left text-sm font-medium group-hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
+          >
+            {row.name}
+          </button>
         ) : (
           <span
             aria-current={row.current ? "page" : undefined}
