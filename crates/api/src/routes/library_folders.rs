@@ -156,6 +156,9 @@ fn folder_write_error(err: FolderWriteError) -> ApiError {
             detail: other.to_string(),
         },
         FolderWriteError::UnknownItem => ApiError::NotFound,
+        FolderWriteError::ReorderMismatch => ApiError::Validation {
+            detail: FolderWriteError::ReorderMismatch.to_string(),
+        },
         FolderWriteError::Database(db) => {
             ApiError::LibraryFolders(LibraryFolderError::Database(db))
         }

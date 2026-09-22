@@ -14,12 +14,16 @@
 //!     search, filters, and the "All files" grid never read placement.
 //!     The only writer of `library_folder_id` is the batch-move path.
 //!   * One transaction per owner action (create / rename+reparent /
-//!     delete / batch move) — a partial folder operation can never land.
+//!     delete / batch move / reorder) — a partial folder operation can
+//!     never land.
 //!   * Guard failures (unknown or foreign folder ids) are `Ok(None)`,
 //!     never errors — the same no-leak shape as the shares repository.
-//!   * Only folders have positions; catalog items inside a folder keep
-//!     their default query order (name/date sorts), so delete-to-Unfiled
-//!     does no item position bookkeeping.
+//!   * Item positions (drag-and-drop task 005): a placement scope is
+//!     ordered iff every placed item in it has a position; unordered
+//!     scopes (the all-NULL default) keep name-ascending contents. The
+//!     only writers are the dense-rewrite reorder (the first one flips
+//!     a scope dense in its one transaction) and batch moves appending
+//!     into an already-ordered scope.
 //!
 //! GOTCHA: ids travel as `String` (the DB stores TEXT UUIDs); only the
 //! owner_id input side is a `Uuid` where the session layer hands one

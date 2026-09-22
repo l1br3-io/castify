@@ -133,6 +133,11 @@ pub enum FolderWriteError {
     /// Fails the whole batch (all-or-nothing); routes map it to 404.
     #[error("batch contains an unknown item id")]
     UnknownItem,
+    /// A reorder list that isn't exactly the scope's current members
+    /// (missing id, extra/foreign id, duplicate, or empty). Fails whole
+    /// — nothing moves; routes map it to 422.
+    #[error("the ordered list must be exactly the folder's current contents")]
+    ReorderMismatch,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -441,16 +446,16 @@ impl LibraryFolderRepository {
         walk(&children, Some(folder_id), &mut descendants);
 
         // (2) Lift items to Unfiled: every video and file whose folder
-        // sits in the subtree. Only folders have positions in the
-        // curated model, so this is a plain placement clear — no
-        // bookkeeping.
+        // sits in the subtree. Positions clear with the placement — a
+        // delete must not smuggle an order into the Unfiled bucket
+        // (task 005's ordering model).
         for table in ["videos", "files"] {
             sqlx::query(&format!(
                 "WITH RECURSIVE subtree(id) AS ( \
                      SELECT id FROM library_folders WHERE id = ? AND owner_id = ? \
                      UNION \
                      SELECT f.id FROM library_folders f JOIN subtree s ON f.parent_id = s.id \
-                 ) UPDATE {table} SET library_folder_id = NULL \
+                 ) UPDATE {table} SET library_folder_id = NULL, library_folder_position = NULL \
                  WHERE library_folder_id IN (SELECT id FROM subtree)"
             ))
             .bind(folder_id)
@@ -691,9 +696,19 @@ impl LibraryFolderRepository {
         let total: i64 = count_q.fetch_one(&self.pool).await?;
 
         // ── Page ──────────────────────────────────────────────────────
+        // Ordered scopes follow the owner's positions; unordered scopes
+        // (the all-NULL default) keep the shipped name-ascending order
+        // byte-for-byte. The name/kind/id tail stands as the tiebreak.
+        let mut scope_conn = self.pool.acquire().await?;
+        let ordered = Self::scope_is_ordered(&mut scope_conn, filter.folder_id.as_deref()).await?;
+        let order_sql = if ordered {
+            "ORDER BY entry_position, name COLLATE NOCASE, entry_kind, id"
+        } else {
+            "ORDER BY name COLLATE NOCASE, entry_kind, id"
+        };
         let page_sql = format!(
             "SELECT * FROM ({union_sql}){kind_entry_frag} \
-             ORDER BY name COLLATE NOCASE, entry_kind, id LIMIT {limit} OFFSET {offset}"
+             {order_sql} LIMIT {limit} OFFSET {offset}"
         );
         let mut page_q = sqlx::query(&page_sql);
         for b in &binds {
@@ -802,24 +817,46 @@ impl LibraryFolderRepository {
                 return Ok(None);
             }
         }
+        // Ordered targets append incoming items at the tail (dense
+        // positions stand, the newcomer goes after them); unordered
+        // targets take NULL positions — a move never flips a scope's
+        // ordered-ness by itself.
+        let target_ordered = Self::scope_is_ordered(&mut tx, folder_id).await?;
+        let mut next_position = if target_ordered {
+            Self::scope_tail_position(&mut tx, folder_id).await? + 1
+        } else {
+            0
+        };
         let mut written = 0u64;
         let mut seen: HashSet<(ItemKind, &str)> = HashSet::new();
         for item in items {
             if !seen.insert((item.kind, item.id)) {
                 continue; // in-batch duplicate — skip
             }
-            let result = match item.kind {
-                ItemKind::Video => {
-                    sqlx::query("UPDATE videos SET library_folder_id = ? WHERE id = ?")
+            let sql = match (item.kind, target_ordered) {
+                (ItemKind::Video, true) => {
+                    "UPDATE videos SET library_folder_id = ?, library_folder_position = ? \
+                     WHERE id = ?"
                 }
-                ItemKind::File => {
-                    sqlx::query("UPDATE files SET library_folder_id = ? WHERE id = ?")
+                (ItemKind::Video, false) => {
+                    "UPDATE videos SET library_folder_id = ?, library_folder_position = NULL \
+                     WHERE id = ?"
                 }
+                (ItemKind::File, true) => {
+                    "UPDATE files SET library_folder_id = ?, library_folder_position = ? \
+                     WHERE id = ?"
+                }
+                (ItemKind::File, false) => {
+                    "UPDATE files SET library_folder_id = ?, library_folder_position = NULL \
+                     WHERE id = ?"
+                }
+            };
+            let mut q = sqlx::query(sql).bind(folder_id);
+            if target_ordered {
+                q = q.bind(next_position);
+                next_position += 1;
             }
-            .bind(folder_id)
-            .bind(item.id)
-            .execute(&mut *tx)
-            .await?;
+            let result = q.bind(item.id).execute(&mut *tx).await?;
             if result.rows_affected() == 0 {
                 // All-or-nothing: dropping the tx rolls every earlier
                 // update in this batch back.
@@ -831,8 +868,236 @@ impl LibraryFolderRepository {
         Ok(Some(written))
     }
 
+    /// Dense-rewrite item reorder — the write behind `PATCH
+    /// /api/library-folders/items/order`. One transaction for the whole
+    /// user action (data-storage rule #5): `ordered` must list EXACTLY
+    /// the scope's current placed items as the contents listing shows
+    /// them (dedup representatives), and any deviation — missing id,
+    /// extra or foreign id, duplicate, empty — aborts with
+    /// [`FolderWriteError::ReorderMismatch`] before a single row moves.
+    ///
+    /// Ordered-vs-unordered invariant (the *why*): a scope is ordered
+    /// iff every placed item in it has a position. The first reorder of
+    /// an untouched folder flips it dense (0..n-1) in this one
+    /// transaction; folders no one reorders stay all-NULL and keep the
+    /// shipped name-ascending contents byte-for-byte. Dedup copies ride
+    /// their representative's position so a hidden copy can never
+    /// silently un-order the folder.
+    ///
+    /// `folder_id: None` orders the Unfiled bucket — same mechanics.
+    /// `Ok(None)` = guard rejection (folder unknown or foreign).
+    pub async fn reorder_items(
+        &self,
+        owner_id: &str,
+        folder_id: Option<&str>,
+        ordered: &[MoveItem<'_>],
+    ) -> Result<Option<usize>, FolderWriteError> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(fid) = folder_id {
+            if Self::fetch_folder(&mut tx, owner_id, fid).await?.is_none() {
+                return Ok(None);
+            }
+        }
+
+        // Exact-set validation, before any write.
+        if ordered.is_empty() {
+            return Err(FolderWriteError::ReorderMismatch);
+        }
+        let mut listed: HashSet<(ItemKind, &str)> = HashSet::new();
+        for item in ordered {
+            if !listed.insert((item.kind, item.id)) {
+                return Err(FolderWriteError::ReorderMismatch); // duplicate
+            }
+        }
+        let current = Self::scope_member_set(&mut tx, folder_id).await?;
+        let matches = current.len() == listed.len()
+            && current
+                .iter()
+                .all(|(kind, id)| listed.contains(&(*kind, id.as_str())));
+        if !matches {
+            return Err(FolderWriteError::ReorderMismatch);
+        }
+
+        // Dense rewrite: each listed item takes its index; same-folder
+        // dedup copies of a video ride along so the ordered-iff-
+        // everything-positioned invariant holds for hidden rows too.
+        for (index, item) in ordered.iter().enumerate() {
+            let index = index as i64;
+            match item.kind {
+                ItemKind::Video => {
+                    sqlx::query(
+                        "UPDATE videos SET library_folder_position = ? \
+                         WHERE library_folder_id IS ? AND (id = ? OR (dedup_group IS NOT NULL \
+                           AND dedup_group = (SELECT dedup_group FROM videos WHERE id = ?)))",
+                    )
+                    .bind(index)
+                    .bind(folder_id)
+                    .bind(item.id)
+                    .bind(item.id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                ItemKind::File => {
+                    sqlx::query(
+                        "UPDATE files SET library_folder_position = ? \
+                         WHERE library_folder_id IS ? AND id = ?",
+                    )
+                    .bind(index)
+                    .bind(folder_id)
+                    .bind(item.id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+        tx.commit().await?;
+        Ok(Some(ordered.len()))
+    }
+
+    /// Dense-rewrite sibling reorder — the write behind `PATCH
+    /// /api/library-folders/folders/order` (task 006): `ordered_ids`
+    /// must be exactly `parent_id`'s current children (missing, extra,
+    /// duplicate, or empty aborts whole); positions rewrite 0..n-1 in
+    /// list order over the existing `library_folders.position` column.
+    /// `Ok(None)` = guard rejection (parent unknown or foreign).
+    pub async fn reorder_folders(
+        &self,
+        owner_id: &str,
+        parent_id: Option<&str>,
+        ordered_ids: &[&str],
+    ) -> Result<Option<usize>, FolderWriteError> {
+        let mut tx = self.pool.begin().await?;
+        if let Some(pid) = parent_id {
+            if Self::fetch_folder(&mut tx, owner_id, pid).await?.is_none() {
+                return Ok(None);
+            }
+        }
+
+        if ordered_ids.is_empty() {
+            return Err(FolderWriteError::ReorderMismatch);
+        }
+        let mut listed: HashSet<&str> = HashSet::new();
+        for id in ordered_ids {
+            if !listed.insert(id.as_ref()) {
+                return Err(FolderWriteError::ReorderMismatch);
+            }
+        }
+        let current: HashSet<String> = sqlx::query_scalar(
+            "SELECT id FROM library_folders WHERE owner_id = ? AND parent_id IS ?",
+        )
+        .bind(owner_id)
+        .bind(parent_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        if current.len() != listed.len() || !current.iter().all(|id| listed.contains(id.as_str())) {
+            return Err(FolderWriteError::ReorderMismatch);
+        }
+
+        for (index, id) in ordered_ids.iter().enumerate() {
+            sqlx::query("UPDATE library_folders SET position = ? WHERE id = ?")
+                .bind(index as i64)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(Some(ordered_ids.len()))
+    }
+
     // -- Folder helpers: owner-scoped fetch and the single-CTE walks that
     // keep every tree check O(depth) statements.
+
+    /// The placement scope's displayed member set — the exact set a
+    /// reorder list must match: dedup representatives for videos (the
+    /// contents listing's selection) plus all files, placements scoped
+    /// to `folder_id` (`None` = the Unfiled bucket), active connections
+    /// only (what contents serves is what reorders).
+    async fn scope_member_set(
+        tx: &mut sqlx::SqliteConnection,
+        folder_id: Option<&str>,
+    ) -> sqlx::Result<HashSet<(ItemKind, String)>> {
+        let mut set = HashSet::new();
+        let videos: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT MIN(id) FROM videos \
+                  WHERE library_folder_id IS ? AND dedup_group IS NOT NULL \
+                    AND {ACTIVE_CONNECTIONS} \
+                  GROUP BY dedup_group \
+              UNION ALL \
+              SELECT id FROM videos \
+                  WHERE library_folder_id IS ? AND dedup_group IS NULL \
+                    AND {ACTIVE_CONNECTIONS}"
+        ))
+        .bind(folder_id)
+        .bind(folder_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in videos {
+            set.insert((ItemKind::Video, id));
+        }
+        let files: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT id FROM files WHERE library_folder_id IS ? AND {ACTIVE_CONNECTIONS}"
+        ))
+        .bind(folder_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in files {
+            set.insert((ItemKind::File, id));
+        }
+        Ok(set)
+    }
+
+    /// Ordered-scope detection: a placement scope is ordered iff it has
+    /// at least one placed item and none of its placed items has a NULL
+    /// position. The all-NULL default — every folder untouched by a
+    /// reorder — is unordered, keeping the shipped name-ascending
+    /// contents byte-for-byte.
+    async fn scope_is_ordered(
+        tx: &mut sqlx::SqliteConnection,
+        folder_id: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let mut any_placed = false;
+        for table in ["videos", "files"] {
+            let row = sqlx::query(&format!(
+                "SELECT COUNT(*) AS total, \
+                        COALESCE(SUM(library_folder_position IS NULL), 0) AS nulls \
+                 FROM {table} WHERE library_folder_id IS ? AND {ACTIVE_CONNECTIONS}"
+            ))
+            .bind(folder_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let total: i64 = sqlx::Row::get(&row, "total");
+            let nulls: i64 = sqlx::Row::get(&row, "nulls");
+            if nulls > 0 {
+                return Ok(false); // any unpositioned row ⇒ unordered
+            }
+            any_placed |= total > 0;
+        }
+        Ok(any_placed)
+    }
+
+    /// The scope's highest position across both tables — the append-
+    /// at-tail seed for batch moves into an ordered scope. `-1` for an
+    /// empty scope (only queried when ordered, so never in practice).
+    async fn scope_tail_position(
+        tx: &mut sqlx::SqliteConnection,
+        folder_id: Option<&str>,
+    ) -> sqlx::Result<i64> {
+        sqlx::query_scalar(&format!(
+            "SELECT COALESCE(MAX(m), -1) FROM ( \
+                 SELECT MAX(library_folder_position) AS m FROM videos \
+                     WHERE library_folder_id IS ? AND {ACTIVE_CONNECTIONS} \
+                 UNION ALL \
+                 SELECT MAX(library_folder_position) FROM files \
+                     WHERE library_folder_id IS ? AND {ACTIVE_CONNECTIONS} \
+             )"
+        ))
+        .bind(folder_id)
+        .bind(folder_id)
+        .fetch_one(&mut *tx)
+        .await
+    }
 
     /// Build the shared UNION body for the curated contents queries and
     /// its bind values, in positional order — the placement-scoped twin
@@ -853,7 +1118,8 @@ impl LibraryFolderRepository {
                     v.thumbnail_status, v.provider_modified_at, \
                     (vf.video_id IS NOT NULL) AS is_favorite, vr.rating AS my_rating, \
                     pp.position_seconds AS position_seconds, \
-                    COALESCE(pp.completed, 0) AS completed \
+                    COALESCE(pp.completed, 0) AS completed, \
+                    v.library_folder_position AS entry_position \
              FROM videos v \
              LEFT JOIN video_favorites vf ON vf.video_id = v.id AND vf.owner_id = ? \
              LEFT JOIN video_ratings vr ON vr.video_id = v.id AND vr.owner_id = ? \
@@ -885,7 +1151,8 @@ impl LibraryFolderRepository {
              SELECT f.kind AS entry_kind, f.id, f.name, pc.provider, f.size_bytes, \
                     f.mime_type, NULL, NULL, NULL, NULL, f.connection_id, \
                     f.provider_file_id, f.created_at, f.path, NULL, \
-                    f.provider_modified_at, 0, NULL, NULL, 0 \
+                    f.provider_modified_at, 0, NULL, NULL, 0, \
+                    f.library_folder_position \
              FROM files f \
              JOIN provider_connections pc ON pc.id = f.connection_id \
                     AND pc.disconnected_at IS NULL \
@@ -2280,5 +2547,505 @@ mod tests {
             None,
             "guard rejection writes nothing"
         );
+    }
+
+    // ---- drag-and-drop task 005: item ordering ----
+
+    /// The names one folder's contents page serves, in served order —
+    /// the ordering lens for these tests.
+    async fn contents_names(
+        repo: &LibraryFolderRepository,
+        owner_id: &str,
+        folder_id: Option<&str>,
+    ) -> Vec<String> {
+        let page = repo
+            .fetch_contents(
+                owner_id,
+                &LibraryContentsFilter {
+                    folder_id: folder_id.map(str::to_string),
+                    page: 1,
+                    limit: 200,
+                    owner_id: owner_id.to_string(),
+                    kind: None,
+                    q: None,
+                },
+            )
+            .await
+            .unwrap()
+            .expect("contents fetch");
+        page.entries
+            .iter()
+            .map(|entry| match entry {
+                FolderEntry::Video(v) => v.video.name.clone(),
+                FolderEntry::File(f) => f.file.name.clone(),
+            })
+            .collect()
+    }
+
+    /// Raw position read-back for one placed row.
+    async fn position_of(pool: &SqlitePool, table: &str, id: &str) -> Option<i64> {
+        assert!(table == "videos" || table == "files");
+        sqlx::query_scalar(&format!(
+            "SELECT library_folder_position FROM {table} WHERE id = ?"
+        ))
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    fn items<'a, I>(kind: ItemKind, ids: I) -> Vec<MoveItem<'a>>
+    where
+        I: IntoIterator<Item = &'a String>,
+    {
+        ids.into_iter()
+            .map(|id| MoveItem {
+                kind,
+                id: id.as_str(),
+            })
+            .collect()
+    }
+
+    /// The reorder-list contract violation — panics on any other
+    /// outcome so a test can't mistake success or a database error for
+    /// the rejection.
+    fn expect_reorder_mismatch<T: std::fmt::Debug>(result: Result<Option<T>, FolderWriteError>) {
+        assert!(
+            matches!(result, Err(FolderWriteError::ReorderMismatch)),
+            "expected ReorderMismatch, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_leaves_existing_positions_null() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let files = seed_files(&pool, &["b.jpg"]).await;
+        let folder = repo_folder(&pool, &owner, "F").await;
+        place(&pool, "videos", &videos[0], Some(&folder)).await;
+        place(&pool, "files", &files[0], Some(&folder)).await;
+
+        for (table, id) in [("videos", &videos[0]), ("files", &files[0])] {
+            assert_eq!(
+                position_of(&pool, table, id).await,
+                None,
+                "seeded (pre-0019) rows must start unordered"
+            );
+        }
+        assert_eq!(
+            contents_names(&repo_of(&pool), &owner, Some(&folder)).await,
+            vec!["a.mp4".to_string(), "b.jpg".to_string()],
+            "unordered contents stay name-ascending (NOCASE)"
+        );
+    }
+
+    /// Shared fixture: folder F holding videos B, A, C (name-ascending
+    /// display A, B, C) — returns (folder_id, video ids in name order).
+    async fn ordered_fixture(pool: &SqlitePool, owner: &str) -> (String, Vec<String>) {
+        let folder = repo_folder(pool, owner, "F").await;
+        let videos = seed_videos(pool, &["B.mp4", "A.mp4", "C.mp4"]).await;
+        for id in &videos {
+            place(pool, "videos", id, Some(&folder)).await;
+        }
+        (folder, videos)
+    }
+
+    /// `repo_folder` via the public API (positions exercised through
+    /// create, not raw SQL).
+    async fn repo_folder(pool: &SqlitePool, owner: &str, name: &str) -> String {
+        LibraryFolderRepository::new(pool.clone())
+            .create_folder(owner, None, name)
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    fn repo_of(pool: &SqlitePool) -> LibraryFolderRepository {
+        LibraryFolderRepository::new(pool.clone())
+    }
+
+    #[tokio::test]
+    async fn reorder_items_first_flip_is_dense_and_orders_contents() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let (folder, videos) = ordered_fixture(&pool, &owner).await;
+        // videos in seed order: B, A, C.
+        let [b, a, c] = [&videos[0], &videos[1], &videos[2]];
+
+        let repo = repo_of(&pool);
+        let list = [c.clone(), a.clone(), b.clone()];
+        let ordered = items(ItemKind::Video, &list);
+        let n = repo
+            .reorder_items(&owner, Some(&folder), &ordered)
+            .await
+            .unwrap()
+            .expect("reorder of the exact member set succeeds");
+        assert_eq!(n, 3);
+
+        assert_eq!(
+            position_of(&pool, "videos", c).await,
+            Some(0),
+            "first listed item flips to dense position 0"
+        );
+        assert_eq!(position_of(&pool, "videos", a).await, Some(1));
+        assert_eq!(position_of(&pool, "videos", b).await, Some(2));
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec![
+                "C.mp4".to_string(),
+                "A.mp4".to_string(),
+                "B.mp4".to_string()
+            ],
+            "ordered contents follow the positions, not the name sort"
+        );
+
+        // A second reorder rewrites the same dense space.
+        let list = [a.clone(), b.clone(), c.clone()];
+        let ordered = items(ItemKind::Video, &list);
+        repo.reorder_items(&owner, Some(&folder), &ordered)
+            .await
+            .unwrap();
+        assert_eq!(position_of(&pool, "videos", a).await, Some(0));
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec![
+                "A.mp4".to_string(),
+                "B.mp4".to_string(),
+                "C.mp4".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_items_rejects_mismatched_lists_without_moving_anything() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let (folder, videos) = ordered_fixture(&pool, &owner).await;
+        let [b, a, c] = [&videos[0], &videos[1], &videos[2]];
+        let outsider = seed_videos(&pool, &["Z-unfiled.mp4"]).await;
+
+        let repo = repo_of(&pool);
+        let bad_id_lists = [
+            // Missing id (2 of 3 placed).
+            vec![a.clone(), c.clone()],
+            // Extra id (a placed id + an unfiled one).
+            vec![a.clone(), b.clone(), c.clone(), outsider[0].clone()],
+            // Foreign id (unknown uuid).
+            vec![a.clone(), b.clone(), c.clone(), Uuid::new_v4().to_string()],
+            // Duplicate in list.
+            vec![a.clone(), a.clone(), c.clone()],
+        ];
+        for ids in &bad_id_lists {
+            let bad = items(ItemKind::Video, ids);
+            let result = repo.reorder_items(&owner, Some(&folder), &bad).await;
+            expect_reorder_mismatch(result);
+        }
+        // Empty.
+        expect_reorder_mismatch(repo.reorder_items(&owner, Some(&folder), &[]).await);
+
+        // Nothing moved: still unordered, still name-ascending.
+        for id in [&videos[0], &videos[1], &videos[2]] {
+            assert_eq!(position_of(&pool, "videos", id).await, None);
+        }
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec![
+                "A.mp4".to_string(),
+                "B.mp4".to_string(),
+                "C.mp4".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_items_unknown_folder_is_a_guard_rejection() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let videos = seed_videos(&pool, &["a.mp4"]).await;
+        let ordered = items(ItemKind::Video, &videos);
+        assert!(repo_of(&pool)
+            .reorder_items(&owner, Some("missing"), &ordered)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn reorder_items_unfiled_bucket_orders_null_placements() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let videos = seed_videos(&pool, &["B.mp4", "A.mp4"]).await;
+
+        let repo = repo_of(&pool);
+        let ordered = items(ItemKind::Video, &videos);
+        repo.reorder_items(&owner, None, &ordered).await.unwrap();
+        assert_eq!(
+            contents_names(&repo, &owner, None).await,
+            vec!["B.mp4".to_string(), "A.mp4".to_string()],
+            "the Unfiled bucket reorders with the same mechanics"
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_items_dedup_copies_ride_the_representative() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let folder = repo_folder(&pool, &owner, "F").await;
+        // One dedup group (two copies) + one lone video, all in F.
+        let vids = seed_videos(&pool, &["Copy1.mp4", "Copy2.mp4", "Lone.mp4"]).await;
+        sqlx::query("UPDATE videos SET dedup_group = 'g1' WHERE id IN (?, ?)")
+            .bind(&vids[0])
+            .bind(&vids[1])
+            .execute(&pool)
+            .await
+            .unwrap();
+        for id in &vids {
+            place(&pool, "videos", id, Some(&folder)).await;
+        }
+
+        let repo = repo_of(&pool);
+        // Contents shows one representative (MIN(id) of the group) +
+        // the lone video — the reorder list speaks in those ids. Which
+        // copy is the representative is id-order, not seed order.
+        let (rep, hidden, rep_name) = if vids[0] < vids[1] {
+            (&vids[0], &vids[1], "Copy1.mp4")
+        } else {
+            (&vids[1], &vids[0], "Copy2.mp4")
+        };
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec![rep_name.to_string(), "Lone.mp4".to_string()],
+            "name-ascending before the flip; the hidden copy never lists"
+        );
+        let list = [vids[2].clone(), rep.clone()];
+        repo.reorder_items(&owner, Some(&folder), &items(ItemKind::Video, &list))
+            .await
+            .unwrap();
+
+        assert_eq!(position_of(&pool, "videos", &vids[2]).await, Some(0));
+        assert_eq!(
+            position_of(&pool, "videos", hidden).await,
+            position_of(&pool, "videos", rep).await,
+            "the hidden copy rides its representative's position — the \
+             ordered-iff-everything-positioned invariant holds"
+        );
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec!["Lone.mp4".to_string(), rep_name.to_string()],
+            "post-flip order follows the reorder list"
+        );
+    }
+
+    #[tokio::test]
+    async fn reorder_folders_dense_rewrite_and_rejections() {
+        let (pool, _guard) = fresh_pool().await;
+        let repo = repo_of(&pool);
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+
+        let a = repo
+            .create_folder(&owner, None, "A")
+            .await
+            .unwrap()
+            .unwrap();
+        let b = repo
+            .create_folder(&owner, None, "B")
+            .await
+            .unwrap()
+            .unwrap();
+        let c = repo
+            .create_folder(&owner, None, "C")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Root siblings reorder densely.
+        repo.reorder_folders(&owner, None, &[c.id.as_str(), a.id.as_str(), b.id.as_str()])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            root_folders(&pool, &owner)
+                .await
+                .into_iter()
+                .map(|(name, position, _)| (name, position))
+                .collect::<Vec<_>>(),
+            vec![
+                ("C".to_string(), 0),
+                ("A".to_string(), 1),
+                ("B".to_string(), 2),
+            ]
+        );
+
+        // Mismatch matrix: missing, extra (a nested child is not a root
+        // sibling), duplicate, empty — every one aborts whole.
+        let child = repo
+            .create_folder(&owner, Some(&a.id), "child")
+            .await
+            .unwrap()
+            .unwrap();
+        for bad in [
+            vec![a.id.as_str(), b.id.as_str()],
+            vec![
+                a.id.as_str(),
+                b.id.as_str(),
+                c.id.as_str(),
+                child.id.as_str(),
+            ],
+            vec![a.id.as_str(), a.id.as_str(), c.id.as_str()],
+            vec![],
+        ] {
+            let result = repo.reorder_folders(&owner, None, &bad).await;
+            expect_reorder_mismatch(result);
+        }
+        // Nothing moved.
+        assert_eq!(
+            root_folders(&pool, &owner)
+                .await
+                .into_iter()
+                .map(|(_, position, _)| position)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        // Nested scope reorders through the same shape.
+        let child2 = repo
+            .create_folder(&owner, Some(&a.id), "child2")
+            .await
+            .unwrap()
+            .unwrap();
+        repo.reorder_folders(
+            &owner,
+            Some(&a.id),
+            &[child2.id.as_str(), child.id.as_str()],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let under_a: Vec<(String, i64)> = sqlx::query(
+            "SELECT name, position FROM library_folders \
+             WHERE owner_id = ? AND parent_id = ? ORDER BY position",
+        )
+        .bind(&owner)
+        .bind(&a.id)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r: sqlx::sqlite::SqliteRow| {
+            (sqlx::Row::get(&r, "name"), sqlx::Row::get(&r, "position"))
+        })
+        .collect();
+        assert_eq!(
+            under_a,
+            vec![("child2".to_string(), 0), ("child".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn move_into_ordered_folder_appends_at_tail() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let (folder, videos) = ordered_fixture(&pool, &owner).await;
+        let [b, a, c] = [&videos[0], &videos[1], &videos[2]];
+        let repo = repo_of(&pool);
+        let list = [c.clone(), a.clone(), b.clone()];
+        repo.reorder_items(&owner, Some(&folder), &items(ItemKind::Video, &list))
+            .await
+            .unwrap();
+
+        let x = seed_videos(&pool, &["X.mp4"]).await;
+        repo.move_items(&owner, &items(ItemKind::Video, &x), Some(&folder))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(position_of(&pool, "videos", &x[0]).await, Some(3));
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec![
+                "C.mp4".to_string(),
+                "A.mp4".to_string(),
+                "B.mp4".to_string(),
+                "X.mp4".to_string()
+            ],
+            "the incoming item lands after the ordered tail"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_out_of_ordered_folder_clears_the_position() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let (folder, videos) = ordered_fixture(&pool, &owner).await;
+        let [b, a, c] = [&videos[0], &videos[1], &videos[2]];
+        let repo = repo_of(&pool);
+        let list = [c.clone(), a.clone(), b.clone()];
+        repo.reorder_items(&owner, Some(&folder), &items(ItemKind::Video, &list))
+            .await
+            .unwrap();
+
+        // B leaves for Unfiled.
+        let leaving = [b.clone()];
+        repo.move_items(&owner, &items(ItemKind::Video, &leaving), None)
+            .await
+            .unwrap();
+        assert_eq!(position_of(&pool, "videos", b).await, None);
+        assert_eq!(
+            contents_names(&repo, &owner, Some(&folder)).await,
+            vec!["C.mp4".to_string(), "A.mp4".to_string()],
+            "the remaining order stands — gaps never change rendering"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_into_unordered_folder_assigns_no_positions() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let folder = repo_folder(&pool, &owner, "F").await;
+        let videos = seed_videos(&pool, &["B.mp4"]).await;
+        let repo = repo_of(&pool);
+        repo.move_items(&owner, &items(ItemKind::Video, &videos), Some(&folder))
+            .await
+            .unwrap();
+        assert_eq!(
+            position_of(&pool, "videos", &videos[0]).await,
+            None,
+            "a move into an unordered folder never assigns positions"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_folder_lifts_items_with_cleared_positions() {
+        let (pool, _guard) = fresh_pool().await;
+        let owner = seed_owner(&pool).await;
+        let owner = owner.to_string();
+        let (folder, videos) = ordered_fixture(&pool, &owner).await;
+        let [b, a, c] = [&videos[0], &videos[1], &videos[2]];
+        let repo = repo_of(&pool);
+        let list = [c.clone(), a.clone(), b.clone()];
+        repo.reorder_items(&owner, Some(&folder), &items(ItemKind::Video, &list))
+            .await
+            .unwrap();
+
+        repo.delete_folder(&owner, &folder).await.unwrap().unwrap();
+        for id in [a, b, c] {
+            assert_eq!(
+                position_of(&pool, "videos", id).await,
+                None,
+                "lifted items return to Unfiled unordered — a delete must \
+                 not smuggle an order into the bucket"
+            );
+        }
     }
 }
