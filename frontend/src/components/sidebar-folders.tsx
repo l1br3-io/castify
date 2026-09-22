@@ -27,10 +27,16 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { FolderNodeDto } from "../api/types";
 import { useFolderTree } from "../hooks/use-folder-tree";
-import { useLibraryFolderNav, useLibraryFolderTree } from "../hooks/use-library-folders";
-import { FolderTree, type TreeNode } from "./folder-tree";
+import {
+  useLibraryFolderNav,
+  useLibraryFolderTree,
+  useMoveLibraryItems,
+} from "../hooks/use-library-folders";
+import { FolderTree, type TreeDropTargets, type TreeNode } from "./folder-tree";
 import { buildLibraryTree } from "../lib/library-tree";
 import { signalNewFolder } from "../lib/new-folder-event";
+import { describeError } from "../lib/format";
+import { useToast } from "../hooks/use-toast";
 import { Skeleton } from "./ui/skeleton";
 
 /** Every node path in the provider tree, recursively ("" root included). */
@@ -81,6 +87,31 @@ export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
   const libraryTree = useLibraryFolderTree();
   const providerTree = useFolderTree();
   const [cloudOpen, setCloudOpen] = useState(false);
+
+  // Drag-and-drop (drag-and-drop task 003): curated rows accept item
+  // drops — the same batch-move mutation the organizer fires, plus the
+  // toast the drop promises. The provider tree renders no targets
+  // (different data domain — spec non-goal).
+  const moveItems = useMoveLibraryItems();
+  const toast = useToast();
+  const curatedDropTargets: TreeDropTargets = {
+    canDrop: (_key, payload) => payload.type === "items",
+    onDrop: (key, payload) => {
+      if (payload.type !== "items") return;
+      const folder =
+        key === ""
+          ? null
+          : (libraryTree.data?.folders.find((f) => f.id === key) ?? null);
+      const folderName = folder?.name ?? "Unfiled";
+      moveItems.mutate(
+        { items: payload.items, folderId: folder?.id ?? null },
+        {
+          onSuccess: () => toast.success(`Moved to ${folderName}`),
+          onError: (error) => toast.error(`Move failed — ${describeError(error)}`),
+        },
+      );
+    },
+  };
 
   // A provider deep link opens the Cloud section — the link names the
   // view it should land on.
@@ -143,6 +174,7 @@ export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
             nodes={curatedNodes}
             selectedKey={selectedFolder ?? ""}
             onSelect={(key) => selectCurated(key === "" ? null : key)}
+            dropTargets={curatedDropTargets}
           />
           {emptyCurated && (
             <div className="px-2 pt-1.5">

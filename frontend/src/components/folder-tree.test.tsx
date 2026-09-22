@@ -6,9 +6,11 @@
 // path keys, so this harness exercises the URL contract through them.
 
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { FolderTree, type TreeNode } from "./folder-tree";
+import { FolderTree, type TreeNode, type TreeDropTargets } from "./folder-tree";
+import { useDrag } from "./drag-context";
+import type { DragPayload } from "../lib/drag-engine";
 import { useFolderDir } from "../hooks/use-folder-dir";
 import { useLocation, useNavigate } from "react-router-dom";
 import { renderWithProviders } from "../test/utils";
@@ -317,5 +319,122 @@ describe("useFolderDir", () => {
 
     fireEvent.click(screen.getByRole("button"));
     expect(globalThis.location.search).not.toContain("dir=");
+  });
+});
+
+// --- Drop-target rows (drag-and-drop task 003) ---
+//
+// When `dropTargets` is provided, every row registers as a drop target:
+// hover previews the post-drop count in the row's mono badge, a drop
+// hands the payload to the key-scoped handler. Without the prop (the
+// provider tree), rows render the plain button — no registration, no
+// affordance.
+
+const COUNTED_TREE: TreeNode[] = [
+  { key: "", label: "Unfiled", count: "5 items", countValue: 5, children: [] },
+  { key: "f1", label: "Trip", count: "3 items", countValue: 3, children: [] },
+];
+
+/** Arms a real drag through the public context surface. */
+function DragSourceProbe({ payload }: { payload: DragPayload }) {
+  const { beginDrag } = useDrag();
+  return (
+    <button
+      type="button"
+      data-testid="arm"
+      onPointerDown={(e) =>
+        beginDrag({ x: e.clientX, y: e.clientY }, payload)
+      }
+    >
+      arm
+    </button>
+  );
+}
+
+const ITEMS_PAYLOAD: DragPayload = {
+  type: "items",
+  items: [
+    { kind: "video", id: "v1" },
+    { kind: "file", id: "f2" },
+  ],
+};
+
+function rowButton(name: RegExp): HTMLElement {
+  return screen
+    .getByRole("treeitem", { name })
+    .querySelector<HTMLButtonElement>("button[data-tree-key]")!;
+}
+
+function renderDroppableTree(
+  dropTargets: TreeDropTargets | undefined,
+  payload: DragPayload = ITEMS_PAYLOAD,
+) {
+  return renderWithProviders(
+    <>
+      <DragSourceProbe payload={payload} />
+      <FolderTree
+        ariaLabel="Library folders"
+        nodes={COUNTED_TREE}
+        selectedKey=""
+        onSelect={() => {}}
+        dropTargets={dropTargets}
+      />
+    </>,
+  );
+}
+
+function armDrag(): void {
+  fireEvent.pointerDown(screen.getByTestId("arm"), {
+    clientX: 100,
+    clientY: 100,
+    button: 0,
+  });
+  fireEvent.pointerMove(window, { clientX: 120, clientY: 110 });
+}
+
+describe("FolderTree drop targets", () => {
+  it("previews the post-drop count on hover and cancels on leave", () => {
+    renderDroppableTree({
+      canDrop: () => true,
+      onDrop: () => {},
+    });
+    armDrag();
+
+    expect(screen.getByText("3 items")).toBeInTheDocument();
+    fireEvent.pointerOver(rowButton(/Trip/));
+    expect(screen.getByText("3 → 5 items")).toBeInTheDocument();
+
+    fireEvent.pointerOut(rowButton(/Trip/));
+    expect(screen.getByText("3 items")).toBeInTheDocument();
+    fireEvent.pointerUp(window);
+  });
+
+  it("drops the payload on the hovered row's handler", () => {
+    const onDrop = vi.fn();
+    renderDroppableTree({ canDrop: () => true, onDrop });
+    armDrag();
+    fireEvent.pointerOver(rowButton(/Trip/));
+    fireEvent.pointerUp(window);
+    expect(onDrop).toHaveBeenCalledTimes(1);
+    expect(onDrop).toHaveBeenCalledWith("f1", ITEMS_PAYLOAD);
+  });
+
+  it("a row rejected by canDrop never becomes the target", () => {
+    const onDrop = vi.fn();
+    renderDroppableTree({ canDrop: () => false, onDrop });
+    armDrag();
+    fireEvent.pointerOver(rowButton(/Trip/));
+    fireEvent.pointerUp(window);
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
+  it("without dropTargets, rows render no drop affordance", () => {
+    renderDroppableTree(undefined);
+    armDrag();
+    fireEvent.pointerOver(rowButton(/Trip/));
+    // The count badge never enters preview mode.
+    expect(screen.getByText("3 items")).toBeInTheDocument();
+    expect(screen.queryByText("3 → 5 items")).not.toBeInTheDocument();
+    fireEvent.pointerUp(window);
   });
 });

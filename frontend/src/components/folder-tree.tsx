@@ -18,14 +18,29 @@
 
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 
+import { useDrag } from "./drag-context";
+import { useDropTarget } from "../hooks/use-drop-target";
+import type { DragPayload } from "../lib/drag-engine";
+
 /** A tree node in the generic rendering shape. `key` is unique within
  *  its tree (provider path or curated folder id); `count` is a
- *  preformatted string ("" hides the badge). */
+ *  preformatted string ("" hides the badge). `countValue` is the same
+ *  count as a number — optional, set by trees that also serve as drop
+ *  targets (the drag hover preview steps it to its post-drop value). */
 export interface TreeNode {
   key: string;
   label: string;
   count: string;
+  countValue?: number;
   children: TreeNode[];
+}
+
+/** Key-scoped drop handling (drag-and-drop effort): every row of a tree
+ *  carrying this prop registers as a drop target. Trees without it (the
+ *  provider "Cloud" tree) render plain rows — different data domain. */
+export interface TreeDropTargets {
+  canDrop: (key: string, payload: DragPayload) => boolean;
+  onDrop: (key: string, payload: DragPayload) => void;
 }
 
 type FolderTreeProps = {
@@ -34,6 +49,9 @@ type FolderTreeProps = {
   onSelect: (key: string) => void;
   /** Accessible name for the tree region (defaults to "Folders"). */
   ariaLabel?: string;
+  /** Drag-and-drop (drag-and-drop effort): makes each row a drop
+   *  target with count preview. Additive — absent keeps rows plain. */
+  dropTargets?: TreeDropTargets;
 };
 
 /** Flatten the VISIBLE treeitems in visual order (keyboard nav domain). */
@@ -71,11 +89,94 @@ function revealChain(nodes: TreeNode[], key: string, chain: string[]): Set<strin
   return null;
 }
 
+function rowClassName(isSelected: boolean, dropHovered = false): string {
+  return `flex min-w-0 flex-1 items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-[13px] transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] ${
+    isSelected
+      ? "bg-[var(--color-castify-surface-raised)] font-semibold text-[var(--color-castify-text)] shadow-[inset_2px_0_0_var(--color-castify-accent)]"
+      : dropHovered
+        ? // Valid drop target, hovered: the tile treatment relocated to a
+          // row — accent-subtle fill + the amber inset bar. Colors only,
+          // never size — no layout shift mid-drag.
+          "bg-[var(--color-castify-accent-subtle)] text-[var(--color-castify-text)] shadow-[inset_2px_0_0_var(--color-castify-accent)]"
+        : "text-[var(--color-castify-muted)] hover:bg-[var(--color-castify-hover)] hover:text-[var(--color-castify-text)]"
+  }`;
+}
+
+type RowButtonProps = {
+  node: TreeNode;
+  isSelected: boolean;
+  onSelect: (key: string) => void;
+};
+
+/** The plain select button — provider trees and any tree without drop
+ *  targets. No drag-context dependency. */
+function PlainRowButton({ node, isSelected, onSelect }: RowButtonProps) {
+  return (
+    <button
+      type="button"
+      data-tree-key={node.key}
+      onClick={() => onSelect(node.key)}
+      aria-current={isSelected ? "true" : undefined}
+      className={rowClassName(isSelected)}
+    >
+      <span className="truncate">{node.label}</span>
+      {node.count && (
+        <span className="flex-shrink-0 font-mono text-xs tabular-nums text-[var(--color-castify-muted)]">
+          {node.count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** The drag-aware select button (drag-and-drop task 003): registers as
+ *  a drop target, previews the post-drop count in the mono badge while
+ *  hovered, and hands the payload to the tree's key-scoped handler. */
+function DroppableRowButton({
+  node,
+  isSelected,
+  onSelect,
+  dropTargets,
+}: RowButtonProps & { dropTargets: TreeDropTargets }) {
+  const { state } = useDrag();
+  const { isDropHovered, dropProps } = useDropTarget(`tree:${node.key}`, {
+    canDrop: (payload) => dropTargets.canDrop(node.key, payload),
+    onDrop: (payload) => dropTargets.onDrop(node.key, payload),
+  });
+  const preview =
+    isDropHovered &&
+    state.phase === "dragging" &&
+    state.payload.type === "items" &&
+    node.countValue !== undefined
+      ? `${node.countValue} → ${node.countValue + state.payload.items.length} items`
+      : null;
+
+  return (
+    <button
+      type="button"
+      data-tree-key={node.key}
+      onClick={() => onSelect(node.key)}
+      onPointerEnter={dropProps.onPointerEnter}
+      onPointerLeave={dropProps.onPointerLeave}
+      aria-current={isSelected ? "true" : undefined}
+      className={rowClassName(isSelected, isDropHovered)}
+    >
+      <span className="truncate">{node.label}</span>
+      {(preview ?? node.count) && (
+        <span className="flex-shrink-0 font-mono text-xs tabular-nums text-[var(--color-castify-muted)]">
+          {preview ?? node.count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 export function FolderTree({
   nodes,
   selectedKey,
   onSelect,
   ariaLabel = "Folders",
+  dropTargets,
 }: FolderTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -218,24 +319,16 @@ export function FolderTree({
               ) : (
                 <span className="h-5 w-5 flex-shrink-0" aria-hidden />
               )}
-              <button
-                type="button"
-                data-tree-key={node.key}
-                onClick={() => onSelect(node.key)}
-                aria-current={isSelected ? "true" : undefined}
-                className={`flex min-w-0 flex-1 items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-[13px] transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)] ${
-                  isSelected
-                    ? "bg-[var(--color-castify-surface-raised)] font-semibold text-[var(--color-castify-text)] shadow-[inset_2px_0_0_var(--color-castify-accent)]"
-                    : "text-[var(--color-castify-muted)] hover:bg-[var(--color-castify-hover)] hover:text-[var(--color-castify-text)]"
-                }`}
-              >
-                <span className="truncate">{node.label}</span>
-                {node.count && (
-                  <span className="flex-shrink-0 font-mono text-xs tabular-nums text-[var(--color-castify-muted)]">
-                    {node.count}
-                  </span>
-                )}
-              </button>
+              {dropTargets ? (
+                <DroppableRowButton
+                  node={node}
+                  isSelected={isSelected}
+                  onSelect={onSelect}
+                  dropTargets={dropTargets}
+                />
+              ) : (
+                <PlainRowButton node={node} isSelected={isSelected} onSelect={onSelect} />
+              )}
             </div>
           </li>
         );

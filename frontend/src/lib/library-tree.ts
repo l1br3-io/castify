@@ -45,6 +45,9 @@ export function buildLibraryTree(tree: LibraryTreeDto): TreeNode[] {
       key: folder.id,
       label: folder.name,
       count: itemCount(folder.item_count),
+      // Numeric twin of `count` — the drop-hover preview steps it to its
+      // post-drop value (drag-and-drop task 003).
+      countValue: folder.item_count,
       children: build(folder.id),
     }));
   }
@@ -53,6 +56,7 @@ export function buildLibraryTree(tree: LibraryTreeDto): TreeNode[] {
       key: "",
       label: "Unfiled",
       count: itemCount(tree.unfiled_count),
+      countValue: tree.unfiled_count,
       children: [],
     },
     ...build(null),

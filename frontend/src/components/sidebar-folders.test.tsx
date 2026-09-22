@@ -206,3 +206,146 @@ describe("SidebarFolders — provider secondary", () => {
     });
   });
 });
+
+// --- Sidebar drop targets (drag-and-drop task 003) ---
+//
+// Curated tree rows accept item drops (one batch move — the same
+// mutation the organizer fires, `null` for the pinned Unfiled node);
+// provider ("Cloud") rows are a different data domain and stay inert.
+
+import { useDrag } from "./drag-context";
+import type { DragPayload } from "../lib/drag-engine";
+import { vi } from "vitest";
+
+function mutationFetch(
+  mutate: (input: RequestInfo | URL, init?: RequestInit) => Response,
+) {
+  return (input: RequestInfo | URL, init?: RequestInit): Response => {
+    const url = String(input);
+    if (url.startsWith("/api/library-folders/tree")) return jsonResponse(LIBRARY_TREE);
+    if (url.startsWith("/api/folders/tree")) return jsonResponse(PROVIDER_TREE);
+    return mutate(input, init);
+  };
+}
+
+/** Arms a real drag through the public context surface. */
+function DragSourceProbe({ payload }: { payload: DragPayload }) {
+  const { beginDrag } = useDrag();
+  return (
+    <button
+      type="button"
+      data-testid="arm"
+      onPointerDown={(e) => beginDrag({ x: e.clientX, y: e.clientY }, payload)}
+    >
+      arm
+    </button>
+  );
+}
+
+const PAYLOAD: DragPayload = {
+  type: "items",
+  items: [{ kind: "video", id: "v9" }],
+};
+
+function renderSidebarWithDrag(initialEntries: string[] = ["/"]) {
+  return renderWithProviders(
+    <>
+      <LocationProbe />
+      <DragSourceProbe payload={PAYLOAD} />
+      <SidebarFolders />
+    </>,
+    {
+      initialEntries,
+      fetchImplementation: mutationFetch(() => jsonResponse({ message: "unmocked" }, 404)),
+    },
+  );
+}
+
+function armDrag(): void {
+  fireEvent.pointerDown(screen.getByTestId("arm"), {
+    clientX: 100,
+    clientY: 100,
+    button: 0,
+  });
+  fireEvent.pointerMove(window, { clientX: 120, clientY: 110 });
+}
+
+describe("SidebarFolders — drop targets", () => {
+  it("a drop on a curated row fires one batch move to that folder", async () => {
+    renderSidebarWithDrag();
+    await screen.findByRole("treeitem", { name: /Trip/ });
+
+    armDrag();
+    fireEvent.pointerOver(selectButton(/Trip/));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [{ kind: "video", id: "v9" }],
+        folder_id: "f-trip",
+      });
+    });
+    expect(await screen.findByText("Moved to Trip")).toBeInTheDocument();
+  });
+
+  it("a drop on the pinned Unfiled row moves with folder_id null", async () => {
+    renderSidebarWithDrag();
+    await screen.findByRole("treeitem", { name: /Unfiled/ });
+
+    armDrag();
+    fireEvent.pointerOver(selectButton(/Unfiled/));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [{ kind: "video", id: "v9" }],
+        folder_id: null,
+      });
+    });
+  });
+
+  it("previews the row count during hover and cancels on leave", async () => {
+    renderSidebarWithDrag();
+    await screen.findByRole("treeitem", { name: /Trip/ });
+
+    armDrag();
+    fireEvent.pointerOver(selectButton(/Trip/));
+    expect(screen.getByText("3 → 4 items")).toBeInTheDocument();
+    fireEvent.pointerOut(selectButton(/Trip/));
+    expect(screen.getByText("3 items")).toBeInTheDocument();
+    fireEvent.pointerUp(window);
+  });
+
+  it("provider (Cloud) rows are not drop targets", async () => {
+    renderSidebarWithDrag(["/?dir="]);
+    // The provider deep link auto-opens the Cloud section.
+    await screen.findByRole("treeitem", { name: /Media/ });
+
+    armDrag();
+    fireEvent.pointerOver(selectButton(/Media/));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items"),
+      ).toHaveLength(0),
+    );
+  });
+});
