@@ -51,7 +51,8 @@ import { FolderIcon } from "./icons";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { useDrag } from "./drag-context";
-import { carryPayload, type DragItem } from "../lib/drag-engine";
+import { carryPayload, type DragItem, type DragPayload } from "../lib/drag-engine";
+import { canReparent } from "../lib/library-tree";
 import { useDropTarget } from "../hooks/use-drop-target";
 import { useToast } from "../hooks/use-toast";
 import {
@@ -620,29 +621,33 @@ function sameItems(a: LibraryMoveItem[], b: LibraryMoveItem[]): boolean {
 }
 
 /**
- * A folder tile that accepts item drops (drag-and-drop task 002).
- * Registers with the drag context, previews the post-drop count while
- * hovered, and hands the carried items to the pane's single batch-move
- * mutation. The menu slot keeps the tile's non-drag affordances intact
- * — drag is a convenience layer, never the only path.
+ * A folder tile that accepts drops and starts folder drags
+ * (drag-and-drop tasks 002 + 004). Item payloads move in a batch;
+ * folder payloads reparent when the client tree math says it's legal
+ * (the invalid-subtree/depth states render refused, never requested).
+ * The menu slot keeps the tile's non-drag affordances intact — drag is
+ * a convenience layer, never the only path.
  */
 function DroppableFolderTile({
   folder,
+  folders,
   topRightSlot,
-  onDropItems,
+  onDropPayload,
+  onDragStart,
 }: {
   folder: LibraryTreeFolderDto;
+  /** The flat tree — legality math for folder payloads. */
+  folders: LibraryTreeFolderDto[];
   topRightSlot?: ReactNode;
-  onDropItems: (folderId: string | null, folderName: string, items: LibraryMoveItem[]) => void;
+  onDropPayload: (folderId: string | null, folderName: string, payload: DragPayload) => void;
+  onDragStart: (folder: LibraryTreeFolderDto, event: ReactPointerEvent) => void;
 }) {
   const { state } = useDrag();
-  const { isDropHovered, dropProps } = useDropTarget(`folder:${folder.id}`, {
-    canDrop: (payload) => payload.type === "items",
-    onDrop: (payload) => {
-      if (payload.type === "items") {
-        onDropItems(folder.id, folder.name, payload.items);
-      }
-    },
+  const { isDropHovered, isInvalidDropHover, dropProps } = useDropTarget(`folder:${folder.id}`, {
+    canDrop: (payload) =>
+      payload.type === "items" ||
+      (payload.type === "folder" && canReparent(folders, payload.id, folder.id)),
+    onDrop: (payload) => onDropPayload(folder.id, folder.name, payload),
   });
   const preview =
     isDropHovered && state.phase === "dragging" && state.payload.type === "items"
@@ -656,8 +661,10 @@ function DroppableFolderTile({
       to="/"
       count={folder.item_count}
       topRightSlot={topRightSlot}
+      dragHandle={{ onPointerDown: (event) => onDragStart(folder, event) }}
       {...dropProps}
       dropHovered={isDropHovered}
+      dropInvalid={isInvalidDropHover}
       countPreview={preview}
     />
   );
@@ -796,14 +803,38 @@ function CuratedPane() {
     beginDrag({ x: event.clientX, y: event.clientY }, carryPayload(grabbed, selected));
   }
 
-  /** A drop onto a folder tile or the Unfiled pin: the same single batch
-   *  mutation as the picker, plus the toast the drop promises. Success
-   *  clears a selection the payload carried away. */
+  /** A folder tile press arms a reparent drag — the chip reads
+   *  `FOLDER — <NAME>`. Clicks below the threshold still navigate. */
+  function handleFolderPointerDown(
+    folder: LibraryTreeFolderDto,
+    event: ReactPointerEvent,
+  ): void {
+    if (event.button !== 0) return;
+    beginDrag(
+      { x: event.clientX, y: event.clientY },
+      { type: "folder", id: folder.id, name: folder.name },
+    );
+  }
+
+  /** A drop onto a folder tile or the Unfiled pin: items move in one
+   *  batch mutation; folder payloads reparent through the update
+   *  mutation (the dialogs' endpoint). The toast matches the verb. */
   function handleDropIntoFolder(
     folderId: string | null,
     folderName: string,
-    items: LibraryMoveItem[],
+    payload: DragPayload,
   ): void {
+    if (payload.type === "folder") {
+      updateFolder.mutate(
+        { id: payload.id, parentId: folderId },
+        {
+          onSuccess: () => toast.success(`Moved to ${folderName}`),
+          onError: (error) => toast.error(`Move failed — ${describeError(error)}`),
+        },
+      );
+      return;
+    }
+    const items = payload.items;
     moveItems.mutate(
       { items, folderId },
       {
@@ -818,15 +849,13 @@ function CuratedPane() {
 
   const selectedIds = new Set(selected.map((item) => item.id));
 
-  // The Unfiled pin accepts drops the same way tiles do — move with
-  // `folder_id: null` (the pane's own pin only renders at the root,
-  // where Unfiled is the current view; the drop is still a legal move).
+  // The Unfiled pin accepts drops the same way tiles do — items move
+  // with `folder_id: null`; a folder payload climbs to the tree root
+  // (always legal — root moves can only reduce depth).
   const unfiledDrop = useDropTarget("unfiled", {
-    canDrop: (payload) => payload.type === "items",
+    canDrop: () => true,
     onDrop: (payload) => {
-      if (payload.type === "items") {
-        handleDropIntoFolder(null, "Unfiled", payload.items);
-      }
+      handleDropIntoFolder(null, "Unfiled", payload);
     },
   });
   const unfiledCount = tree.data?.unfiled_count ?? 0;
@@ -1111,7 +1140,9 @@ function CuratedPane() {
               <DroppableFolderTile
                 key={folder.id}
                 folder={folder}
-                onDropItems={handleDropIntoFolder}
+                folders={folders}
+                onDropPayload={handleDropIntoFolder}
+                onDragStart={handleFolderPointerDown}
                 topRightSlot={
                   <LibraryFolderMenu
                     label={folder.name}

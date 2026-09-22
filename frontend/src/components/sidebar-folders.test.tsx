@@ -349,3 +349,120 @@ describe("SidebarFolders — drop targets", () => {
     );
   });
 });
+
+// --- Folder reparent drops on curated rows (drag-and-drop task 004) ---
+//
+// A folder payload over a curated row: legal → one reparent PATCH; the
+// row inside the dragged folder's own subtree → invalid state
+// (strike-through label), refused client-side with no request.
+
+describe("SidebarFolders — folder reparent drops", () => {
+  const FOLDER_PAYLOAD: DragPayload = {
+    type: "folder",
+    id: "f-trip",
+    name: "Trip 2024",
+  };
+
+  function renderFolderDrag() {
+    return renderWithProviders(
+      <>
+        <LocationProbe />
+        <DragSourceProbe payload={FOLDER_PAYLOAD} />
+        <SidebarFolders />
+      </>,
+      {
+        initialEntries: ["/"],
+        fetchImplementation: mutationFetch(() => jsonResponse({ message: "unmocked" }, 404)),
+      },
+    );
+  }
+
+  it("a folder drop on a legal row fires one reparent PATCH", async () => {
+    renderFolderDrag();
+    await screen.findByRole("treeitem", { name: /Other/ });
+
+    fireEvent.pointerDown(screen.getByTestId("arm"), {
+      clientX: 100,
+      clientY: 100,
+      button: 0,
+    });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 110 });
+    fireEvent.pointerOver(selectButton(/Other/));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/f-trip",
+      );
+      expect(patches).toHaveLength(1);
+      expect((patches[0]![1] as RequestInit).method).toBe("PATCH");
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        parent_id: "f-other",
+      });
+    });
+    expect(await screen.findByText("Moved to Other")).toBeInTheDocument();
+  });
+
+  it("a folder over its own descendant row renders the invalid state and drops nothing", async () => {
+    renderFolderDrag();
+    await screen.findByRole("treeitem", { name: /Trip/ });
+
+    // Reveal Day 1 (expand Trip), then drag Trip over its own child.
+    fireEvent.click(
+      screen.getByRole("treeitem", { name: /Trip/ }).querySelector("button")!,
+    );
+    await screen.findByRole("treeitem", { name: /Day 1/ });
+
+    fireEvent.pointerDown(screen.getByTestId("arm"), {
+      clientX: 100,
+      clientY: 100,
+      button: 0,
+    });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 110 });
+    fireEvent.pointerOver(selectButton(/Day 1/));
+
+    // Invalid state: strike-through on the row label, count untouched.
+    expect(screen.getByText("Day 1").className).toContain("line-through");
+    expect(screen.getByText("2 items")).toBeInTheDocument();
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/f-trip"),
+      ).toHaveLength(0),
+    );
+  });
+
+  it("a folder over the Unfiled row reparents to the root (parent_id null)", async () => {
+    renderFolderDrag();
+    await screen.findByRole("treeitem", { name: /Unfiled/ });
+
+    fireEvent.pointerDown(screen.getByTestId("arm"), {
+      clientX: 100,
+      clientY: 100,
+      button: 0,
+    });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 110 });
+    fireEvent.pointerOver(selectButton(/Unfiled/));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/f-trip",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        parent_id: null,
+      });
+    });
+  });
+});

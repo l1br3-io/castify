@@ -23,7 +23,7 @@
 //
 // Mounted only on "/" by AppLayout, so no other route pays the fetches.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { FolderNodeDto } from "../api/types";
 import { useFolderTree } from "../hooks/use-folder-tree";
@@ -31,12 +31,14 @@ import {
   useLibraryFolderNav,
   useLibraryFolderTree,
   useMoveLibraryItems,
+  useUpdateLibraryFolder,
 } from "../hooks/use-library-folders";
 import { FolderTree, type TreeDropTargets, type TreeNode } from "./folder-tree";
-import { buildLibraryTree } from "../lib/library-tree";
+import { buildLibraryTree, canReparent } from "../lib/library-tree";
 import { signalNewFolder } from "../lib/new-folder-event";
 import { describeError } from "../lib/format";
 import { useToast } from "../hooks/use-toast";
+import { useDrag } from "./drag-context";
 import { Skeleton } from "./ui/skeleton";
 
 /** Every node path in the provider tree, recursively ("" root included). */
@@ -88,27 +90,59 @@ export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
   const providerTree = useFolderTree();
   const [cloudOpen, setCloudOpen] = useState(false);
 
-  // Drag-and-drop (drag-and-drop task 003): curated rows accept item
-  // drops — the same batch-move mutation the organizer fires, plus the
-  // toast the drop promises. The provider tree renders no targets
+  // Drag-and-drop (drag-and-drop task 003 + 004): curated rows accept
+  // item drops (the same batch-move mutation the organizer fires) and
+  // folder drops (the update mutation the dialog uses), and folder rows
+  // are themselves drag sources. The provider tree renders no targets
   // (different data domain — spec non-goal).
   const moveItems = useMoveLibraryItems();
+  const updateFolder = useUpdateLibraryFolder();
   const toast = useToast();
+  const { state: dragState, beginDrag } = useDrag();
+  // Ghost-click swallow, same contract as the organizer's section: the
+  // click a completed drag's pointerup fires must not select a row.
+  const swallowClickRef = useRef(false);
+
   const curatedDropTargets: TreeDropTargets = {
-    canDrop: (_key, payload) => payload.type === "items",
+    canDrop: (key, payload) =>
+      payload.type === "items" ||
+      (payload.type === "folder" &&
+        canReparent(
+          libraryTree.data?.folders ?? [],
+          payload.id,
+          key === "" ? null : key,
+        )),
     onDrop: (key, payload) => {
-      if (payload.type !== "items") return;
-      const folder =
+      const folderId = key === "" ? null : key;
+      const folderName =
         key === ""
-          ? null
-          : (libraryTree.data?.folders.find((f) => f.id === key) ?? null);
-      const folderName = folder?.name ?? "Unfiled";
-      moveItems.mutate(
-        { items: payload.items, folderId: folder?.id ?? null },
+          ? "Unfiled"
+          : (libraryTree.data?.folders.find((f) => f.id === key)?.name ?? "folder");
+      if (payload.type === "items") {
+        moveItems.mutate(
+          { items: payload.items, folderId },
+          {
+            onSuccess: () => toast.success(`Moved to ${folderName}`),
+            onError: (error) => toast.error(`Move failed — ${describeError(error)}`),
+          },
+        );
+        return;
+      }
+      updateFolder.mutate(
+        { id: payload.id, parentId: folderId },
         {
           onSuccess: () => toast.success(`Moved to ${folderName}`),
           onError: (error) => toast.error(`Move failed — ${describeError(error)}`),
         },
+      );
+    },
+    dragStart: (key, event) => {
+      if (event.button !== 0) return;
+      const folder = libraryTree.data?.folders.find((f) => f.id === key);
+      if (folder === undefined) return; // the Unfiled pin (key "") never drags
+      beginDrag(
+        { x: event.clientX, y: event.clientY },
+        { type: "folder", id: folder.id, name: folder.name },
       );
     },
   };
@@ -155,7 +189,24 @@ export function SidebarFolders({ onNewFolder }: SidebarFoldersProps = {}) {
   const emptyCurated = curatedNodes !== null && curatedNodes.length <= 1;
 
   return (
-    <div className="mt-4 border-t border-[var(--color-castify-rule)] pt-3">
+    <div
+      className="mt-4 border-t border-[var(--color-castify-rule)] pt-3"
+      // Ghost-click swallow (see the ref above) — the row buttons are
+      // both drag sources and click targets; only a real click selects.
+      onPointerDownCapture={() => {
+        swallowClickRef.current = false;
+      }}
+      onPointerUpCapture={() => {
+        if (dragState.phase === "dragging") swallowClickRef.current = true;
+      }}
+      onClickCapture={(event) => {
+        if (swallowClickRef.current) {
+          swallowClickRef.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+    >
       <p className="eyebrow px-2.5 pb-1.5">Folders</p>
       {libraryTree.isLoading && (
         <div className="px-2 pt-1">

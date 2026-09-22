@@ -37,10 +37,13 @@ export interface TreeNode {
 
 /** Key-scoped drop handling (drag-and-drop effort): every row of a tree
  *  carrying this prop registers as a drop target. Trees without it (the
- *  provider "Cloud" tree) render plain rows — different data domain. */
+ *  provider "Cloud" tree) render plain rows — different data domain.
+ *  `dragStart` additionally makes folder rows drag sources (the caller
+ *  decides which keys drag — the Unfiled pin, key "", never does). */
 export interface TreeDropTargets {
   canDrop: (key: string, payload: DragPayload) => boolean;
   onDrop: (key: string, payload: DragPayload) => void;
+  dragStart?: (key: string, event: React.PointerEvent) => void;
 }
 
 type FolderTreeProps = {
@@ -131,7 +134,8 @@ function PlainRowButton({ node, isSelected, onSelect }: RowButtonProps) {
 
 /** The drag-aware select button (drag-and-drop task 003): registers as
  *  a drop target, previews the post-drop count in the mono badge while
- *  hovered, and hands the payload to the tree's key-scoped handler. */
+ *  hovered, and hands the payload to the tree's key-scoped handler.
+ *  With `dragStart`, folder rows are drag sources too (task 004). */
 function DroppableRowButton({
   node,
   isSelected,
@@ -139,7 +143,7 @@ function DroppableRowButton({
   dropTargets,
 }: RowButtonProps & { dropTargets: TreeDropTargets }) {
   const { state } = useDrag();
-  const { isDropHovered, dropProps } = useDropTarget(`tree:${node.key}`, {
+  const { isDropHovered, isInvalidDropHover, dropProps } = useDropTarget(`tree:${node.key}`, {
     canDrop: (payload) => dropTargets.canDrop(node.key, payload),
     onDrop: (payload) => dropTargets.onDrop(node.key, payload),
   });
@@ -156,12 +160,19 @@ function DroppableRowButton({
       type="button"
       data-tree-key={node.key}
       onClick={() => onSelect(node.key)}
+      onPointerDown={(event) => dropTargets.dragStart?.(node.key, event)}
       onPointerEnter={dropProps.onPointerEnter}
       onPointerLeave={dropProps.onPointerLeave}
       aria-current={isSelected ? "true" : undefined}
-      className={rowClassName(isSelected, isDropHovered)}
+      className={`${rowClassName(isSelected, isDropHovered)} ${
+        isInvalidDropHover ? "cursor-not-allowed" : ""
+      }`}
     >
-      <span className="truncate">{node.label}</span>
+      <span
+        className={`truncate ${isInvalidDropHover ? "line-through opacity-60" : ""}`}
+      >
+        {node.label}
+      </span>
       {(preview ?? node.count) && (
         <span className="flex-shrink-0 font-mono text-xs tabular-nums text-[var(--color-castify-muted)]">
           {preview ?? node.count}

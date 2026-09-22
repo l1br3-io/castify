@@ -41,6 +41,15 @@ type FolderTileProps = {
   /** Post-drop count while hovered (`13 → 16` in the count badge);
    *  null/undefined renders the plain count. */
   countPreview?: number | null;
+  /** Invalid target hovered mid-drag (folder onto its own subtree,
+   *  depth cap): muted strike-through label + not-allowed cursor —
+   *  deliberately no amber. */
+  dropInvalid?: boolean;
+  /** Drag source (drag-and-drop effort): pointer-down wiring for the
+   *  tile (folder reparent drags). See PosterCard's `dragHandle`. */
+  dragHandle?: {
+    onPointerDown: (event: React.PointerEvent) => void;
+  };
 };
 
 export function FolderTile({
@@ -54,10 +63,13 @@ export function FolderTile({
   onPointerLeave,
   dropHovered = false,
   countPreview = null,
+  dropInvalid = false,
+  dragHandle,
 }: FolderTileProps) {
   return (
     <article
-      className="group relative flex flex-col gap-2"
+      className={`group relative flex flex-col gap-2 ${dropInvalid ? "cursor-not-allowed" : ""}`}
+      onPointerDown={dragHandle?.onPointerDown}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
@@ -87,7 +99,9 @@ export function FolderTile({
       </div>
       <div className="flex flex-col gap-1">
         <h3
-          className="line-clamp-2 text-[13px] font-semibold leading-snug group-hover:underline group-focus-within:underline"
+          className={`line-clamp-2 text-[13px] font-semibold leading-snug group-hover:underline group-focus-within:underline ${
+            dropInvalid ? "line-through opacity-60" : ""
+          }`}
           title={name}
         >
           {name}

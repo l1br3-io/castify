@@ -11,7 +11,7 @@
 // mutation hooks change identity per render) without re-registering —
 // the registry entry is created once per target id.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useDrag, type DropTargetHandlers } from "../components/drag-context";
 import type { DropTargetId } from "../lib/drag-engine";
@@ -20,6 +20,9 @@ export function useDropTarget(id: DropTargetId, handlers: DropTargetHandlers) {
   const { state, hoverTarget, registerTarget } = useDrag();
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
+  // Local pointer-over flag: `state.over` only tracks VALID targets, so
+  // the invalid visual state (hovered but refused) needs its own bit.
+  const [pointerOver, setPointerOver] = useState(false);
 
   useEffect(
     () =>
@@ -32,14 +35,25 @@ export function useDropTarget(id: DropTargetId, handlers: DropTargetHandlers) {
 
   const isDragActive = state.phase === "dragging";
   const isDropHovered = isDragActive && state.over === id;
+  // Pointer is over this target while a drag is live, but the registry
+  // refused the payload — the explicit invalid state (strike-through,
+  // not-allowed; no amber).
+  const isInvalidDropHover = isDragActive && pointerOver && !isDropHovered;
 
   return {
     isDragActive,
     isDropHovered,
+    isInvalidDropHover,
     /** Spread onto the target's root element. */
     dropProps: {
-      onPointerEnter: () => hoverTarget(id),
-      onPointerLeave: () => hoverTarget(null),
+      onPointerEnter: () => {
+        setPointerOver(true);
+        hoverTarget(id);
+      },
+      onPointerLeave: () => {
+        setPointerOver(false);
+        hoverTarget(null);
+      },
     },
   };
 }
