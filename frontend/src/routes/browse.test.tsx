@@ -1418,3 +1418,126 @@ describe("BrowsePage — multi-select share mode (task 012)", () => {
     ).toBeGreaterThan(0);
   });
 });
+
+// --- List view (library-list-view task 004) ---
+//
+// The All-videos section toggles between the poster grid and the shared
+// ListView table. View mode is per-device localStorage; these tests clear
+// it around each case so grid-mode tests elsewhere in this file stay
+// deterministic.
+
+describe("BrowsePage list view", () => {
+  beforeEach(() => {
+    setCsrfToken("csrf-test");
+    mockGetInProgressVideos.mockResolvedValue([]);
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    setCsrfToken(null);
+    window.localStorage.clear();
+  });
+
+  it("toggles grid → table with row links, and persists the choice", async () => {
+    renderBrowse({ fetchImplementation: browseFetch() });
+    await screen.findByRole("heading", { level: 1 });
+
+    // Grid mode: poster cards, no table.
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    const table = screen.getByRole("table", { name: "All videos" });
+    const link = within(table).getByRole("link", { name: "cat.mp4" });
+    expect(link).toHaveAttribute("href", "/watch/v1");
+    // Ledger columns render formatted values.
+    expect(within(table).getByText("5.0 MB")).toBeInTheDocument();
+    expect(within(table).getByText("2:00")).toBeInTheDocument();
+    // Persisted per-device.
+    expect(window.localStorage.getItem("castify-view-mode")).toBe("list");
+  });
+
+  it("renders the table directly when list mode is persisted", async () => {
+    window.localStorage.setItem("castify-view-mode", "list");
+    renderBrowse({ fetchImplementation: browseFetch() });
+    expect(
+      await screen.findByRole("table", { name: "All videos" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Play cat.mp4" })).toBeNull();
+  });
+
+  it("hides the sort dropdown while the table is active", async () => {
+    renderBrowse({ fetchImplementation: browseFetch() });
+    await screen.findByRole("heading", { level: 1 });
+    expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    expect(screen.queryByLabelText("Sort videos")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Grid view" }));
+    expect(screen.getByLabelText("Sort videos")).toBeInTheDocument();
+  });
+
+  it("header clicks write the URL sort param and reflect aria-sort", async () => {
+    const fetchSpy = vi.fn(browseFetch());
+    renderBrowse({ fetchImplementation: fetchSpy });
+    await screen.findByRole("heading", { level: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    // Name (asc default) — the grid query refetches with sort=name.
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    await waitFor(() => {
+      const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
+        const url = String(input);
+        return url.startsWith("/api/videos") && !url.includes("limit=20") && !url.includes("/folders");
+      });
+      const last = String(gridCalls[gridCalls.length - 1][0]);
+      expect(last).toContain("sort=name");
+    });
+    expect(screen.getByRole("columnheader", { name: /^Name/ })).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
+
+    // Clicking the active header reverses it.
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    await waitFor(() => {
+      expect(screen.getByRole("columnheader", { name: /^Name/ })).toHaveAttribute(
+        "aria-sort",
+        "descending",
+      );
+    });
+
+    // Size defaults to smallest-first (size-asc; types.ts NOTE).
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    await waitFor(() => {
+      const gridCalls = fetchSpy.mock.calls.filter(([input]) => {
+        const url = String(input);
+        return url.startsWith("/api/videos") && !url.includes("limit=20") && !url.includes("/folders");
+      });
+      const last = String(gridCalls[gridCalls.length - 1][0]);
+      expect(last).toContain("sort=size-asc");
+    });
+  });
+
+  it("select mode works from rows — click order drives the share count", async () => {
+    renderBrowse({ fetchImplementation: browseFetch() });
+    await screen.findByRole("heading", { level: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    // Rows toggle instead of navigating.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select dedup-video.mp4" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select cat.mp4" }));
+    expect(screen.getByText(/2 items selected/)).toBeInTheDocument();
+
+    const share = screen.getByRole("button", { name: /Share 2 items/ });
+    expect(share).toBeEnabled();
+
+    // Cancel restores navigation links.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("checkbox", { name: /select /i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "cat.mp4" })).toBeInTheDocument();
+  });
+});

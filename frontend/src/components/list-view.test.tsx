@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import { ListView, type ListViewRow } from "./list-view";
 
@@ -8,7 +9,12 @@ import { ListView, type ListViewRow } from "./list-view";
 // where a sortKey exists (the organizer passes none), the name cell is the
 // real link (keyboard path), selection swaps in a checkbox and hides
 // action slots, and column metadata (mono/numeric/className) shapes the
-// ledger treatment.
+// ledger treatment. The name link is a router Link (queue state) — tests
+// wrap in MemoryRouter.
+
+function renderView(ui: React.ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function makeRow(overrides: Partial<ListViewRow> = {}): ListViewRow {
   return {
@@ -32,7 +38,7 @@ function makeRow(overrides: Partial<ListViewRow> = {}): ListViewRow {
 
 describe("ListView", () => {
   it("renders each row's name as a link and its column values", () => {
-    render(<ListView rows={[makeRow()]} ariaLabel="Videos" />);
+    renderView(<ListView rows={[makeRow()]} ariaLabel="Videos" />);
     const link = screen.getByRole("link", { name: "Concert tape.mov" });
     expect(link).toHaveAttribute("href", "/watch/v1");
     expect(screen.getByText("12:34")).toBeInTheDocument();
@@ -40,7 +46,7 @@ describe("ListView", () => {
   });
 
   it("renders column headers display-only when no sort is passed", () => {
-    render(<ListView rows={[makeRow()]} ariaLabel="Videos" />);
+    renderView(<ListView rows={[makeRow()]} ariaLabel="Videos" />);
     // Organizer case: plain <th>s, no buttons anywhere in the header.
     expect(screen.queryByRole("button", { name: /name|duration/i })).toBeNull();
     expect(
@@ -50,7 +56,7 @@ describe("ListView", () => {
 
   it("sortable headers fire onSort and carry aria-sort on the active column", () => {
     const onSort = vi.fn();
-    render(
+    renderView(
       <ListView
         rows={[makeRow({
           columns: [{ key: "size", label: "Size", value: "8.2 GB", sortKey: "size-asc" }],
@@ -74,7 +80,7 @@ describe("ListView", () => {
   });
 
   it("reflects descending aria-sort on the active data column", () => {
-    render(
+    renderView(
       <ListView
         rows={[makeRow({
           columns: [{ key: "size", label: "Size", value: "8.2 GB", sortKey: "size" }],
@@ -91,7 +97,7 @@ describe("ListView", () => {
 
   it("selection mode swaps the leading cell to a checkbox and hides action slots", () => {
     const onToggle = vi.fn();
-    render(
+    renderView(
       <ListView
         rows={[makeRow({
           menuSlot: <button type="button">Menu</button>,
@@ -118,7 +124,7 @@ describe("ListView", () => {
   });
 
   it("renders a kind icon frame when the row has no thumbnail", () => {
-    render(
+    renderView(
       <ListView
         rows={[makeRow({
           id: "f1",
@@ -136,7 +142,7 @@ describe("ListView", () => {
   });
 
   it("marks the current-location row with aria-current", () => {
-    render(
+    renderView(
       <ListView
         rows={[makeRow({ name: "Unfiled", href: undefined, current: true, columns: [] })]}
         ariaLabel="Folders"
@@ -146,7 +152,7 @@ describe("ListView", () => {
   });
 
   it("applies column className to both the header and body cells", () => {
-    render(
+    renderView(
       <ListView
         rows={[makeRow({
           columns: [{ key: "size", label: "Size", value: "8.2 GB", className: "hidden lg:table-cell" }],
@@ -161,7 +167,7 @@ describe("ListView", () => {
   });
 
   it("labels the table for screen readers", () => {
-    render(<ListView rows={[makeRow()]} ariaLabel="All videos" />);
+    renderView(<ListView rows={[makeRow()]} ariaLabel="All videos" />);
     expect(
       screen.getByRole("table", { name: "All videos" }),
     ).toBeInTheDocument();

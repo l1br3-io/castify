@@ -42,6 +42,8 @@ import { useNavigate } from "react-router-dom";
 import { FilterPanel } from "../components/filter-panel";
 import { FavoriteToggle } from "../components/favorite-toggle";
 import { PosterCard } from "../components/poster-card";
+import { ListView, type ListViewRow } from "../components/list-view";
+import { ViewToggle } from "../components/view-toggle";
 import { RatingStars } from "../components/rating-stars";
 import { Shelf } from "../components/shelf";
 import { EmptyState } from "../components/ui/empty-state";
@@ -50,12 +52,13 @@ import { Skeleton } from "../components/ui/skeleton";
 import { useConnections } from "../hooks/use-connections";
 import { useInProgressVideos } from "../hooks/use-in-progress-videos";
 import { useVideos } from "../hooks/use-videos";
+import { useViewMode } from "../hooks/use-view-mode";
 import { ContinueWatchingCard } from "../components/continue-watching-card";
 import { CollectionsRail } from "../components/collections/collections-rail";
 import { AddToCollectionMenu } from "../components/collections/add-to-collection";
 import { FolderOrganizer } from "../components/folder-organizer";
 import { ShareDialog } from "../components/share-dialog";
-import { describeError } from "../lib/format";
+import { describeError, formatDate, formatDuration, formatSize } from "../lib/format";
 import { useBrowseFilters } from "../lib/filter-state";
 import {
   PROVIDER_LABELS,
@@ -65,7 +68,38 @@ import {
   type VideoSortKey,
   type VideoSummaryDto,
 } from "../api/types";
+import type { ViewMode } from "../hooks/use-view-mode";
 import { Button } from "../components/ui/button";
+
+// ---------------------------------------------------------------------------
+// List-view sort mapping (library-list-view task 004)
+// ---------------------------------------------------------------------------
+
+// List column key → URL sort keys + which direction a first click lands
+// on. The backend's direction naming is inconsistent (types.ts NOTE):
+// `size` = largest-first while `size-asc` = smallest; `duration` =
+// shortest while `duration-desc` = longest; `date-desc` = newest. The
+// asc/desc pairs below carry the *actual* direction each key produces.
+const LIST_SORT_COLUMNS: Record<
+  string,
+  { asc: VideoSortKey; desc: VideoSortKey; defaultDir: "asc" | "desc" }
+> = {
+  name: { asc: "name", desc: "name-desc", defaultDir: "asc" },
+  duration: { asc: "duration", desc: "duration-desc", defaultDir: "asc" },
+  size: { asc: "size-asc", desc: "size", defaultDir: "asc" },
+  added: { asc: "date", desc: "date-desc", defaultDir: "desc" },
+};
+
+/** The list column (if any) the current URL sort key belongs to. */
+function activeListColumn(
+  sort: VideoSortKey,
+): { key: string; direction: "asc" | "desc" } | null {
+  for (const [key, keys] of Object.entries(LIST_SORT_COLUMNS)) {
+    if (sort === keys.asc) return { key, direction: "asc" };
+    if (sort === keys.desc) return { key, direction: "desc" };
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // BrowsePage
@@ -75,6 +109,9 @@ export function BrowsePage() {
   // URL-backed filter state (T10). All filters, sort, and the search query
   // (written by the topbar search) live in URL search params via this hook.
   const filters = useBrowseFilters();
+
+  // Per-device presentation (library-list-view task 004) — grid ↔ table.
+  const [viewMode, setViewMode] = useViewMode();
 
   // Local state: page (not deep-linked — fragile across library churn).
   const [page, setPage] = useState(1);
@@ -116,6 +153,21 @@ export function BrowsePage() {
   });
 
   const isSearching = filters.values.q !== "";
+
+  // The active list column (if any) for the table's aria-sort state, plus
+  // the header-click handler (library-list-view task 004).
+  const active = activeListColumn(filters.values.sort);
+
+  function handleListSort(columnKey: string): void {
+    const column = LIST_SORT_COLUMNS[columnKey];
+    if (column === undefined) return;
+    if (active?.key === columnKey) {
+      // Active column — reverse.
+      filters.setSort(active.direction === "asc" ? column.desc : column.asc);
+    } else {
+      filters.setSort(column.defaultDir === "asc" ? column.asc : column.desc);
+    }
+  }
 
   // Connected providers — drives the organizer's chip row + watch-page
   // source pickers.
@@ -265,6 +317,7 @@ export function BrowsePage() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <ViewToggle mode={viewMode} onModeChange={setViewMode} />
             <Button
               variant="secondary"
               size="sm"
@@ -275,23 +328,27 @@ export function BrowsePage() {
             >
               {selectMode ? "Cancel" : "Select"}
             </Button>
-            <label className="flex items-center gap-2 text-sm">
-              <span className="text-[var(--color-castify-muted)]">Sort</span>
-              <select
-                aria-label="Sort videos"
-                value={filters.values.sort}
-                onChange={(e) =>
-                  filters.setSort(e.target.value as VideoSortKey)
-                }
-                className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
-              >
-                {VIDEO_SORT_OPTIONS.map((key) => (
-                  <option key={key} value={key}>
-                    {VIDEO_SORT_LABELS[key]}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* The table's headers are the sort control in list view — one
+                sort affordance at a time (Drive pattern). */}
+            {viewMode === "grid" && (
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-[var(--color-castify-muted)]">Sort</span>
+                <select
+                  aria-label="Sort videos"
+                  value={filters.values.sort}
+                  onChange={(e) =>
+                    filters.setSort(e.target.value as VideoSortKey)
+                  }
+                  className="rounded-[var(--radius-button)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-1.5 text-sm transition hover:bg-[var(--color-castify-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-castify-canvas)]"
+                >
+                  {VIDEO_SORT_OPTIONS.map((key) => (
+                    <option key={key} value={key}>
+                      {VIDEO_SORT_LABELS[key]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         </div>
 
@@ -340,6 +397,16 @@ export function BrowsePage() {
           onClearSearch={() => filters.setQ("")}
           selection={
             selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
+          }
+          viewMode={viewMode}
+          listSort={
+            viewMode === "list"
+              ? {
+                  activeKey: active?.key ?? null,
+                  direction: active?.direction ?? "desc",
+                  onSort: handleListSort,
+                }
+              : undefined
           }
         />
       </div>
@@ -505,6 +572,14 @@ interface BrowseGridProps {
     selectedIds: string[];
     onToggle: (id: string) => void;
   };
+  /** Current presentation (library-list-view task 004). */
+  viewMode: ViewMode;
+  /** Sort wiring for the table headers; present only in list view. */
+  listSort?: {
+    activeKey: string | null;
+    direction: "asc" | "desc";
+    onSort: (key: string) => void;
+  };
 }
 
 function BrowseGrid({
@@ -516,6 +591,8 @@ function BrowseGrid({
   onClearFilters,
   onClearSearch,
   selection,
+  viewMode,
+  listSort,
 }: BrowseGridProps) {
   if (videos.isLoading) {
     return <LoadingSkeletonGrid />;
@@ -561,10 +638,87 @@ function BrowseGrid({
   // Passed through PosterCard → router state → watch page (T11).
   const gridQueue = data.videos.map((v) => v.id);
 
-  // Dim the grid slightly during a background refetch (filter/page change)
-  // instead of replacing it with a skeleton — preserves scroll position and
-  // avoids the flash. Skeleton is reserved for the initial load above.
+  // Dim the listing slightly during a background refetch (filter/page
+  // change) instead of replacing it with a skeleton — preserves scroll
+  // position and avoids the flash. Skeleton is reserved for the initial
+  // load above.
   const containerOpacity = videos.isFetching ? "opacity-60" : "opacity-100";
+
+  // The table branch (library-list-view task 004): same query, same empty
+  // states, same pagination — only the item rendering swaps. Rows carry
+  // the grid queue in router state so next/prev survives from list mode.
+  if (viewMode === "list") {
+    const rows: ListViewRow[] = data.videos.map((video: VideoSummaryDto) => ({
+      id: video.id,
+      name: video.name,
+      href: `/watch/${video.id}`,
+      linkState: { queue: gridQueue },
+      thumbnail: { video },
+      columns: [
+        {
+          key: "duration",
+          label: "Duration",
+          sortKey: "duration",
+          mono: true,
+          value: video.duration_ms !== null ? formatDuration(video.duration_ms) : "—",
+        },
+        {
+          key: "size",
+          label: "Size",
+          sortKey: "size",
+          mono: true,
+          numeric: true,
+          className: "hidden md:table-cell",
+          value: formatSize(video.size_bytes),
+        },
+        {
+          key: "provider",
+          label: "Provider",
+          className: "hidden xl:table-cell",
+          value: PROVIDER_LABELS[video.provider] ?? video.provider,
+        },
+        {
+          key: "added",
+          label: "Added",
+          sortKey: "added",
+          mono: true,
+          className: "hidden lg:table-cell",
+          value: formatDate(video.created_at),
+        },
+      ],
+      favoriteSlot: selection ? undefined : <FavoriteToggle video={video} />,
+      menuSlot: selection ? undefined : <AddToCollectionMenu video={video} />,
+    }));
+
+    return (
+      <div
+        className={`space-y-4 transition-opacity duration-150 ${containerOpacity}`}
+      >
+        <ListView
+          rows={rows}
+          ariaLabel={searchQuery ? "Search results" : "All videos"}
+          nameSortKey="name"
+          sort={listSort}
+          selection={
+            selection
+              ? {
+                  isSelected: (row) => selection.selectedIds.includes(row.id),
+                  onToggle: (row) => selection.onToggle(row.id),
+                }
+              : undefined
+          }
+        />
+        {totalPages > 1 && (
+          <Pagination
+            page={page}
+            totalPages={totalPages}
+            onPageChange={onPageChange}
+            isFetching={videos.isFetching}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div

@@ -22,6 +22,7 @@
 // the organizer's display-only case (server order stands).
 
 import { type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 import { Thumbnail, type ThumbnailVideo } from "./thumbnail";
 
@@ -49,6 +50,9 @@ export type ListViewRow = {
   name: string;
   /** Absent → plain-text name (folder rows, current-location rows). */
   href?: string;
+  /** Router state for the name link — browse passes `{ queue }` so the
+   *  watch page keeps its next/prev context from list mode too. */
+  linkState?: Record<string, unknown>;
   /** Video rows: the matted frame + corner duration badge. */
   thumbnail?: { video: ThumbnailVideo; src?: string };
   /** The kind tab's bg class (e.g. `KIND_HUES[kind].tab`). */
@@ -166,13 +170,7 @@ export function ListView({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <ListViewBodyRow
-            key={row.id}
-            row={row}
-            columns={columns}
-            selection={selection}
-            hasActions={hasActions}
-          />
+          <ListViewBodyRow key={row.id} row={row} selection={selection} hasActions={hasActions} />
         ))}
       </tbody>
     </table>
@@ -181,12 +179,10 @@ export function ListView({
 
 function ListViewBodyRow({
   row,
-  columns,
   selection,
   hasActions,
 }: {
   row: ListViewRow;
-  columns: ListViewColumn[];
   selection?: ListViewProps["selection"];
   /** The listing renders an actions column (any row has slots). Every
    *  body row must render that cell — missing cells shift the row. */
@@ -241,14 +237,15 @@ function ListViewBodyRow({
       </td>
       <td className="max-w-0 px-3 py-2 align-middle">
         {row.href !== undefined && !selection ? (
-          <a
-            href={row.href}
+          <Link
+            to={row.href}
+            state={row.linkState}
             aria-current={row.current ? "page" : undefined}
             title={row.name}
             className="flex items-center gap-1 truncate text-sm font-medium group-hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus)]"
           >
             {row.name}
-          </a>
+          </Link>
         ) : (
           <span
             aria-current={row.current ? "page" : undefined}
@@ -259,7 +256,9 @@ function ListViewBodyRow({
           </span>
         )}
       </td>
-      {columns.map((col) => (
+      {/* Each row supplies its OWN columns — the rows[0] set only shapes
+          the header; values are per-row by construction. */}
+      {row.columns.map((col) => (
         <td
           key={col.key}
           title={typeof col.value === "string" ? col.value : undefined}
