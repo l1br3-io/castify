@@ -121,6 +121,14 @@ pub fn build_app(state: AppState) -> Router {
             axum::routing::patch(library_folders::move_items),
         )
         .route(
+            "/api/library-folders/items/order",
+            axum::routing::patch(library_folders::reorder_items),
+        )
+        .route(
+            "/api/library-folders/folders/order",
+            axum::routing::patch(library_folders::reorder_folders),
+        )
+        .route(
             "/api/library-folders/contents",
             axum::routing::get(library_folders::contents),
         )

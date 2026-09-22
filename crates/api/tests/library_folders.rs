@@ -199,6 +199,8 @@ async fn every_endpoint_without_session_is_unauthorized() {
         ("PATCH", "/api/library-folders/x"),
         ("DELETE", "/api/library-folders/x"),
         ("PATCH", "/api/library-folders/items"),
+        ("PATCH", "/api/library-folders/items/order"),
+        ("PATCH", "/api/library-folders/folders/order"),
     ] {
         let (status, _) = request(app.clone(), method, uri, None, None, Some(json!({}))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -213,6 +215,8 @@ async fn mutations_without_csrf_are_forbidden() {
         ("PATCH", "/api/library-folders/x"),
         ("DELETE", "/api/library-folders/x"),
         ("PATCH", "/api/library-folders/items"),
+        ("PATCH", "/api/library-folders/items/order"),
+        ("PATCH", "/api/library-folders/folders/order"),
     ] {
         let (status, _) = request(
             app.clone(),
@@ -620,4 +624,236 @@ async fn batch_move_with_one_bad_id_fails_whole_over_http() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(placement_of(pool, "videos", &videos[0]).await, None);
+}
+
+// ------------------------------------------------ reorder routes (task 006)
+
+/// GET one folder's contents names, in served order.
+async fn contents_order(app: &axum::Router, session: &str, folder_id: &str) -> Vec<String> {
+    let (status, body) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/library-folders/contents?folder_id={folder_id}&limit=100"),
+        Some(session),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body["entries"]
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .map(|e| e["name"].as_str().expect("name").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn item_reorder_round_trip_and_validation_matrix() {
+    let (app, state, session, _guard) = boot().await;
+    let pool = state.pool();
+    let videos = seed_videos(pool, &["B.mp4", "A.mp4", "C.mp4"]).await;
+    let (_, folder) = create_folder(&app, &session, json!({"name": "F"})).await;
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+
+    // Place all three via the shipped batch-move endpoint.
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items",
+        json!({
+            "items": videos.iter().map(|id| json!({"kind": "video", "id": id})).collect::<Vec<_>>(),
+            "folder_id": folder_id,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        contents_order(&app, &session, &folder_id).await,
+        vec!["A.mp4", "B.mp4", "C.mp4"],
+        "unordered folders keep the name-ascending default"
+    );
+
+    // Happy path: a full-list reorder lands 204 and contents follow it.
+    let (status, body) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({
+            "folder_id": folder_id,
+            "items": [
+                {"kind": "video", "id": videos[2]},
+                {"kind": "video", "id": videos[1]},
+                {"kind": "video", "id": videos[0]},
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    assert_eq!(
+        contents_order(&app, &session, &folder_id).await,
+        vec!["C.mp4", "A.mp4", "B.mp4"],
+        "the reorder rewrote the served order"
+    );
+
+    // Validation matrix.
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({
+            "folder_id": folder_id,
+            "items": [{"kind": "video", "id": videos[0]}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing ids abort whole");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({
+            "folder_id": folder_id,
+            "items": [{"kind": "video", "id": "not-an-id"}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "foreign id aborts whole");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({"folder_id": folder_id, "items": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty list aborts whole");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({
+            "folder_id": "missing-folder",
+            "items": [{"kind": "video", "id": videos[0]}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown folder is a 404");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/items/order",
+        json!({
+            "folder_id": folder_id,
+            "items": [{"kind": "clip", "id": videos[0]}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown kind is a 400");
+
+    // Nothing above moved anything.
+    assert_eq!(
+        contents_order(&app, &session, &folder_id).await,
+        vec!["C.mp4", "A.mp4", "B.mp4"],
+        "failed reorders leave the order untouched"
+    );
+}
+
+#[tokio::test]
+async fn folder_reorder_round_trip_and_validation_matrix() {
+    let (app, _state, session, _guard) = boot().await;
+
+    let (_, a) = create_folder(&app, &session, json!({"name": "A"})).await;
+    let (_, b) = create_folder(&app, &session, json!({"name": "B"})).await;
+    let (_, c) = create_folder(&app, &session, json!({"name": "C"})).await;
+    let (a, b, c) = (
+        a["id"].as_str().unwrap(),
+        b["id"].as_str().unwrap(),
+        c["id"].as_str().unwrap(),
+    );
+
+    // Root reorder: null parent, dense rewrite, tree reflects it.
+    let (status, body) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/folders/order",
+        json!({"parent_id": null, "folder_ids": [c, a, b]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    let (_, tree) = request(
+        app.clone(),
+        "GET",
+        "/api/library-folders/tree",
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    let names: Vec<&str> = tree["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["C", "A", "B"]);
+
+    // Matrix.
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/folders/order",
+        json!({"parent_id": null, "folder_ids": [a, b]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing id aborts whole");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/folders/order",
+        json!({"parent_id": null, "folder_ids": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty list aborts whole");
+
+    let (status, _) = mutate(
+        &app,
+        &session,
+        "PATCH",
+        "/api/library-folders/folders/order",
+        json!({"parent_id": "missing", "folder_ids": [a]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown parent is a 404");
+
+    let (_, tree) = request(
+        app.clone(),
+        "GET",
+        "/api/library-folders/tree",
+        Some(&session),
+        None,
+        None,
+    )
+    .await;
+    let names: Vec<&str> = tree["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["C", "A", "B"], "failed reorders leave the tree");
 }

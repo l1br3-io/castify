@@ -71,6 +71,24 @@ pub struct MoveItemsRequest {
     pub folder_id: Option<String>,
 }
 
+/// Body of `PATCH /api/library-folders/items/order`: the FULL ordered
+/// item list for one placement scope — exactly what the folder's
+/// contents listing shows (dedup representatives), nothing more or
+/// less. `folder_id` null/absent orders the Unfiled bucket.
+#[derive(Debug, Deserialize)]
+pub struct ReorderItemsRequest {
+    pub folder_id: Option<String>,
+    pub items: Vec<MoveItemBody>,
+}
+
+/// Body of `PATCH /api/library-folders/folders/order`: the full ordered
+/// sibling list under `parent_id` (null/absent = the tree root).
+#[derive(Debug, Deserialize)]
+pub struct ReorderFoldersRequest {
+    pub parent_id: Option<String>,
+    pub folder_ids: Vec<String>,
+}
+
 /// Query params of `GET /api/library-folders/contents`.
 #[derive(Debug, Deserialize)]
 pub struct ContentsParams {
@@ -293,6 +311,28 @@ pub async fn contents(
     Ok(Json(page))
 }
 
+/// Parse `[{kind, id}…]` bodies — the shared namespace guard: `kind`
+/// must be `video` | `file`, anything else is a 400 before any write.
+fn parse_move_items(items: &[MoveItemBody]) -> Result<Vec<MoveItem<'_>>, ApiError> {
+    let mut parsed = Vec::with_capacity(items.len());
+    for entry in items {
+        let kind = match entry.kind.as_str() {
+            "video" => ItemKind::Video,
+            "file" => ItemKind::File,
+            other => {
+                return Err(ApiError::Validation {
+                    detail: format!("unknown item kind {other:?}; expected \"video\" or \"file\""),
+                });
+            }
+        };
+        parsed.push(MoveItem {
+            kind,
+            id: entry.id.as_str(),
+        });
+    }
+    Ok(parsed)
+}
+
 /// `PATCH /api/library-folders/items` — batch move. One transaction per
 /// user action (data-storage rule #5): all listed items land in
 /// `folder_id` (null → Unfiled) or the request fails whole. Folders are
@@ -312,22 +352,7 @@ pub async fn move_items(
             detail: "items must contain at least one entry".to_string(),
         });
     }
-    let mut items = Vec::with_capacity(req.items.len());
-    for entry in &req.items {
-        let kind = match entry.kind.as_str() {
-            "video" => ItemKind::Video,
-            "file" => ItemKind::File,
-            other => {
-                return Err(ApiError::Validation {
-                    detail: format!("unknown item kind {other:?}; expected \"video\" or \"file\""),
-                });
-            }
-        };
-        items.push(MoveItem {
-            kind,
-            id: entry.id.as_str(),
-        });
-    }
+    let items = parse_move_items(&req.items)?;
     state
         .library_folder_repository()
         .move_items(&owner_id.to_string(), &items, req.folder_id.as_deref())
@@ -339,6 +364,64 @@ pub async fn move_items(
         count = items.len(),
         folder_id = req.folder_id.as_deref().unwrap_or("<unfiled>"),
         "library items moved"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/library-folders/items/order` — reorder one folder's
+/// contents (drag-and-drop task 006). The body carries the FULL ordered
+/// list of the scope's placed items (what its contents listing shows);
+/// the repository rewrites positions densely in one transaction. A list
+/// that isn't exactly the current members (missing, extra, foreign,
+/// duplicate, empty) is a 400 and nothing moves; an unknown folder is a
+/// plain 404. Unordered folders keep name-ascending until their first
+/// reorder flips them dense.
+pub async fn reorder_items(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<ReorderItemsRequest>,
+) -> ApiResult<StatusCode> {
+    let owner_id: Uuid = resolve_owner_id(&state, &jar).await?;
+    let items = parse_move_items(&req.items)?;
+    state
+        .library_folder_repository()
+        .reorder_items(&owner_id.to_string(), req.folder_id.as_deref(), &items)
+        .await
+        .map_err(folder_write_error)?
+        .ok_or(ApiError::NotFound)?;
+    tracing::info!(
+        owner_id = %owner_id,
+        count = items.len(),
+        folder_id = req.folder_id.as_deref().unwrap_or("<unfiled>"),
+        "library items reordered"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /api/library-folders/folders/order` — reorder one scope's
+/// folder siblings (drag-and-drop task 006). Same contract as
+/// [`reorder_items`] over the existing `position` column: the body
+/// carries the full ordered sibling list under `parent_id` (null =
+/// tree root); mismatched lists are a 400 and nothing moves; an
+/// unknown parent is a plain 404.
+pub async fn reorder_folders(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(req): Json<ReorderFoldersRequest>,
+) -> ApiResult<StatusCode> {
+    let owner_id: Uuid = resolve_owner_id(&state, &jar).await?;
+    let ids: Vec<&str> = req.folder_ids.iter().map(String::as_str).collect();
+    state
+        .library_folder_repository()
+        .reorder_folders(&owner_id.to_string(), req.parent_id.as_deref(), &ids)
+        .await
+        .map_err(folder_write_error)?
+        .ok_or(ApiError::NotFound)?;
+    tracing::info!(
+        owner_id = %owner_id,
+        count = ids.len(),
+        parent_id = req.parent_id.as_deref().unwrap_or("<root>"),
+        "library folders reordered"
     );
     Ok(StatusCode::NO_CONTENT)
 }
