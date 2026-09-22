@@ -2,8 +2,8 @@
 // member grid, play-all into the existing watch queue, rename, and
 // delete-with-confirmation.
 
-import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router-dom";
 
 import { CollectionDetailPage } from "./collection-detail";
@@ -224,5 +224,34 @@ describe("CollectionDetailPage", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /try again/i }));
     expect(await screen.findByRole("heading", { name: /weekend watchlist/i })).toBeInTheDocument();
+  });
+});
+
+// --- List view (library-list-view task 006) ---
+
+describe("CollectionDetailPage list view", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("toggles members to slate rows with watch links", async () => {
+    renderDetail();
+    expect(await screen.findByText("alpha.mp4"));
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    const table = screen.getByRole("table", { name: "Collection members" });
+    expect(
+      within(table).getByRole("link", { name: "alpha.mp4" }),
+    ).toHaveAttribute("href", "/watch/v1");
+    expect(
+      within(table).getByRole("link", { name: "beta.mp4" }),
+    ).toHaveAttribute("href", "/watch/v2");
+    // Ledger values render.
+    expect(within(table).getAllByText("1000 B")).toHaveLength(2);
+    expect(within(table).getAllByText("Google Drive")).toHaveLength(2);
   });
 });

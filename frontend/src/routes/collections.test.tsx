@@ -5,8 +5,8 @@
 // h1 keeps the a11y tree honest while the header row is the visible
 // identity (browse-page precedent).
 
-import { describe, expect, it } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes, useParams } from "react-router-dom";
 
 import { CollectionsPage } from "./collections";
@@ -938,5 +938,45 @@ describe("CollectionsPage", () => {
     });
     expect(dialog).toBeInTheDocument();
     expect(detailGetCount(fetchSpy)).toBe(0);
+  });
+});
+
+// --- List view (library-list-view task 006) ---
+
+describe("CollectionsPage list view", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("toggles the grid to slate rows — Name · Kind · Items, navigation per row", async () => {
+    renderWithProviders(pageRoutes(), {
+      initialEntries: ["/collections"],
+      fetchImplementation: () =>
+        jsonResponse([
+          collection(),
+          collection({ id: "c2", name: "June 2026", kind: "time", member_count: 12 }),
+        ]),
+    });
+    await screen.findByText("Breaking Bad");
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    const table = screen.getByRole("table", { name: "Collections" });
+    expect(
+      within(table).getByRole("link", { name: "Breaking Bad" }),
+    ).toHaveAttribute("href", "/collections/c1");
+    // Kind label + the mono item count.
+    expect(within(table).getByText("Series")).toBeInTheDocument();
+    expect(within(table).getByText("12")).toBeInTheDocument();
+    // The row keeps its kebab (Rename/Share/Delete).
+    expect(
+      within(table).getByRole("button", { name: "Actions for Breaking Bad" }),
+    ).toBeInTheDocument();
+    // Grid mode is gone.
+    expect(screen.queryByText("June 2026")).toBeInTheDocument();
+    expect(document.querySelector(".grid")).toBeNull();
   });
 });

@@ -37,8 +37,12 @@ import {
   useRenameCollection,
 } from "../hooks/use-collections";
 import { useToast } from "../hooks/use-toast";
+import { useViewMode } from "../hooks/use-view-mode";
 import { describeError } from "../lib/format";
 import { CollectionCard } from "../components/collections/collection-card";
+import { ListView, type ListViewRow } from "../components/list-view";
+import { ViewToggle } from "../components/view-toggle";
+import { FolderIcon } from "../components/icons";
 import { ShareDialog } from "../components/share-dialog";
 import { Dialog } from "../components/ui/dialog";
 import { EmptyState } from "../components/ui/empty-state";
@@ -133,6 +137,9 @@ export function CollectionsPage() {
   const { kind, setKind } = useCollectionKindFilter();
   const [sort, setSort] = useState<CollectionSortKey>("newest");
   const [creating, setCreating] = useState(false);
+  // Per-device presentation (library-list-view task 006). Before the
+  // early returns — hooks don't branch.
+  const [viewMode, setViewMode] = useViewMode();
 
   if (collections.isLoading) {
     return (
@@ -232,6 +239,7 @@ export function CollectionsPage() {
           })}
         </div>
         <label className="flex items-center gap-2 text-sm">
+          <ViewToggle mode={viewMode} onModeChange={setViewMode} />
           <span className="text-[var(--color-castify-muted)]">Sort</span>
           <select
             aria-label="Sort collections"
@@ -259,6 +267,41 @@ export function CollectionsPage() {
           onAction={() => setKind(undefined)}
           actionLabel="Show all kinds"
           compact
+        />
+      ) : viewMode === "list" ? (
+        // List mode (library-list-view task 006): Name · Kind · Items.
+        // Resolved spec open question 1: no updated_at column — the DTO
+        // has none; member_count is the useful figure.
+        <ListView
+          ariaLabel="Collections"
+          rows={visible.map((collection): ListViewRow => ({
+            id: collection.id,
+            name: collection.name,
+            href: `/collections/${collection.id}`,
+            thumbnail:
+              collection.preview[0] !== undefined
+                ? { video: collection.preview[0] }
+                : undefined,
+            kindIcon: <FolderIcon className="h-6 w-6" />,
+            columns: [
+              {
+                key: "kind",
+                label: "Kind",
+                className: "hidden md:table-cell",
+                value:
+                  KIND_CHIPS.find((chip) => chip.value === collection.kind)
+                    ?.label ?? "Collection",
+              },
+              {
+                key: "items",
+                label: "Items",
+                value: collection.member_count,
+                mono: true,
+                numeric: true,
+              },
+            ],
+            menuSlot: <CollectionCardMenu collection={collection} />,
+          }))}
         />
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">

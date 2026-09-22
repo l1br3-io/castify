@@ -14,8 +14,11 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import type { CollectionKind } from "../../api/types";
+import { PROVIDER_LABELS } from "../../api/types";
 import { FavoriteToggle } from "../favorite-toggle";
 import { PosterCard } from "../poster-card";
+import { ListView, type ListViewRow } from "../list-view";
+import { ViewToggle } from "../view-toggle";
 import { RatingStars } from "../rating-stars";
 import { ShareDialog } from "../share-dialog";
 import { Dialog } from "../ui/dialog";
@@ -28,6 +31,8 @@ import {
   useDeleteCollection,
   useRenameCollection,
 } from "../../hooks/use-collections";
+import { useViewMode } from "../../hooks/use-view-mode";
+import { formatDate, formatDuration, formatSize } from "../../lib/format";
 
 const KIND_LABELS: Record<CollectionKind, string> = {
   show: "Series",
@@ -47,6 +52,8 @@ export function CollectionDetailPage() {
   const [nameDraft, setNameDraft] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  // Per-device presentation (library-list-view task 006).
+  const [viewMode, setViewMode] = useViewMode();
 
   if (collection.isPending) {
     return <SkeletonGrid count={8} />;
@@ -137,6 +144,7 @@ export function CollectionDetailPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <ViewToggle mode={viewMode} onModeChange={setViewMode} />
           {members.length > 0 && (
             <Link
               to={`/watch/${members[0].id}`}
@@ -178,6 +186,55 @@ export function CollectionDetailPage() {
           body="Add videos from any browse card or the watch page."
           onAction={() => navigate("/")}
           actionLabel="Back to library"
+        />
+      ) : viewMode === "list" ? (
+        // List mode (library-list-view task 006): the browse column set —
+        // Name · Duration · Size · Provider · Added. Rating stays a card
+        // affordance (the watch page owns full ratings).
+        <ListView
+          ariaLabel="Collection members"
+          rows={members.map(
+            (video): ListViewRow => ({
+              id: video.id,
+              name: video.name,
+              href: `/watch/${video.id}`,
+              linkState: { queue },
+              thumbnail: { video },
+              columns: [
+                {
+                  key: "duration",
+                  label: "Duration",
+                  mono: true,
+                  value:
+                    video.duration_ms !== null
+                      ? formatDuration(video.duration_ms)
+                      : "—",
+                },
+                {
+                  key: "size",
+                  label: "Size",
+                  mono: true,
+                  numeric: true,
+                  className: "hidden md:table-cell",
+                  value: formatSize(video.size_bytes),
+                },
+                {
+                  key: "provider",
+                  label: "Provider",
+                  className: "hidden xl:table-cell",
+                  value: PROVIDER_LABELS[video.provider] ?? video.provider,
+                },
+                {
+                  key: "added",
+                  label: "Added",
+                  mono: true,
+                  className: "hidden lg:table-cell",
+                  value: formatDate(video.created_at),
+                },
+              ],
+              favoriteSlot: <FavoriteToggle video={video} />,
+            }),
+          )}
         />
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
