@@ -161,6 +161,26 @@ describe("DragContext drop resolution", () => {
     expect(onDrop).not.toHaveBeenCalled();
   });
 
+  it("pointercancel (touch scroll takeover) cancels the drag — no drop on the later pointer up", () => {
+    const onDrop = vi.fn();
+    function DropTargetProbe() {
+      const { registerTarget } = useDrag();
+      registerTarget("folder-1", { onDrop });
+      return null;
+    }
+    renderWithProviders(
+      <DragProvider>
+        <DropTargetProbe />
+        <DragProbe payload={PAYLOAD} hover="folder-1" />
+      </DragProvider>,
+    );
+    startDrag();
+    fireEvent.click(screen.getByTestId("hover"));
+    fireEvent.pointerCancel(window);
+    fireEvent.pointerUp(window);
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+
   it("clears the hovered target on hoverTarget(null)", () => {
     const onDrop = vi.fn();
     function HoverNullProbe() {

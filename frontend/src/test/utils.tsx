@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 
 import { ToastProvider } from "../components/ui/toast";
+import { DragProvider } from "../components/drag-context";
 
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -73,7 +74,9 @@ export function renderWithProviders(
   const renderResult = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={initialEntries}>
-        <ToastProvider>{ui}</ToastProvider>
+        <DragProvider>
+          <ToastProvider>{ui}</ToastProvider>
+        </DragProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

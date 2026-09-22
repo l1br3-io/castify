@@ -83,6 +83,15 @@ type PosterCardProps = {
     isSelected: boolean;
     onToggle: () => void;
   };
+  /**
+   * Drag source (drag-and-drop effort): pointer-down wiring for the
+   * card. The pane decides what a press carries (selection rule lives
+   * there); the card only reports the press. The engine's threshold —
+   * not this handler — separates a click from a drag.
+   */
+  dragHandle?: {
+    onPointerDown: (event: React.PointerEvent) => void;
+  };
 };
 
 export function PosterCard({
@@ -94,6 +103,7 @@ export function PosterCard({
   menuSlot,
   scope,
   selection,
+  dragHandle,
 }: PosterCardProps) {
   // Providers from `sources` excluding the representative's own. Used to
   // decide whether to render a DedupBadge. Shared helper (lib/video.ts).
@@ -103,6 +113,7 @@ export function PosterCard({
   return (
     <article
       onClick={selection ? selection.onToggle : undefined}
+      onPointerDown={dragHandle?.onPointerDown}
       className={`
         relative group flex flex-col gap-2
         ${selection ? "cursor-pointer" : ""}

@@ -1008,3 +1008,203 @@ describe("FolderOrganizer list view", () => {
     expect(screen.getByRole("link", { name: "Loose.mp4" })).toBeInTheDocument();
   });
 });
+
+// --- Drag to organize (drag-and-drop task 002) ---
+//
+// Grid-mode item drags: a card (or the whole select-mode selection)
+// dropped onto a folder tile or the Unfiled pin fires exactly one batch
+// move; the tile previews the post-drop count while hovered; misses
+// cancel cleanly; clicks below the drag threshold are untouched.
+//
+// Pointer choreography mirrors the real event flow: pointerdown on the
+// card arms the engine, a window pointermove crosses the 6px threshold,
+// pointerOver/pointerOut on a tile drive hover (React derives
+// onPointerEnter from pointerover), window pointerup resolves the drop.
+
+describe("FolderOrganizer drag to organize", () => {
+  /** The card article for a contents entry, by name. */
+  function cardFor(name: string): HTMLElement {
+    return screen.getByText(name).closest("article")!;
+  }
+
+  /** The tile article for a folder, by name. */
+  function tileFor(name: string): HTMLElement {
+    return screen.getByRole("link", { name: `Open folder ${name}` }).closest("article")!;
+  }
+
+  /** Arms + crosses the threshold from a card. */
+  function dragFromCard(name: string): void {
+    fireEvent.pointerDown(cardFor(name), { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 130, clientY: 120 });
+  }
+
+  it("drops a single card onto a folder tile: one batch move, success toast", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    dragFromCard("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [{ kind: "video", id: "u1" }],
+        folder_id: "f-trip",
+      });
+    });
+    expect(await screen.findByText("Moved to Trip")).toBeInTheDocument();
+  });
+
+  it("carries the whole selection when the grabbed card is selected; success clears it", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(cardFor("Loose.mp4"));
+    fireEvent.click(screen.getByText("Photo.jpg").closest("article")!);
+
+    dragFromCard("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [
+          { kind: "video", id: "u1" },
+          { kind: "file", id: "u2" },
+        ],
+        folder_id: "f-trip",
+      });
+    });
+    await waitFor(() => expect(screen.getByText("0 items selected")).toBeInTheDocument());
+  });
+
+  it("previews the post-drop count on hover and cancels it on leave", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    expect(screen.getByText("4 items")).toBeInTheDocument();
+    dragFromCard("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+    expect(screen.getByText("4 → 5 items")).toBeInTheDocument();
+
+    fireEvent.pointerOut(tileFor("Trip"));
+    expect(screen.getByText("4 items")).toBeInTheDocument();
+
+    // A cancelled drag (drop nowhere) leaves the count untouched.
+    fireEvent.pointerUp(window);
+    expect(screen.getByText("4 items")).toBeInTheDocument();
+  });
+
+  it("drops onto the Unfiled pin with folder_id null", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    dragFromCard("Loose.mp4");
+    // The pin's heading — the path line + pane heading also carry
+    // title="Unfiled"; the h3 is the tile's own.
+    const unfiledHeading = screen
+      .getAllByTitle("Unfiled")
+      .find((el) => el.tagName === "H3")!;
+    fireEvent.pointerOver(unfiledHeading.closest("article")!);
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const patches = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items",
+      );
+      expect(patches).toHaveLength(1);
+      expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
+        items: [{ kind: "video", id: "u1" }],
+        folder_id: null,
+      });
+    });
+  });
+
+  it("a failed move surfaces a direct error and keeps the selection", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(cardFor("Loose.mp4"));
+
+    dragFromCard("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(mutationFetch(() => jsonResponse({ message: "batch contains an unknown item id" }, 404))),
+    );
+    fireEvent.pointerUp(window);
+
+    expect(await screen.findByText(/Move failed — .*unknown item id/)).toBeInTheDocument();
+    expect(screen.getByText("1 item selected")).toBeInTheDocument();
+  });
+
+  it("dropping outside any target cancels: no mutation, selection preserved", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select items" }));
+    fireEvent.click(cardFor("Loose.mp4"));
+
+    dragFromCard("Loose.mp4");
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items"),
+      ).toHaveLength(0),
+    );
+    expect(screen.getByText("1 item selected")).toBeInTheDocument();
+  });
+
+  it("a press below the threshold is a click, not a drag: no mutation, navigation intact", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.pointerDown(cardFor("Loose.mp4"), { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 103, clientY: 101 });
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    expect(
+      fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items"),
+    ).toHaveLength(0);
+    expect(screen.getByRole("link", { name: "Play Loose.mp4" })).toBeInTheDocument();
+  });
+
+  it("the ghost click after a completed drag is swallowed — no surprise navigation", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    dragFromCard("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+    vi.stubGlobal("fetch", vi.fn(mutationFetch(() => new Response(null, { status: 204 }))));
+    fireEvent.pointerUp(window);
+
+    // The click the browser fires after pointerup must not navigate.
+    fireEvent.click(screen.getByRole("link", { name: "Play Loose.mp4" }));
+    expect(locationSearch()).toBe("");
+  });
+});

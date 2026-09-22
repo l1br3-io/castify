@@ -50,6 +50,11 @@ type SelectionProps = {
     onToggle: () => void;
   };
   menuSlot?: ReactNode;
+  /** Drag source (drag-and-drop effort): pointer-down wiring for the
+   *  card/row. See PosterCard's `dragHandle` for the contract. */
+  dragHandle?: {
+    onPointerDown: (event: React.PointerEvent) => void;
+  };
 };
 
 /** The kind glyph, tinted by its hue (see ./kind-hues.ts). Exported for
@@ -82,10 +87,11 @@ function formatModifiedDate(iso: string | null): string {
   return Number.isFinite(year) ? String(year) : "";
 }
 
-export function FileCard({ file, selection, menuSlot }: { file: FileEntryDto } & SelectionProps) {
+export function FileCard({ file, selection, menuSlot, dragHandle }: { file: FileEntryDto } & SelectionProps) {
   return (
     <article
       onClick={selection ? selection.onToggle : undefined}
+      onPointerDown={dragHandle?.onPointerDown}
       className={`group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none
         ${selection ? "cursor-pointer" : ""}
         ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}
@@ -127,11 +133,12 @@ export function FileCard({ file, selection, menuSlot }: { file: FileEntryDto } &
   );
 }
 
-export function FileRow({ file, selection, menuSlot }: { file: FileEntryDto } & SelectionProps) {
+export function FileRow({ file, selection, menuSlot, dragHandle }: { file: FileEntryDto } & SelectionProps) {
   const modified = formatModifiedDate(file.modified_at);
   return (
     <div
       onClick={selection ? selection.onToggle : undefined}
+      onPointerDown={dragHandle?.onPointerDown}
       className={`relative flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40
         ${selection ? "cursor-pointer" : ""}
         ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}

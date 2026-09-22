@@ -31,6 +31,16 @@ type FolderTileProps = {
   /** Owner-only overlay: the folder's kebab menu. Renders above the
    *  stretched link so its controls stay clickable. */
   topRightSlot?: ReactNode;
+  /** Drag-and-drop (drag-and-drop effort): spread drop-target pointer
+   *  props onto the tile root. */
+  onPointerEnter?: (event: React.PointerEvent) => void;
+  onPointerLeave?: (event: React.PointerEvent) => void;
+  /** Valid drop target hovered mid-drag: raw-amber border +
+   *  accent-subtle fill on the glyph well. */
+  dropHovered?: boolean;
+  /** Post-drop count while hovered (`13 → 16` in the count badge);
+   *  null/undefined renders the plain count. */
+  countPreview?: number | null;
 };
 
 export function FolderTile({
@@ -40,9 +50,17 @@ export function FolderTile({
   searchParam = "folder",
   count,
   topRightSlot,
+  onPointerEnter,
+  onPointerLeave,
+  dropHovered = false,
+  countPreview = null,
 }: FolderTileProps) {
   return (
-    <article className="group relative flex flex-col gap-2">
+    <article
+      className="group relative flex flex-col gap-2"
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+    >
       <Link
         to={{
           pathname: to,
@@ -55,11 +73,14 @@ export function FolderTile({
                    focus-visible:ring-offset-[var(--color-castify-canvas)]"
       />
       <div
-        className="relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
-                   border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)]
-                   text-[var(--color-castify-muted)] transition-colors
-                   group-hover:border-[var(--color-castify-accent)]
-                   group-focus-within:border-[var(--color-castify-accent)]"
+        className={`relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
+                    border transition-colors
+                    ${
+                      dropHovered
+                        ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)]"
+                        : "border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] group-hover:border-[var(--color-castify-accent)] group-focus-within:border-[var(--color-castify-accent)]"
+                    }
+                    text-[var(--color-castify-muted)]`}
       >
         <FolderIcon className="h-10 w-10" />
         {topRightSlot && <span className="absolute right-2 top-2 z-10">{topRightSlot}</span>}
@@ -72,7 +93,9 @@ export function FolderTile({
           {name}
         </h3>
         <p className="text-xs text-[var(--color-castify-muted)]">
-          {count} {count === 1 ? "item" : "items"}
+          {countPreview !== null
+            ? `${count} → ${countPreview} items`
+            : `${count} ${count === 1 ? "item" : "items"}`}
         </p>
       </div>
     </article>

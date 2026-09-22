@@ -57,6 +57,8 @@ import {
 } from "../components/icons";
 import { SearchBar } from "../components/search-bar";
 import { SidebarFolders } from "../components/sidebar-folders";
+import { DragProvider } from "../components/drag-context";
+import { DragLayer } from "../components/drag-layer";
 import { Menu, MenuItem } from "../components/ui/menu";
 import { IconButton } from "../components/ui/icon-button";
 import { OfflineBanner } from "../components/ui/offline-banner";
@@ -248,6 +250,12 @@ export function AppLayout() {
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-dvh flex-col overflow-hidden">
       <OfflineBanner />
+      {/* Drag-and-drop (drag-and-drop effort): the active drag lives in
+          context at the layout level — the sidebar tree and the route's
+          organizer both drop into it; the ghost layers over everything.
+          Passive (idle) on non-library routes. */}
+      <DragProvider>
+        <DragLayer />
 
       {/* Topbar — menu (mobile), brand, search, scan status, theme,
           account. Compact below 600px: search, scan status, and the
@@ -390,6 +398,7 @@ export function AppLayout() {
           </footer>
         </main>
       </div>
+      </DragProvider>
     </div>
   );
 }

@@ -134,16 +134,23 @@ export function DragProvider({ children }: { children: ReactNode }) {
     const onPointerUp = (): void => {
       endDrag();
     };
+    // Touch scroll takeover: the browser cancels the pointer stream to
+    // hand the gesture to scrolling — the drag ends, never drops.
+    const onPointerCancel = (): void => {
+      dispatch({ type: "escape" });
+    };
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") dispatch({ type: "escape" });
     };
 
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [isActive, endDrag]);

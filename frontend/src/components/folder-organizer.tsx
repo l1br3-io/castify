@@ -33,7 +33,7 @@
 // wear the `.keycap` primitive; the name filter speaks the mono data
 // voice.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { FileCard, FileRow, KindIcon } from "./file-card";
@@ -50,6 +50,10 @@ import { ViewToggle } from "./view-toggle";
 import { FolderIcon } from "./icons";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
+import { useDrag } from "./drag-context";
+import { carryPayload, type DragItem } from "../lib/drag-engine";
+import { useDropTarget } from "../hooks/use-drop-target";
+import { useToast } from "../hooks/use-toast";
 import {
   FILE_KIND_LABELS,
   PROVIDER_LABELS,
@@ -162,6 +166,11 @@ type ContentsBodyProps = {
   };
   /** Per-item kebab factory (curated pane, outside select mode). */
   itemMenu?: (entry: FolderEntryDto) => ReactNode;
+  /** Drag source wiring (drag-and-drop effort, curated pane): a
+   *  pointer-down on a contents card. The pane computes the carried
+   *  payload (selection rule); the engine's threshold separates click
+   *  from drag. */
+  itemDragStart?: (entry: FolderEntryDto, event: ReactPointerEvent) => void;
 };
 
 /** One contents entry → one slate row (library-list-view task 005). The
@@ -231,6 +240,7 @@ function ContentsBody({
   viewMode,
   selection,
   itemMenu,
+  itemDragStart,
 }: ContentsBodyProps) {
   const gridEntries = contents.data?.entries.filter(isTileEntry) ?? [];
   const listEntries = contents.data?.entries.filter(isListRowEntry) ?? [];
@@ -317,6 +327,11 @@ function ContentsBody({
                   video={entry}
                   href={`/watch/${entry.id}`}
                   queue={videoQueue}
+                  dragHandle={
+                    itemDragStart && {
+                      onPointerDown: (event) => itemDragStart(entry, event),
+                    }
+                  }
                   topRightSlot={
                     <>
                       <FavoriteToggle video={entry} />
@@ -334,6 +349,11 @@ function ContentsBody({
                 <FileCard
                   key={entry.id}
                   file={entry}
+                  dragHandle={
+                    itemDragStart && {
+                      onPointerDown: (event) => itemDragStart(entry, event),
+                    }
+                  }
                   selection={
                     selection && {
                       isSelected: selection.selectedIds.has(entry.id),
@@ -351,6 +371,11 @@ function ContentsBody({
               <FileRow
                 key={entry.id}
                 file={entry}
+                dragHandle={
+                  itemDragStart && {
+                    onPointerDown: (event) => itemDragStart(entry, event),
+                  }
+                }
                 selection={
                   selection && {
                     isSelected: selection.selectedIds.has(entry.id),
@@ -585,6 +610,59 @@ type FolderDialog =
   | { kind: "delete"; folder: LibraryTreeFolderDto }
   | null;
 
+/** Pairwise kind+id equality in order — the carried payload vs the live
+ *  selection, to clear exactly what a drop carried away. */
+function sameItems(a: LibraryMoveItem[], b: LibraryMoveItem[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((item, i) => item.kind === b[i]!.kind && item.id === b[i]!.id)
+  );
+}
+
+/**
+ * A folder tile that accepts item drops (drag-and-drop task 002).
+ * Registers with the drag context, previews the post-drop count while
+ * hovered, and hands the carried items to the pane's single batch-move
+ * mutation. The menu slot keeps the tile's non-drag affordances intact
+ * — drag is a convenience layer, never the only path.
+ */
+function DroppableFolderTile({
+  folder,
+  topRightSlot,
+  onDropItems,
+}: {
+  folder: LibraryTreeFolderDto;
+  topRightSlot?: ReactNode;
+  onDropItems: (folderId: string | null, folderName: string, items: LibraryMoveItem[]) => void;
+}) {
+  const { state } = useDrag();
+  const { isDropHovered, dropProps } = useDropTarget(`folder:${folder.id}`, {
+    canDrop: (payload) => payload.type === "items",
+    onDrop: (payload) => {
+      if (payload.type === "items") {
+        onDropItems(folder.id, folder.name, payload.items);
+      }
+    },
+  });
+  const preview =
+    isDropHovered && state.phase === "dragging" && state.payload.type === "items"
+      ? folder.item_count + state.payload.items.length
+      : null;
+
+  return (
+    <FolderTile
+      name={folder.name}
+      folderId={folder.id}
+      to="/"
+      count={folder.item_count}
+      topRightSlot={topRightSlot}
+      {...dropProps}
+      dropHovered={isDropHovered}
+      countPreview={preview}
+    />
+  );
+}
+
 function CuratedPane() {
   const { selectedFolder, selectCurated } = useLibraryFolderNav();
   const tree = useLibraryFolderTree();
@@ -606,6 +684,16 @@ function CuratedPane() {
   const updateFolder = useUpdateLibraryFolder();
   const deleteFolder = useDeleteLibraryFolder();
   const moveItems = useMoveLibraryItems();
+
+  // Drag-and-drop (drag-and-drop effort): cards arm the engine with the
+  // selection-carry rule; folder tiles + the Unfiled pin accept drops.
+  // One drop → the same `moveItems` mutation the dialogs use — one
+  // request, one transaction, unchanged contract.
+  const { state: dragState, beginDrag } = useDrag();
+  const toast = useToast();
+  // A completed drag swallows its ghost click (see the section handlers
+  // below) so releasing over a card or tile never navigates.
+  const swallowClickRef = useRef(false);
 
   // The sidebar's "New folder" entry points open the create dialog here
   // (open dialogs are ephemeral client state — the DOM event keeps the
@@ -695,12 +783,86 @@ function CuratedPane() {
     );
   }
 
+  /** A card press arms the engine. The payload carries the selection
+   *  when the grabbed card is in it (the engine's carry rule); the
+   *  threshold keeps plain clicks untouched. Primary button only —
+   *  right/middle clicks keep their browser meanings. */
+  function handleItemPointerDown(entry: FolderEntryDto, event: ReactPointerEvent): void {
+    if (event.button !== 0) return;
+    const grabbed: DragItem = {
+      kind: entry.kind === "video" ? "video" : "file",
+      id: entry.id,
+    };
+    beginDrag({ x: event.clientX, y: event.clientY }, carryPayload(grabbed, selected));
+  }
+
+  /** A drop onto a folder tile or the Unfiled pin: the same single batch
+   *  mutation as the picker, plus the toast the drop promises. Success
+   *  clears a selection the payload carried away. */
+  function handleDropIntoFolder(
+    folderId: string | null,
+    folderName: string,
+    items: LibraryMoveItem[],
+  ): void {
+    moveItems.mutate(
+      { items, folderId },
+      {
+        onSuccess: () => {
+          toast.success(`Moved to ${folderName}`);
+          setSelected((prev) => (sameItems(prev, items) ? [] : prev));
+        },
+        onError: (error) => toast.error(`Move failed — ${describeError(error)}`),
+      },
+    );
+  }
+
   const selectedIds = new Set(selected.map((item) => item.id));
+
+  // The Unfiled pin accepts drops the same way tiles do — move with
+  // `folder_id: null` (the pane's own pin only renders at the root,
+  // where Unfiled is the current view; the drop is still a legal move).
+  const unfiledDrop = useDropTarget("unfiled", {
+    canDrop: (payload) => payload.type === "items",
+    onDrop: (payload) => {
+      if (payload.type === "items") {
+        handleDropIntoFolder(null, "Unfiled", payload.items);
+      }
+    },
+  });
+  const unfiledCount = tree.data?.unfiled_count ?? 0;
+  const unfiledPreview =
+    unfiledDrop.isDropHovered &&
+    dragState.phase === "dragging" &&
+    dragState.payload.type === "items"
+      ? unfiledCount + dragState.payload.items.length
+      : null;
 
   const filtersActive = kindFilter !== undefined || nameQuery.trim() !== "";
 
   return (
-    <section aria-label="Folder organizer" className="space-y-4">
+    <section
+      aria-label="Folder organizer"
+      className="space-y-4"
+      // Ghost-click swallow: the browser fires a click after a completed
+      // drag's pointerup (on the down/up targets' common ancestor). The
+      // capture handlers run before the provider's window pointerup
+      // resolves the drop, so `dragState` still reads "dragging" — mark
+      // the swallow, then eat exactly one click. Without this, releasing
+      // over a card or tile navigates through its link.
+      onPointerDownCapture={() => {
+        swallowClickRef.current = false;
+      }}
+      onPointerUpCapture={() => {
+        if (dragState.phase === "dragging") swallowClickRef.current = true;
+      }}
+      onClickCapture={(event) => {
+        if (swallowClickRef.current) {
+          swallowClickRef.current = false;
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+    >
       <div className="min-w-0 flex-1 space-y-4">
         {/* Breadcrumbs — "Library" root (the Unfiled view) + the curated
             path; same always-on-navigation contract as the provider pane. */}
@@ -897,12 +1059,19 @@ function CuratedPane() {
         {tree.data && viewMode === "grid" && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
             {selectedFolder === null && (
-              <article className="group relative flex flex-col gap-2">
+              <article
+                className="group relative flex flex-col gap-2"
+                {...unfiledDrop.dropProps}
+              >
                 <div
                   aria-current="page"
-                  className="relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
-                             border border-[var(--color-castify-accent)] bg-[var(--color-castify-surface)]
-                             text-[var(--color-castify-muted)]"
+                  className={`relative flex aspect-video items-center justify-center rounded-[var(--radius-card)]
+                             border text-[var(--color-castify-muted)] transition-colors
+                             ${
+                               unfiledDrop.isDropHovered
+                                 ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)]"
+                                 : "border-[var(--color-castify-accent)] bg-[var(--color-castify-surface)]"
+                             }`}
                 >
                   {/* Folder glyph — visual twin of FolderTile's, without
                       the link (the current location doesn't navigate). */}
@@ -931,19 +1100,18 @@ function CuratedPane() {
                     Unfiled
                   </h3>
                   <p className="text-xs text-[var(--color-castify-muted)]">
-                    {tree.data.unfiled_count}{" "}
-                    {tree.data.unfiled_count === 1 ? "item" : "items"}
+                    {unfiledPreview !== null
+                      ? `${unfiledCount} → ${unfiledPreview} items`
+                      : `${unfiledCount} ${unfiledCount === 1 ? "item" : "items"}`}
                   </p>
                 </div>
               </article>
             )}
             {subfolders.map((folder) => (
-              <FolderTile
+              <DroppableFolderTile
                 key={folder.id}
-                name={folder.name}
-                folderId={folder.id}
-                to="/"
-                count={folder.item_count}
+                folder={folder}
+                onDropItems={handleDropIntoFolder}
                 topRightSlot={
                   <LibraryFolderMenu
                     label={folder.name}
@@ -980,6 +1148,7 @@ function CuratedPane() {
           onPageChange={setPage}
           filtersActive={filtersActive}
           viewMode={viewMode}
+          itemDragStart={handleItemPointerDown}
           selection={
             selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
           }
