@@ -197,6 +197,44 @@ pub trait Provider: Send + Sync {
     async fn revoke(&self, _token_bundle: &TokenBundle) -> ProviderResult<()> {
         Ok(())
     }
+
+    /// Upload one file into the provider at `dir/filename`, streaming the
+    /// body through — the first write path (drag-and-drop task 008).
+    /// `size_bytes` is the exact total (uploads are browser-initiated and
+    /// always know it); implementations use it for Content-Length so the
+    /// provider can stream, never buffer. Returns the landed object's
+    /// provider file id.
+    ///
+    /// GOTCHA: the body type is this crate's own [`BodyStream`] (a boxed
+    /// `futures::Stream` of `io::Result<Bytes>`), NOT axum's `Body` — the
+    /// catalog stays web-framework-free; the api crate adapts its request
+    /// body to this type at the boundary.
+    ///
+    /// The default is an explicit refusal: read-only providers and test
+    /// mocks opt out with zero code.
+    async fn upload(
+        &self,
+        _dir: &str,
+        _filename: &str,
+        _size_bytes: u64,
+        _stream: BodyStream,
+    ) -> ProviderResult<UploadResult> {
+        Err(ProviderError::Other(
+            "this provider does not support uploads".into(),
+        ))
+    }
+}
+
+/// The landed result of [`Provider::upload`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadResult {
+    /// The provider file id of the stored object — S3: object key,
+    /// Dropbox: `id:…`, Drive/OneDrive: file id. The scanner's next pass
+    /// resolves it into the catalog.
+    pub provider_file_id: String,
+    /// Bytes the provider acknowledged (the request's known total —
+    /// providers that report their own accounting may echo that instead).
+    pub size_bytes: u64,
 }
 
 /// Collect a streaming body into a `Vec<u8>`. Used by the default
@@ -332,6 +370,55 @@ pub trait ProviderFactory: Send + Sync {
                 "this provider connects via a credentials form; OAuth verification not supported"
                     .into(),
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal read-only provider: the trait's required methods as
+    /// documented refusals — the shape every test mock already has.
+    struct ReadOnlyProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for ReadOnlyProvider {
+        fn name(&self) -> &'static str {
+            "readonly"
+        }
+        async fn list_videos(&self, _cursor: Option<&str>) -> ProviderResult<ListPage> {
+            Err(ProviderError::Other("not implemented".into()))
+        }
+        async fn fetch_prefix_hash(
+            &self,
+            _file_id: &str,
+            _size: i64,
+        ) -> ProviderResult<Option<String>> {
+            Err(ProviderError::Other("not implemented".into()))
+        }
+        async fn fetch_thumbnail(&self, _file_id: &str) -> ProviderResult<ThumbnailData> {
+            Err(ProviderError::Other("not implemented".into()))
+        }
+        async fn open_stream(
+            &self,
+            _file_id: &str,
+            _range: Option<&str>,
+        ) -> ProviderResult<StreamResponse> {
+            Err(ProviderError::Other("not implemented".into()))
+        }
+    }
+
+    /// The upload default is an explicit refusal — read-only providers
+    /// and existing mocks opt out with zero code (task 008's contract).
+    #[tokio::test]
+    async fn upload_default_is_an_explicit_refusal() {
+        let stream: BodyStream = Box::pin(futures::stream::empty());
+        match ReadOnlyProvider.upload("dir", "file.bin", 0, stream).await {
+            Err(ProviderError::Other(message)) => {
+                assert!(message.contains("does not support uploads"));
+            }
+            other => panic!("expected the default refusal, got {other:?}"),
         }
     }
 }

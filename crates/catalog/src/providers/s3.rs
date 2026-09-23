@@ -221,6 +221,61 @@ fn body_stream(byte_stream: aws_sdk_s3::primitives::ByteStream) -> crate::provid
     Box::pin(SdkStreamCompat(byte_stream))
 }
 
+/// Destination object key for an upload: the UI's provider-folder path
+/// (a `/`-delimited path like `"/Movies/Sci-fi"` — prefix-scoped keys
+/// included, since the tree derives from full keys) joined with the
+/// filename. An empty/absent dir puts the file at the bucket root.
+fn upload_key(dir: &str, filename: &str) -> String {
+    let dir = dir.trim_matches('/');
+    if (dir).is_empty() {
+        filename.to_string()
+    } else {
+        format!("{dir}/{filename}")
+    }
+}
+
+/// The upload body: the trait's [`BodyStream`] adapted into the SDK's
+/// `ByteStream`. The known total rides along as the body's exact size
+/// hint — the SDK derives Content-Length from it (SigV4 + the store both
+/// need the length; uploads always know it) and streams frame by frame,
+/// never buffering more than the HTTP client's natural chunk window.
+///
+/// The `Mutex`: the SDK's body bound demands `Sync`, but a byte stream
+/// is inherently single-consumer. Polling is synchronous (no await is
+/// held across the lock), so the mutex only satisfies the bound — it
+/// never serializes real contention.
+struct UploadBody {
+    stream: std::sync::Mutex<crate::provider::BodyStream>,
+    size: u64,
+}
+
+impl http_body::Body for UploadBody {
+    type Data = bytes::Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, Self::Error>>> {
+        use futures::Stream;
+        let mut guard = self.stream.lock().expect("upload body lock");
+        match Stream::poll_next(guard.as_mut(), cx) {
+            std::task::Poll::Ready(Some(Ok(bytes))) => {
+                std::task::Poll::Ready(Some(Ok(http_body::Frame::data(bytes))))
+            }
+            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        let mut hint = http_body::SizeHint::new();
+        hint.set_exact(self.size);
+        hint
+    }
+}
+
 /// Map an SDK operation error to a `ProviderError`. Service errors carry
 /// both the HTTP status and the S3 error code; transport-level failures
 /// (connect, DNS, timeout) surface as `Network`.
@@ -490,6 +545,41 @@ impl crate::provider::Provider for S3Provider {
         Ok(StreamUrl::Direct {
             url: presigned.uri().to_string(),
             expires_at: Some(expires_at),
+        })
+    }
+
+    /// One streamed `PutObject` — the whole S3 upload story (task 008):
+    /// the body rides [`UploadBody`] (known total → Content-Length,
+    /// frame-by-frame), the key is `dir/filename` (see [`upload_key`]),
+    /// and the MIME type is inferred from the filename so the object
+    /// lands with the same content type a manual `mc cp` would set. A
+    /// client-side stream abort surfaces as an error — no partial
+    /// object ever reports success.
+    async fn upload(
+        &self,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        let key = upload_key(dir, filename);
+        let mut request = self.client.put_object().bucket(&self.bucket).key(&key);
+        if let Some(mime) = infer_mime_type(filename) {
+            request = request.content_type(mime);
+        }
+        request
+            .body(aws_sdk_s3::primitives::ByteStream::from_body_1_x(
+                UploadBody {
+                    stream: std::sync::Mutex::new(stream),
+                    size: size_bytes,
+                },
+            ))
+            .send()
+            .await
+            .map_err(map_sdk_error)?;
+        Ok(crate::provider::UploadResult {
+            provider_file_id: key,
+            size_bytes,
         })
     }
 }
@@ -807,6 +897,219 @@ mod tests {
                 assert_eq!(secret_flags, vec![false, false, false, true, true, false]);
             }
             ConnectFlow::OAuth(_) => panic!("s3 must connect via a credentials form"),
+        }
+    }
+
+    // ── upload (drag-and-drop task 008) ─────────────────────────────────
+    //
+    // Wiremock stands in for the S3 endpoint: path-style addressing puts
+    // the object at `/{bucket}/{key}`. The stream fixture exceeds one
+    // client chunk so a buffering regression (collect-then-send) would
+    // still pass these — the body-equality check is the contract.
+
+    mod upload_tests {
+        use super::super::*;
+        use crate::crypto::S3Credentials;
+        use crate::provider::BodyStream;
+        use futures::stream;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// A local-S3 credential pointing at the wiremock server.
+        fn creds(server: &MockServer) -> S3Credentials {
+            S3Credentials {
+                endpoint: server.uri(),
+                region: "us-east-1".into(),
+                bucket: "media".into(),
+                access_key_id: "minioadmin".into(),
+                secret_access_key: "minioadmin".into(),
+                prefix: None,
+            }
+        }
+
+        /// A deterministic fixture larger than any client chunk window,
+        /// chunked into 8 KiB pieces.
+        fn fixture() -> Vec<u8> {
+            (0..64 * 1024)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<u8>>()
+                .into_iter()
+                .cycle()
+                .take(300 * 1024)
+                .collect()
+        }
+
+        fn chunked(bytes: Vec<u8>) -> BodyStream {
+            Box::pin(stream::iter(
+                bytes
+                    .chunks(8 * 1024)
+                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                    .collect::<Vec<Result<bytes::Bytes, std::io::Error>>>(),
+            ))
+        }
+
+        /// The SDK stream-signs PutObject bodies over plain HTTP
+        /// (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`): the wire body is
+        /// aws-chunked — `size;chunk-signature=…\r\n<data>\r\n` frames
+        /// with a trailing `0;…` chunk. Real S3-compatible services
+        /// accept it as-is; the test decodes the framing to assert the
+        /// PAYLOAD byte-equality. A plain (unframed) body passes
+        /// through unchanged, so an HTTPS-endpoint future stays green.
+        fn decode_aws_chunked(body: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut rest = body;
+            loop {
+                let Some(line_end) = rest.windows(2).position(|w| w == b"\r\n") else {
+                    return body.to_vec(); // no framing — plain body
+                };
+                let size_str = rest[..line_end]
+                    .split(|b| *b == b';')
+                    .next()
+                    .unwrap_or(b"0");
+                let Ok(size) = std::str::from_utf8(size_str)
+                    .map_err(|_| ())
+                    .and_then(|s| usize::from_str_radix(s.trim(), 16).map_err(|_| ()))
+                else {
+                    return body.to_vec(); // not chunk framing
+                };
+                rest = &rest[line_end + 2..];
+                if size == 0 {
+                    return out;
+                }
+                if rest.len() < size {
+                    return body.to_vec();
+                }
+                out.extend_from_slice(&rest[..size]);
+                rest = &rest[(size + 2).min(rest.len())..];
+            }
+        }
+
+        #[tokio::test]
+        async fn upload_streams_one_put_object_with_content_length() {
+            let server = MockServer::start().await;
+            let data = fixture();
+            // Loose match (method + path); the request is inspected
+            // directly below — wiremock's composite matchers obscure
+            // which leg failed, and the byte-equality check is the
+            // contract under test.
+            Mock::given(method("PUT"))
+                .and(path("/media/Movies/Sci-fi/clip.mp4"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let provider = S3Provider::new(&creds(&server));
+            let result = provider
+                .upload(
+                    "/Movies/Sci-fi",
+                    "clip.mp4",
+                    data.len() as u64,
+                    chunked(data.clone()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.provider_file_id, "Movies/Sci-fi/clip.mp4");
+            assert_eq!(result.size_bytes, 300 * 1024);
+
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests.len(),
+                1,
+                "exactly one PUT — no multipart, no retries"
+            );
+            let put = &requests[0];
+            assert_eq!(put.method, "PUT");
+            assert_eq!(put.url.path(), "/media/Movies/Sci-fi/clip.mp4");
+            // Known total → a deterministic Content-Length, never
+            // transfer-encoding chunking (SigV4 + the store both need
+            // the length; over plain HTTP the SDK wraps the payload in
+            // aws-chunked signing frames whose size it can only state
+            // because the total is known).
+            let length = put
+                .headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            assert_eq!(length.parse::<usize>().unwrap(), put.body.len());
+            assert!(
+                put.headers.get("transfer-encoding").is_none(),
+                "streamed upload must state its length, not chunk the transfer"
+            );
+            assert_eq!(
+                decode_aws_chunked(&put.body),
+                data,
+                "the streamed payload byte-equals the fixture"
+            );
+        }
+
+        #[tokio::test]
+        async fn upload_at_bucket_root_uses_bare_filename() {
+            let server = MockServer::start().await;
+            let data = b"tiny".to_vec();
+            Mock::given(method("PUT"))
+                .and(path("/media/notes.txt"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let provider = S3Provider::new(&creds(&server));
+            provider
+                .upload("", "notes.txt", data.len() as u64, chunked(data.clone()))
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), "/media/notes.txt");
+            assert_eq!(decode_aws_chunked(&requests[0].body), data);
+        }
+
+        #[tokio::test]
+        async fn upload_maps_auth_failure_to_unauthorized() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(403))
+                .mount(&server)
+                .await;
+
+            let provider = S3Provider::new(&creds(&server));
+            let data = b"x".to_vec();
+            match provider
+                .upload("Movies", "clip.mp4", 1, chunked(data))
+                .await
+            {
+                Err(ProviderError::Unauthorized) => {}
+                other => panic!("expected Unauthorized, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn upload_surfaces_mid_stream_client_abort_as_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+
+            let provider = S3Provider::new(&creds(&server));
+            // The stream promises 300 KiB then dies mid-body — the
+            // request must end in an error, never a partial success.
+            let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from(vec![7u8; 8 * 1024])),
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "client aborted",
+                )),
+            ];
+            let stream: BodyStream = Box::pin(stream::iter(pieces));
+
+            let result = provider
+                .upload("Movies", "clip.mp4", 300 * 1024, stream)
+                .await;
+            assert!(result.is_err(), "aborted stream must never succeed");
         }
     }
 }

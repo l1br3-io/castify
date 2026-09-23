@@ -840,6 +840,7 @@ dependencies = [
  "bytes",
  "chrono",
  "futures",
+ "http-body 1.0.1",
  "rand 0.8.6",
  "reqwest",
  "serde",

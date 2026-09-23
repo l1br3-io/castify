@@ -21,7 +21,7 @@ pub use model::{
 pub use oauth::{generate_state, redirect_uri, OAuthStateEntry, OAuthStateStore, PkceChallenge};
 pub use provider::{
     AuthMode, BodyStream, ConnectFlow, CredentialsSchema, OAuthFlow, ProviderError,
-    ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData,
+    ProviderFactory, ProviderResult, StreamResponse, StreamUrl, ThumbnailData, UploadResult,
 };
 pub use providers::dropbox::{DropboxClient, DropboxConfig, DropboxUserInfo};
 pub use providers::google_drive::{GoogleDriveClient, GoogleDriveConfig, GoogleUserInfo};

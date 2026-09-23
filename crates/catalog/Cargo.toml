@@ -18,6 +18,10 @@ base64 = "0.22.1"
 bytes = "1.10"
 chrono = { version = "0.4.45", features = ["serde"] }
 futures = "0.3"
+# http-body 1.x: adapter for feeding the upload stream into the AWS SDK's
+# ByteStream — already in the dependency tree (aws-smithy-types, axum);
+# declared directly here for the `UploadBody` bridge in providers/s3.rs.
+http-body = "1"
 rand = { version = "0.8", features = ["std_rng"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
