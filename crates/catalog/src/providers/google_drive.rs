@@ -10,8 +10,8 @@ use crate::oauth::redirect_uri;
 use crate::provider::{ProviderError, ProviderResult, StreamResponse, StreamUrl, ThumbnailData};
 use crate::providers::common::{
     classify_kind, classify_token_error, discovered_file_of_kind, guess_language,
-    has_subtitle_extension, has_video_extension, infer_image_mime, is_mpeg_ts_name,
-    response_to_stream, to_hex, TokenResponse,
+    has_subtitle_extension, has_video_extension, infer_image_mime, infer_mime_type,
+    is_mpeg_ts_name, response_to_stream, to_hex, TokenResponse,
 };
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -61,6 +61,14 @@ pub struct GoogleDriveClient {
     /// (`DRIVE_FILES_URL`); tests override to point at a local wiremock
     /// server. All non-test code paths use the constant.
     drive_files_base: String,
+    /// Upload client: resumable chunk PUTs carry megabytes over a home
+    /// uplink — a total-request timeout could abort legitimate
+    /// transfers, so this client caps only connection establishment.
+    http_upload: reqwest::Client,
+    /// Upload chunk size in bytes (tests shrink it so small fixtures
+    /// span several chunks). Drive asks for multiples of 256 KiB; 5 MiB
+    /// keeps one bounded buffer in flight with few round-trips.
+    upload_chunk_size: usize,
 }
 
 /// Account info returned by Google's userinfo endpoint.
@@ -90,12 +98,27 @@ impl GoogleDriveClient {
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build reqwest download client");
+        let http_upload = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build reqwest upload client");
         Self {
             config,
             http,
             http_download,
             drive_files_base: DRIVE_FILES_URL.into(),
+            http_upload,
+            upload_chunk_size: UPLOAD_CHUNK_SIZE,
         }
+    }
+
+    /// Test-only: shrink the upload chunk size so small fixtures span
+    /// several chunks (the Drive wiremock suite).
+    #[cfg(test)]
+    pub(crate) fn with_upload_chunk_size(mut self, chunk: usize) -> Self {
+        self.upload_chunk_size = chunk;
+        self
     }
 
     /// Test-only constructor: lets callers inject HTTP clients (so wiremock
@@ -108,12 +131,11 @@ impl GoogleDriveClient {
         http_download: reqwest::Client,
         drive_files_base: String,
     ) -> Self {
-        Self {
-            config,
-            http,
-            http_download,
-            drive_files_base,
-        }
+        let mut client = Self::new(config);
+        client.http = http;
+        client.http_download = http_download;
+        client.drive_files_base = drive_files_base;
+        client
     }
 
     /// Build the redirect URI for this provider given the app base URL.
@@ -1008,9 +1030,226 @@ fn drive_video_corroborated(file: &DriveFile) -> bool {
     false
 }
 
-// ── Provider trait implementation ────────────────────────────────────
+/// Drive resumable-upload chunk size. Drive asks for multiples of
+/// 256 KiB; 5 MiB keeps exactly one bounded buffer in flight with few
+/// round-trips. The bound is enforced where the chunker fills it.
+const UPLOAD_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
-/// A Google Drive provider holding a valid access token for API calls.
+/// The upload endpoints' status ladder — the same conventions as every
+/// other Drive call (401 → auth, 429/503 → retryable, else Api). 308
+/// Resume Incomplete is the protocol's "keep going", handled by the
+/// caller before this sees it (it maps into 200..300 semantics).
+fn check_upload_status(status: u16, body: &str) -> ProviderResult<()> {
+    match status {
+        401 => Err(ProviderError::Unauthorized),
+        429 | 503 => Err(ProviderError::RateLimited {
+            retry_after_secs: None,
+        }),
+        s if (200..300).contains(&s) => Ok(()),
+        s => Err(ProviderError::Api {
+            status: s,
+            body: body.to_string(),
+        }),
+    }
+}
+
+impl GoogleDriveClient {
+    /// Upload one file via Drive's resumable protocol (drag-and-drop
+    /// task 010): resolve the destination path to a folder id → create
+    /// the resumable session (`uploadType=resumable`, metadata-only
+    /// POST that answers the session URL in `Location`) → PUT bounded
+    /// chunks with `Content-Range` (308 Resume Incomplete = keep going)
+    /// → the last chunk's PUT finalizes and returns the file resource.
+    /// No resume-across-requests in v1: an abort fails the upload; the
+    /// next attempt starts a fresh session (spec non-goal).
+    pub async fn upload_file(
+        &self,
+        access_token: &str,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        mut stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        let folder_id = self.resolve_folder_id(access_token, dir).await?;
+        let io_err = |e: std::io::Error| ProviderError::Network(e.to_string());
+
+        // ── Create the resumable session ─────────────────────────────
+        let mut metadata = serde_json::json!({ "name": filename });
+        if let Some(parent) = &folder_id {
+            metadata["parents"] = serde_json::json!([parent]);
+        }
+        let mime = infer_mime_type(filename).unwrap_or_else(|| "application/octet-stream".into());
+        let create_resp = self
+            .http
+            .post(format!("{}?uploadType=resumable", self.drive_files_base))
+            .bearer_auth(access_token)
+            .header("X-Upload-Content-Type", &mime)
+            .header("X-Upload-Content-Length", size_bytes.to_string())
+            .json(&metadata)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = create_resp.status();
+        // The session URL rides the Location header — capture it before
+        // the body consume.
+        let session_url = create_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let body = create_resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let session_url = session_url.ok_or_else(|| ProviderError::Api {
+            status: status.as_u16(),
+            body: "resumable session URL missing from Location".into(),
+        })?;
+
+        // ── Ranged chunk PUTs — 308 progression ──────────────────────
+        // Read-ahead: the current chunk is only known "last" when the
+        // next read comes back empty — its PUT finalizes the upload.
+        let mut chunker = crate::providers::common::UploadChunker::new();
+        let mut offset: u64 = 0;
+        let mut current = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?;
+        while let Some(next) = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?
+        {
+            let bytes = current.take().expect("loop guard keeps current Some");
+            self.put_upload_chunk(&session_url, offset, &bytes, size_bytes)
+                .await?;
+            offset += bytes.len() as u64;
+            current = Some(next);
+        }
+
+        // ── The final chunk finalizes ────────────────────────────────
+        let final_bytes = current.unwrap_or_default();
+        let end_inclusive = if final_bytes.is_empty() {
+            0
+        } else {
+            offset + final_bytes.len() as u64 - 1
+        };
+        let resp = self
+            .http_upload
+            .put(&session_url)
+            .header("Content-Length", final_bytes.len())
+            .header(
+                "Content-Range",
+                format!("bytes {offset}-{end_inclusive}/{size_bytes}"),
+            )
+            .body(final_bytes)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let file: serde_json::Value = serde_json::from_str(&body).map_err(ProviderError::from)?;
+        let id = file["id"]
+            .as_str()
+            .ok_or_else(|| ProviderError::Api {
+                status: status.as_u16(),
+                body: "final upload response missing the file id".into(),
+            })?
+            .to_string();
+
+        Ok(crate::provider::UploadResult {
+            provider_file_id: id,
+            size_bytes,
+        })
+    }
+
+    /// One intermediate chunk PUT — Drive answers **308 Resume
+    /// Incomplete** while the session is open: that is the protocol's
+    /// "received, keep going", not an error.
+    async fn put_upload_chunk(
+        &self,
+        session_url: &str,
+        offset: u64,
+        bytes: &[u8],
+        total: u64,
+    ) -> ProviderResult<()> {
+        let end_inclusive = offset + bytes.len() as u64 - 1;
+        let resp = self
+            .http_upload
+            .put(session_url)
+            .header("Content-Length", bytes.len())
+            .header(
+                "Content-Range",
+                format!("bytes {offset}-{end_inclusive}/{total}"),
+            )
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if status.as_u16() == 308 {
+            return Ok(());
+        }
+        check_upload_status(status.as_u16(), &body)
+    }
+
+    /// Walk `/a/b/c` to the innermost Drive folder id, one `files.list`
+    /// query per segment (name + folder mimeType + parent). The root
+    /// (`""`) resolves to `None` — Drive's create-default parent. An
+    /// unknown segment is [`ProviderError::NotFound`] (the caller's
+    /// 4xx): uploads never create folders.
+    async fn resolve_folder_id(
+        &self,
+        access_token: &str,
+        dir: &str,
+    ) -> ProviderResult<Option<String>> {
+        let dir = dir.trim_matches('/');
+        if dir.is_empty() {
+            return Ok(None);
+        }
+        let mut parent = "'root'".to_string();
+        let mut resolved: Option<String> = None;
+        for segment in dir.split('/') {
+            let escaped = segment.replace('\'', r"\'");
+            let query = format!(
+                "name = '{escaped}' and mimeType = 'application/vnd.google-apps.folder' \
+                 and {parent} in parents"
+            );
+            let resp = self
+                .http
+                .get(&self.drive_files_base)
+                .bearer_auth(access_token)
+                .query(&[
+                    ("q", query.as_str()),
+                    ("fields", "files(id)"),
+                    ("pageSize", "2"),
+                ])
+                .send()
+                .await
+                .map_err(|e| ProviderError::Network(e.to_string()))?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            check_upload_status(status.as_u16(), &body)?;
+            let page: serde_json::Value =
+                serde_json::from_str(&body).map_err(ProviderError::from)?;
+            let hit = page["files"][0]["id"].as_str().map(str::to_string);
+            match hit {
+                Some(id) => {
+                    parent = format!("'{id}'");
+                    resolved = Some(id);
+                }
+                None => {
+                    return Err(ProviderError::NotFound(format!(
+                        "Drive folder not found: {segment}"
+                    )))
+                }
+            }
+        }
+        Ok(resolved)
+    }
+}
+
+// ── Provider trait implementation ────────────────────────────────────
 ///
 /// `folder_cache` is a scan-local cache of resolved folder paths (folder_id →
 /// full path), shared across pages within a single scan to avoid re-fetching
@@ -1081,6 +1320,18 @@ impl crate::provider::Provider for GoogleDriveProvider {
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
         self.client.revoke_token(&token_bundle.access_token).await
+    }
+
+    async fn upload(
+        &self,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        self.client
+            .upload_file(&self.token.access_token, dir, filename, size_bytes, stream)
+            .await
     }
 }
 
@@ -1797,5 +2048,237 @@ mod tests {
             !page.files.iter().any(|f| f.provider_file_id == "g1"),
             "virtual Google docs are never file rows"
         );
+    }
+
+    // ── resumable upload (drag-and-drop task 010) ────────────────────
+
+    mod upload_tests {
+        use super::super::*;
+        use crate::provider::BodyStream;
+        use futures::stream;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        /// 640 KiB fixture; at 320 KiB chunks it spans two PUTs (one
+        /// 308 intermediate + the finalizing one).
+        fn fixture() -> Vec<u8> {
+            (0..640 * 1024).map(|i| (i % 251) as u8).collect()
+        }
+
+        fn chunked(bytes: Vec<u8>) -> BodyStream {
+            Box::pin(stream::iter(
+                bytes
+                    .chunks(8 * 1024)
+                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                    .collect::<Vec<Result<bytes::Bytes, std::io::Error>>>(),
+            ))
+        }
+
+        /// The folder-resolution + session-create mocks. Folder lookup
+        /// answers one id per query; the session-create POST answers a
+        /// mock-server Location.
+        async fn session_mocks(server: &MockServer) -> String {
+            Mock::given(method("GET"))
+                .and(path("/drive/v3/files"))
+                .and(query_param(
+                    "q",
+                    "name = 'Movies' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(
+                        serde_json::json!({ "files": [{ "id": "folder-77" }] }).to_string(),
+                    ),
+                )
+                .mount(server)
+                .await;
+            let session_url = format!("{}/resumable-session", server.uri());
+            Mock::given(method("POST"))
+                .and(path("/drive/v3/files"))
+                .and(query_param("uploadType", "resumable"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("Location", session_url.as_str()),
+                )
+                .mount(server)
+                .await;
+            session_url
+        }
+
+        #[tokio::test]
+        async fn upload_progresses_308_then_finalizes() {
+            let server = MockServer::start().await;
+            session_mocks(&server).await;
+            // The finalizing chunk (specific Content-Range) returns the
+            // file resource; every other PUT answers 308 Resume
+            // Incomplete.
+            Mock::given(method("PUT"))
+                .and(path("/resumable-session"))
+                .and(wiremock::matchers::header(
+                    "Content-Range",
+                    "bytes 327680-655359/655360",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(serde_json::json!({ "id": "drv-file-9" }).to_string()),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/resumable-session"))
+                .respond_with(ResponseTemplate::new(308))
+                .mount(&server)
+                .await;
+            let data = fixture();
+            let client = super::client_for_mock(&server).with_upload_chunk_size(320 * 1024);
+            let result = client
+                .upload_file(
+                    "ya29.test",
+                    "/Movies",
+                    "clip.mp4",
+                    data.len() as u64,
+                    chunked(data.clone()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.provider_file_id, "drv-file-9");
+            assert_eq!(result.size_bytes, 640 * 1024);
+
+            let requests = server.received_requests().await.unwrap();
+            // The chunk ladder: one 308 intermediate + the finalizing
+            // PUT, bodies reassembling the fixture.
+            let puts: Vec<&wiremock::Request> = requests
+                .iter()
+                .filter(|r| r.method == "PUT" && r.url.path() == "/resumable-session")
+                .collect();
+            assert_eq!(puts.len(), 2);
+            let mut body = Vec::new();
+            let mut ranges = Vec::new();
+            for put in &puts {
+                body.extend_from_slice(&put.body);
+                ranges.push(
+                    put.headers
+                        .get("content-range")
+                        .and_then(|v| v.to_str().ok())
+                        .expect("Content-Range on every chunk")
+                        .to_string(),
+                );
+            }
+            assert_eq!(body, data, "chunked PUTs reassemble the fixture");
+            assert_eq!(
+                ranges,
+                vec![
+                    "bytes 0-327679/655360".to_string(),
+                    "bytes 327680-655359/655360".to_string(),
+                ]
+            );
+
+            // Session create carried the upload metadata contract.
+            let create = requests
+                .iter()
+                .find(|r| r.method == "POST" && r.url.path() == "/drive/v3/files")
+                .expect("session create");
+            assert_eq!(
+                create
+                    .headers
+                    .get("x-upload-content-length")
+                    .and_then(|v| v.to_str().ok()),
+                Some("655360")
+            );
+            assert!(create
+                .headers
+                .get("x-upload-content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("video/")));
+            // The destination folder rode the create's metadata body.
+            let metadata: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+            assert_eq!(metadata["name"], serde_json::json!("clip.mp4"));
+            assert_eq!(metadata["parents"], serde_json::json!(["folder-77"]));
+        }
+
+        #[tokio::test]
+        async fn upload_at_root_omits_parents_and_unknown_dir_is_not_found() {
+            let server = MockServer::start().await;
+            // No folder query is issued for "".
+            let session_url = format!("{}/resumable-session", server.uri());
+            Mock::given(method("POST"))
+                .and(path("/drive/v3/files"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("Location", session_url.as_str()),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(308))
+                .mount(&server)
+                .await;
+
+            // Unknown dir → NotFound, before any session traffic.
+            Mock::given(method("GET"))
+                .and(path("/drive/v3/files"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(serde_json::json!({ "files": [] }).to_string()),
+                )
+                .mount(&server)
+                .await;
+
+            let client = super::client_for_mock(&server).with_upload_chunk_size(320 * 1024);
+            match client
+                .upload_file("ya29.test", "/Nope", "f.bin", 4, chunked(b"tiny".to_vec()))
+                .await
+            {
+                Err(ProviderError::NotFound(_)) => {}
+                other => panic!("expected NotFound, got {other:?}"),
+            }
+            assert!(
+                !server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.method == "PUT"),
+                "no session traffic for an unknown dir"
+            );
+        }
+
+        #[tokio::test]
+        async fn upload_aborts_mid_stream_without_finalizing() {
+            let server = MockServer::start().await;
+            let session_url = format!("{}/resumable-session", server.uri());
+            Mock::given(method("GET"))
+                .and(path("/drive/v3/files"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    serde_json::json!({ "files": [{ "id": "folder-77" }] }).to_string(),
+                ))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/drive/v3/files"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("Location", session_url.as_str()),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(308))
+                .mount(&server)
+                .await;
+
+            // Promise two chunks, die during the second read.
+            let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from(vec![1u8; 320 * 1024])),
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "client aborted",
+                )),
+            ];
+            let stream: BodyStream = Box::pin(stream::iter(pieces));
+
+            let client = super::client_for_mock(&server).with_upload_chunk_size(320 * 1024);
+            let result = client
+                .upload_file("ya29.test", "/Movies", "clip.mp4", 640 * 1024, stream)
+                .await;
+            assert!(result.is_err(), "an aborted stream must never succeed");
+        }
     }
 }
