@@ -403,6 +403,65 @@ pub(crate) struct TokenResponse {
     scope: Option<String>,
 }
 
+/// Bounded chunk reader for session-append uploads (drag-and-drop tasks
+/// 009/010): one fixed-size window in flight, never the whole file —
+/// the upload memory bound. `next` returns exactly `max` bytes until
+/// the stream runs dry (`Ok(None)`), carrying any overshoot across
+/// calls so no byte is read twice.
+pub(crate) struct UploadChunker {
+    pending_tail: Vec<u8>,
+    exhausted: bool,
+}
+
+impl UploadChunker {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_tail: Vec::new(),
+            exhausted: false,
+        }
+    }
+
+    pub(crate) async fn next(
+        &mut self,
+        stream: &mut crate::provider::BodyStream,
+        max: usize,
+    ) -> Result<Option<Vec<u8>>, std::io::Error> {
+        use futures::StreamExt;
+        let mut chunk = std::mem::take(&mut self.pending_tail);
+        while chunk.len() < max && !self.exhausted {
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    let room = max - chunk.len();
+                    if bytes.len() > room {
+                        chunk.extend_from_slice(&bytes[..room]);
+                        self.pending_tail = bytes[room..].to_vec();
+                    } else {
+                        chunk.extend_from_slice(&bytes);
+                    }
+                }
+                Some(Err(e)) => {
+                    // Mark exhausted so later reads (if the caller
+                    // retries) short-circuit to None.
+                    self.exhausted = true;
+                    return Err(e);
+                }
+                None => self.exhausted = true,
+            }
+        }
+        if chunk.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(chunk))
+        }
+    }
+}
+
+impl Default for UploadChunker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenResponse {
     /// Convert the raw response into a [`TokenBundle`], computing an absolute
     /// `expires_at` timestamp (now + `expires_in` - [`TOKEN_BUFFER_SECS`]).

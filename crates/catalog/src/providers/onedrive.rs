@@ -19,6 +19,11 @@ const ME_URL: &str = "https://graph.microsoft.com/v1.0/me";
 const REVOKE_URL: &str = "https://graph.microsoft.com/v1.0/me/revokeSignInSessions";
 const SCOPE: &str = "files.read.all offline_access";
 const PREFIX_BYTES: usize = 4 * 1024 * 1024;
+/// GOTCHA: Graph upload-session chunks (except the last) MUST be
+/// multiples of 320 KiB — 5 MiB (320 KiB × 16) sits in Microsoft's
+/// recommended 5–10 MiB window and keeps exactly one bounded buffer in
+/// flight; the bound is enforced where the chunker fills it.
+const UPLOAD_CHUNK_SIZE: usize = 5 * 1024 * 1024;
 
 /// Configuration for the OneDrive OAuth client. Derived from `Config`.
 #[derive(Debug, Clone)]
@@ -36,6 +41,17 @@ pub struct OneDriveClient {
     /// to the CDN. The main `http` client disables redirects (consistent with
     /// other providers and safe for Graph API endpoints, which never redirect).
     http_download: reqwest::Client,
+    /// Upload client: chunk PUTs carry megabytes over a home uplink — a
+    /// total-request timeout could abort legitimate transfers, so this
+    /// client caps only connection establishment.
+    http_upload: reqwest::Client,
+    /// Graph API base. Defaults to Microsoft's; tests override to a
+    /// local wiremock server (the google_drive `drive_files_base`
+    /// pattern).
+    graph_base: String,
+    /// Upload chunk size in bytes (the wiremock tests shrink it so a
+    /// small fixture spans several chunks).
+    upload_chunk_size: usize,
 }
 
 /// Account info returned by Microsoft Graph `/me`.
@@ -65,11 +81,34 @@ impl OneDriveClient {
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build reqwest download client");
+        let http_upload = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build reqwest upload client");
         Self {
             config,
             http,
             http_download,
+            http_upload,
+            graph_base: GRAPH_ROOT.into(),
+            upload_chunk_size: UPLOAD_CHUNK_SIZE,
         }
+    }
+
+    /// Test-only constructor: overrides the Graph base (so wiremock
+    /// intercepts the session endpoints) and the chunk size (so small
+    /// fixtures span several chunks).
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(
+        config: OneDriveConfig,
+        graph_base: String,
+        chunk: usize,
+    ) -> Self {
+        let mut client = Self::new(config);
+        client.graph_base = graph_base;
+        client.upload_chunk_size = chunk;
+        client
     }
 
     /// Build the redirect URI for this provider given the app base URL.
@@ -666,6 +705,190 @@ struct DownloadUrlResponse {
     download_url: Option<String>,
 }
 
+/// `createUploadSession` response — only the preauthenticated upload
+/// URL matters (chunk PUTs go there, no bearer header).
+#[derive(Debug, Deserialize)]
+struct UploadSessionResponse {
+    #[serde(rename = "uploadUrl")]
+    upload_url: String,
+}
+
+/// The driveItem the final chunk PUT returns — only the id matters to
+/// the catalog.
+#[derive(Debug, Deserialize)]
+struct UploadedDriveItem {
+    id: String,
+}
+
+impl OneDriveClient {
+    /// Upload one file via a Graph upload session (drag-and-drop task
+    /// 009): create the session → ranged PUTs of bounded chunks → the
+    /// LAST chunk's PUT returns the driveItem. One chunk window in
+    /// flight, never the whole file; a stream error aborts with the
+    /// session abandoned (Graph expires it server-side — no local
+    /// cleanup state). `conflictBehavior: rename` mirrors Dropbox's
+    /// `autorename`: the destination keeps existing files.
+    pub async fn upload_file(
+        &self,
+        access_token: &str,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        mut stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        let path = graph_upload_path(dir, filename);
+        let io_err = |e: std::io::Error| ProviderError::Network(e.to_string());
+
+        // ── Create the session ───────────────────────────────────────
+        let create_resp = self
+            .http
+            .post(format!(
+                "{}/me/drive/root:/{}:/createUploadSession",
+                self.graph_base, path
+            ))
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({
+                "item": { "@microsoft.graph.conflictBehavior": "rename" }
+            }))
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = create_resp.status();
+        let body = create_resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let session: UploadSessionResponse =
+            serde_json::from_str(&body).map_err(ProviderError::from)?;
+
+        // ── Ranged chunk PUTs ────────────────────────────────────────
+        // Read-ahead: the current chunk is only known "last" when the
+        // next read comes back empty — the final PUT carries it and
+        // returns the driveItem.
+        let mut chunker = crate::providers::common::UploadChunker::new();
+        let mut offset: u64 = 0;
+        let mut current = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?;
+        while let Some(next) = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?
+        {
+            let bytes = current.take().expect("loop guard keeps current Some");
+            self.put_session_chunk(&session.upload_url, offset, &bytes, size_bytes)
+                .await?;
+            offset += bytes.len() as u64;
+            current = Some(next);
+        }
+
+        let final_bytes = current.unwrap_or_default();
+        let end_inclusive = if final_bytes.is_empty() {
+            0
+        } else {
+            offset + final_bytes.len() as u64 - 1
+        };
+        // The preauthenticated upload URL takes NO Authorization header
+        // (the token is baked in; sending one is a Graph error).
+        let resp = self
+            .http_upload
+            .put(&session.upload_url)
+            .header("Content-Length", final_bytes.len())
+            .header(
+                "Content-Range",
+                format!("bytes {offset}-{end_inclusive}/{size_bytes}"),
+            )
+            .body(final_bytes)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let item: UploadedDriveItem = serde_json::from_str(&body).map_err(ProviderError::from)?;
+
+        Ok(crate::provider::UploadResult {
+            provider_file_id: item.id,
+            size_bytes,
+        })
+    }
+
+    /// One intermediate ranged chunk PUT — Graph answers 202 Accepted
+    /// until the final chunk lands.
+    async fn put_session_chunk(
+        &self,
+        upload_url: &str,
+        offset: u64,
+        bytes: &[u8],
+        total: u64,
+    ) -> ProviderResult<()> {
+        let end_inclusive = offset + bytes.len() as u64 - 1;
+        let resp = self
+            .http_upload
+            .put(upload_url)
+            .header("Content-Length", bytes.len())
+            .header(
+                "Content-Range",
+                format!("bytes {offset}-{end_inclusive}/{total}"),
+            )
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)
+    }
+}
+
+/// Destination path for `root:/…:/createUploadSession` —
+/// `/`-separated segments, each URL-encoded so spaces and Unicode
+/// survive the URL; an empty dir puts the file at the drive root.
+fn graph_upload_path(dir: &str, filename: &str) -> String {
+    let dir = dir.trim_matches('/');
+    let segments: Vec<&str> = if dir.is_empty() {
+        vec![filename]
+    } else {
+        dir.split('/').chain([filename]).collect()
+    };
+    segments
+        .iter()
+        .map(|segment| urlencoding_simple(segment))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode the Graph-path-unsafe subset (the encoded-path
+/// variant reqwest won't do for us): everything outside the unreserved
+/// set, keeping `/` to the caller.
+fn urlencoding_simple(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The upload endpoints' status ladder — Graph's conventions match the
+/// rest of the provider (401 → auth, 429/503 → retryable, else Api).
+fn check_upload_status(status: u16, body: &str) -> ProviderResult<()> {
+    match status {
+        401 => Err(ProviderError::Unauthorized),
+        429 | 503 => Err(ProviderError::RateLimited {
+            retry_after_secs: None,
+        }),
+        s if (200..300).contains(&s) => Ok(()),
+        s => Err(ProviderError::Api {
+            status: s,
+            body: body.to_string(),
+        }),
+    }
+}
+
 // ── Provider trait implementation ────────────────────────────────────
 
 /// A OneDrive provider holding a valid access token for API calls.
@@ -726,6 +949,18 @@ impl crate::provider::Provider for OneDriveProvider {
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
         self.client.revoke_token(&token_bundle.access_token).await
+    }
+
+    async fn upload(
+        &self,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        self.client
+            .upload_file(&self.token.access_token, dir, filename, size_bytes, stream)
+            .await
     }
 }
 
@@ -1178,5 +1413,202 @@ mod tests {
             bundle.scope.as_deref(),
             Some("files.read.all offline_access")
         );
+    }
+
+    // ── upload session (drag-and-drop task 009) ─────────────────────
+
+    mod upload_tests {
+        use super::super::*;
+        use crate::provider::BodyStream;
+        use futures::stream;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn client(server: &MockServer, chunk: usize) -> OneDriveClient {
+            OneDriveClient::new_for_testing(super::test_config(), server.uri(), chunk)
+        }
+
+        /// 640 KiB fixture; at 320 KiB chunks it spans exactly two PUTs
+        /// (one intermediate + the item-returning final).
+        fn fixture() -> Vec<u8> {
+            (0..640 * 1024).map(|i| (i % 251) as u8).collect()
+        }
+
+        fn chunked(bytes: Vec<u8>) -> BodyStream {
+            Box::pin(stream::iter(
+                bytes
+                    .chunks(8 * 1024)
+                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                    .collect::<Vec<Result<bytes::Bytes, std::io::Error>>>(),
+            ))
+        }
+
+        async fn session_mocks(server: &MockServer) {
+            let upload_url = format!("{}/upload-session", server.uri());
+            Mock::given(method("POST"))
+                .and(path("/me/drive/root:/Movies/clip.mp4:/createUploadSession"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(
+                        serde_json::json!({ "uploadUrl": upload_url }).to_string(),
+                    ),
+                )
+                .mount(server)
+                .await;
+            // Every chunk PUT answers 202; the FINAL one (server-side
+            // distinction) returns the driveItem — wiremock can't see
+            // ranges, so respond with the item always and assert the
+            // Content-Range ladder from the captured requests.
+            Mock::given(method("PUT"))
+                .and(path("/upload-session"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(r#"{"id": "ABC123!file"}"#),
+                )
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn upload_sessions_put_ranged_chunks_and_reassemble() {
+            let server = MockServer::start().await;
+            session_mocks(&server).await;
+            let data = fixture();
+
+            let result = client(&server, 320 * 1024)
+                .upload_file(
+                    "token",
+                    "/Movies",
+                    "clip.mp4",
+                    data.len() as u64,
+                    chunked(data.clone()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.provider_file_id, "ABC123!file");
+            assert_eq!(result.size_bytes, 640 * 1024);
+
+            let requests = server.received_requests().await.unwrap();
+            let puts: Vec<&wiremock::Request> = requests
+                .iter()
+                .filter(|r| r.url.path() == "/upload-session")
+                .collect();
+            assert_eq!(puts.len(), 2, "two chunks — one intermediate, one final");
+
+            let mut body = Vec::new();
+            let mut ranges = Vec::new();
+            for put in &puts {
+                body.extend_from_slice(&put.body);
+                ranges.push(
+                    put.headers
+                        .get("content-range")
+                        .and_then(|v| v.to_str().ok())
+                        .expect("Content-Range on every chunk")
+                        .to_string(),
+                );
+                // The preauthenticated session URL must not carry auth.
+                assert!(
+                    put.headers.get("authorization").is_none(),
+                    "uploadUrl requests take no bearer header"
+                );
+            }
+            assert_eq!(body, data, "chunked PUTs reassemble the fixture");
+            assert_eq!(
+                ranges,
+                vec![
+                    "bytes 0-327679/655360".to_string(),
+                    "bytes 327680-655359/655360".to_string(),
+                ],
+                "sequential, non-overlapping, total-scoped ranges"
+            );
+        }
+
+        #[tokio::test]
+        async fn upload_at_root_targets_the_root_path() {
+            let server = MockServer::start().await;
+            let upload_url = format!("{}/upload-session", server.uri());
+            Mock::given(method("POST"))
+                .and(path("/me/drive/root:/notes.txt:/createUploadSession"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(
+                        serde_json::json!({ "uploadUrl": upload_url }).to_string(),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/upload-session"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"id": "ROOT1"}"#))
+                .mount(&server)
+                .await;
+
+            let data = b"tiny".to_vec();
+            client(&server, 320 * 1024)
+                .upload_file("token", "", "notes.txt", 4, chunked(data))
+                .await
+                .unwrap();
+        }
+
+        #[tokio::test]
+        async fn upload_encodes_unsafe_path_segments() {
+            let path = graph_upload_path("/My Videos/2026", "trip clip #1.mp4");
+            assert_eq!(path, "My%20Videos/2026/trip%20clip%20%231.mp4");
+            assert_eq!(graph_upload_path("", "a.mp4"), "a.mp4");
+        }
+
+        #[tokio::test]
+        async fn upload_aborts_after_a_chunk_error_and_never_puts() {
+            let server = MockServer::start().await;
+            let upload_url = format!("{}/upload-session", server.uri());
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(
+                        serde_json::json!({ "uploadUrl": upload_url }).to_string(),
+                    ),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+
+            // Promise two chunks, die during the second read.
+            let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from(vec![1u8; 320 * 1024])),
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "client aborted",
+                )),
+            ];
+            let stream: BodyStream = Box::pin(stream::iter(pieces));
+
+            let result = client(&server, 320 * 1024)
+                .upload_file("token", "/Movies", "clip.mp4", 640 * 1024, stream)
+                .await;
+            assert!(result.is_err(), "an aborted stream must never succeed");
+
+            // The dying read happens BEFORE the first PUT (read-ahead),
+            // so the session is created but never touched.
+            let requests = server.received_requests().await.unwrap();
+            assert!(!requests.iter().any(|r| r.method == "PUT"));
+        }
+
+        #[tokio::test]
+        async fn upload_maps_a_401_to_unauthorized() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let data = b"x".to_vec();
+            match client(&server, 320 * 1024)
+                .upload_file("token", "", "f.bin", 1, chunked(data))
+                .await
+            {
+                Err(ProviderError::Unauthorized) => {}
+                other => panic!("expected Unauthorized, got {other:?}"),
+            }
+        }
     }
 }

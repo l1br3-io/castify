@@ -30,11 +30,30 @@ pub struct DropboxConfig {
     pub client_secret: String,
 }
 
+/// GOTCHA: Dropbox caps one upload-session request at 150 MB. Chunks
+/// of 32 MiB stay well under it while keeping round-trips low for
+/// personal-library files; the bound is enforced where the buffer fills
+/// (`UploadChunker::next`), so memory stays one chunk regardless of
+/// file size.
+const UPLOAD_CHUNK_SIZE: usize = 32 * 1024 * 1024;
+
 /// Dropbox OAuth + API client. Owns the HTTP client and credentials.
 #[derive(Debug, Clone)]
 pub struct DropboxClient {
     config: DropboxConfig,
     http: reqwest::Client,
+    /// Upload client: session appends carry up to [`UPLOAD_CHUNK_SIZE`]
+    /// bytes over a home uplink — a total-request timeout could abort
+    /// legitimate transfers, so this client caps only connection
+    /// establishment.
+    http_upload: reqwest::Client,
+    /// Content-domain base. Defaults to Dropbox's; tests override to a
+    /// local wiremock server (the google_drive `drive_files_base`
+    /// pattern).
+    content_base: String,
+    /// Upload chunk size in bytes (the wiremock tests shrink it so a
+    /// small fixture spans several chunks).
+    upload_chunk_size: usize,
 }
 
 /// Account info returned by Dropbox's `get_current_account` endpoint.
@@ -61,7 +80,33 @@ impl DropboxClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build reqwest client");
-        Self { config, http }
+        let http_upload = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build reqwest upload client");
+        Self {
+            config,
+            http,
+            http_upload,
+            content_base: "https://content.dropboxapi.com".into(),
+            upload_chunk_size: UPLOAD_CHUNK_SIZE,
+        }
+    }
+
+    /// Test-only constructor: overrides the content-domain base (so
+    /// wiremock intercepts the session endpoints) and the chunk size
+    /// (so small fixtures span several chunks).
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(
+        config: DropboxConfig,
+        content_base: String,
+        chunk: usize,
+    ) -> Self {
+        let mut client = Self::new(config);
+        client.content_base = content_base;
+        client.upload_chunk_size = chunk;
+        client
     }
 
     /// Build the redirect URI for this provider given the app base URL.
@@ -626,6 +671,168 @@ impl DropboxClient {
         let parsed: TemporaryLinkResponse = serde_json::from_str(&resp_body)?;
         Ok(parsed.link)
     }
+
+    /// Upload one file via an upload session (drag-and-drop task 009):
+    /// start → bounded appends → finish carrying the final chunk. One
+    /// [`UploadChunker`](crate::providers::common::UploadChunker)
+    /// window in flight, never the whole file; a stream error aborts
+    /// with no finish attempted (the abandoned session expires
+    /// provider-side — no local cleanup state).
+    pub async fn upload_file(
+        &self,
+        access_token: &str,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        mut stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        let path = dropbox_upload_path(dir, filename);
+        let io_err = |e: std::io::Error| ProviderError::Network(e.to_string());
+
+        // ── Start the session ────────────────────────────────────────
+        let start_resp = self
+            .http_upload
+            .post(format!(
+                "{}/2/files/upload_session/start",
+                self.content_base
+            ))
+            .bearer_auth(access_token)
+            .header("Dropbox-API-Arg", r#"{"close": false}"#)
+            .body("{}")
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = start_resp.status();
+        let body = start_resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let session: UploadSessionStart =
+            serde_json::from_str(&body).map_err(ProviderError::from)?;
+
+        // ── Append every chunk but the last ──────────────────────────
+        // Read-ahead: `current` becomes "the last chunk" only when the
+        // next read comes back empty — the finish call carries it.
+        let mut chunker = crate::providers::common::UploadChunker::new();
+        let mut offset: u64 = 0;
+        let mut current = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?;
+        while let Some(next) = chunker
+            .next(&mut stream, self.upload_chunk_size)
+            .await
+            .map_err(io_err)?
+        {
+            let bytes = current.take().expect("loop guard keeps current Some");
+            self.append_session_chunk(access_token, &session.session_id, offset, &bytes)
+                .await?;
+            offset += bytes.len() as u64;
+            current = Some(next);
+        }
+
+        // ── Finish with the final chunk ──────────────────────────────
+        let final_bytes = current.unwrap_or_default();
+        let arg = serde_json::json!({
+            "cursor": { "session_id": session.session_id, "offset": offset },
+            "commit": {
+                "path": path,
+                "mode": "add",
+                "autorename": true,
+                "mute": false,
+            },
+        });
+        let finish_resp = self
+            .http_upload
+            .post(format!(
+                "{}/2/files/upload_session/finish",
+                self.content_base
+            ))
+            .bearer_auth(access_token)
+            .header("Dropbox-API-Arg", arg.to_string())
+            .body(final_bytes)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = finish_resp.status();
+        let body = finish_resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)?;
+        let file: UploadedFileMetadata =
+            serde_json::from_str(&body).map_err(ProviderError::from)?;
+
+        Ok(crate::provider::UploadResult {
+            provider_file_id: file.id,
+            size_bytes,
+        })
+    }
+
+    /// `append_v2` — one bounded chunk at `offset`. The cursor's offset
+    /// must always equal the session's received total.
+    async fn append_session_chunk(
+        &self,
+        access_token: &str,
+        session_id: &str,
+        offset: u64,
+        bytes: &[u8],
+    ) -> ProviderResult<()> {
+        let arg = serde_json::json!({
+            "cursor": { "session_id": session_id, "offset": offset },
+            "close": false,
+        });
+        let resp = self
+            .http_upload
+            .post(format!(
+                "{}/2/files/upload_session/append_v2",
+                self.content_base
+            ))
+            .bearer_auth(access_token)
+            .header("Dropbox-API-Arg", arg.to_string())
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        check_upload_status(status.as_u16(), &body)
+    }
+}
+
+/// Destination path for an upload — Dropbox path-root semantics: every
+/// file path starts at `/`; an empty dir puts the file at the root.
+fn dropbox_upload_path(dir: &str, filename: &str) -> String {
+    let dir = dir.trim_matches('/');
+    if dir.is_empty() {
+        format!("/{filename}")
+    } else {
+        format!("/{dir}/{filename}")
+    }
+}
+
+/// The upload endpoints' status ladder — the same conventions as every
+/// other Dropbox call (401 → auth, 429/503 → retryable, else Api).
+fn check_upload_status(status: u16, body: &str) -> ProviderResult<()> {
+    match status {
+        401 => Err(ProviderError::Unauthorized),
+        429 | 503 => Err(ProviderError::RateLimited {
+            retry_after_secs: None,
+        }),
+        s if (200..300).contains(&s) => Ok(()),
+        s => Err(ProviderError::Api {
+            status: s,
+            body: body.to_string(),
+        }),
+    }
+}
+
+/// `upload_session/start` response.
+#[derive(Debug, Deserialize)]
+struct UploadSessionStart {
+    session_id: String,
+}
+
+/// The file metadata `upload_session/finish` returns — only the id
+/// matters to the catalog (the scanner resolves the rest).
+#[derive(Debug, Deserialize)]
+struct UploadedFileMetadata {
+    id: String,
 }
 
 // ── Provider trait implementation ────────────────────────────────────
@@ -687,6 +894,18 @@ impl crate::provider::Provider for DropboxProvider {
 
     async fn revoke(&self, token_bundle: &TokenBundle) -> ProviderResult<()> {
         self.client.revoke_token(&token_bundle.access_token).await
+    }
+
+    async fn upload(
+        &self,
+        dir: &str,
+        filename: &str,
+        size_bytes: u64,
+        stream: crate::provider::BodyStream,
+    ) -> ProviderResult<crate::provider::UploadResult> {
+        self.client
+            .upload_file(&self.token.access_token, dir, filename, size_bytes, stream)
+            .await
     }
 }
 
@@ -1080,5 +1299,206 @@ mod tests {
         assert_eq!(bundle.access_token, "new-access");
         assert_eq!(bundle.refresh_token.as_deref(), Some("old-refresh"));
         assert_eq!(bundle.scope.as_deref(), Some("files.metadata.read"));
+    }
+
+    // ── upload session (drag-and-drop task 009) ─────────────────────
+
+    mod upload_tests {
+        use super::super::*;
+        use crate::provider::BodyStream;
+        use futures::stream;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn client(server: &MockServer, chunk: usize) -> DropboxClient {
+            DropboxClient::new_for_testing(super::test_config(), server.uri(), chunk)
+        }
+
+        /// 192 KiB deterministic fixture; at 64 KiB chunks it spans
+        /// exactly 3 appends + a finish-carried final chunk... at 64 KiB:
+        /// chunks of 64,64,64 → the first two append, the last rides
+        /// finish.
+        fn fixture() -> Vec<u8> {
+            (0..192 * 1024).map(|i| (i % 249) as u8).collect()
+        }
+
+        fn chunked(bytes: Vec<u8>) -> BodyStream {
+            Box::pin(stream::iter(
+                bytes
+                    .chunks(8 * 1024)
+                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                    .collect::<Vec<Result<bytes::Bytes, std::io::Error>>>(),
+            ))
+        }
+
+        async fn session_mocks(server: &MockServer, finish_body: &str) {
+            Mock::given(method("POST"))
+                .and(path("/2/files/upload_session/start"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(r#"{"session_id": "sid-1"}"#),
+                )
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/2/files/upload_session/append_v2"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/2/files/upload_session/finish"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(finish_body))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn upload_sessions_span_chunks_and_reassemble_byte_exact() {
+            let server = MockServer::start().await;
+            session_mocks(&server, r#"{"id": "id:abc123"}"#).await;
+            let data = fixture();
+
+            let result = client(&server, 64 * 1024)
+                .upload_file(
+                    "token",
+                    "/Movies",
+                    "clip.mp4",
+                    data.len() as u64,
+                    chunked(data.clone()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(result.provider_file_id, "id:abc123");
+            assert_eq!(result.size_bytes, 192 * 1024);
+
+            let requests = server.received_requests().await.unwrap();
+            let mut body = Vec::new();
+            let mut append_offsets = Vec::new();
+            let mut finish_arg = None;
+            for r in &requests {
+                match r.url.path() {
+                    "/2/files/upload_session/append_v2" => {
+                        let arg = r
+                            .headers
+                            .get("dropbox-api-arg")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string();
+                        let parsed: serde_json::Value = serde_json::from_str(&arg).unwrap();
+                        append_offsets.push(parsed["cursor"]["offset"].as_u64().unwrap());
+                        body.extend_from_slice(&r.body);
+                    }
+                    "/2/files/upload_session/finish" => {
+                        body.extend_from_slice(&r.body);
+                        finish_arg = r
+                            .headers
+                            .get("dropbox-api-arg")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(body, data, "appends + finish reassemble the fixture");
+
+            // Exactly two intermediate appends at sequential offsets
+            // (64 KiB chunks: 0 and 65536; the third rides finish).
+            assert_eq!(append_offsets, vec![0, 65536]);
+
+            // Finish's commit path lands the file at dir/filename.
+            let arg: serde_json::Value =
+                serde_json::from_str(&finish_arg.expect("finish carries its arg")).unwrap();
+            assert_eq!(arg["cursor"]["offset"], serde_json::json!(131072));
+            assert_eq!(arg["commit"]["path"], serde_json::json!("/Movies/clip.mp4"));
+            assert_eq!(arg["commit"]["autorename"], serde_json::json!(true));
+        }
+
+        #[tokio::test]
+        async fn upload_at_root_uses_bare_path() {
+            let server = MockServer::start().await;
+            session_mocks(&server, r#"{"id": "id:root"}"#).await;
+            let data = b"tiny".to_vec();
+            client(&server, 64 * 1024)
+                .upload_file("token", "", "notes.txt", 4, chunked(data.clone()))
+                .await
+                .unwrap();
+
+            let requests = server.received_requests().await.unwrap();
+            let finish = requests
+                .iter()
+                .find(|r| r.url.path() == "/2/files/upload_session/finish")
+                .expect("finish called");
+            let arg: serde_json::Value = serde_json::from_str(
+                finish
+                    .headers
+                    .get("dropbox-api-arg")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(arg["commit"]["path"], serde_json::json!("/notes.txt"));
+            // A single-chunk upload never calls append.
+            assert!(!requests
+                .iter()
+                .any(|r| r.url.path() == "/2/files/upload_session/append_v2"));
+        }
+
+        #[tokio::test]
+        async fn upload_aborts_after_a_chunk_error_and_never_finishes() {
+            let server = MockServer::start().await;
+            session_mocks(&server, r#"{"id": "id:never"}"#).await;
+
+            // Promise three chunks, die during the second read.
+            let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = vec![
+                Ok(bytes::Bytes::from(vec![1u8; 64 * 1024])),
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    "client aborted",
+                )),
+            ];
+            let stream: BodyStream = Box::pin(stream::iter(pieces));
+
+            let result = client(&server, 64 * 1024)
+                .upload_file("token", "/Movies", "clip.mp4", 192 * 1024, stream)
+                .await;
+            assert!(result.is_err(), "an aborted stream must never succeed");
+
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| r.url.path() == "/2/files/upload_session/finish"),
+                "finish-after-abort is never attempted"
+            );
+        }
+
+        #[tokio::test]
+        async fn upload_maps_a_401_to_unauthorized() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/2/files/upload_session/start"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+
+            let data = b"x".to_vec();
+            match client(&server, 64 * 1024)
+                .upload_file("token", "", "f.bin", 1, chunked(data))
+                .await
+            {
+                Err(ProviderError::Unauthorized) => {}
+                other => panic!("expected Unauthorized, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn dropbox_upload_path_shapes() {
+            assert_eq!(dropbox_upload_path("", "a.mp4"), "/a.mp4");
+            assert_eq!(dropbox_upload_path("/", "a.mp4"), "/a.mp4");
+            assert_eq!(
+                dropbox_upload_path("/Movies/Sci-fi", "a.mp4"),
+                "/Movies/Sci-fi/a.mp4"
+            );
+        }
     }
 }
