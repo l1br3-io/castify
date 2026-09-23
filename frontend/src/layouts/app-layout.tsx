@@ -59,6 +59,7 @@ import { SearchBar } from "../components/search-bar";
 import { SidebarFolders } from "../components/sidebar-folders";
 import { DragProvider } from "../components/drag-context";
 import { DragLayer } from "../components/drag-layer";
+import { UploadLayer } from "../components/upload-dialog";
 import { Menu, MenuItem } from "../components/ui/menu";
 import { IconButton } from "../components/ui/icon-button";
 import { OfflineBanner } from "../components/ui/offline-banner";
@@ -256,6 +257,7 @@ export function AppLayout() {
           Passive (idle) on non-library routes. */}
       <DragProvider>
         <DragLayer />
+        <UploadLayer />
 
       {/* Topbar — menu (mobile), brand, search, scan status, theme,
           account. Compact below 600px: search, scan status, and the
