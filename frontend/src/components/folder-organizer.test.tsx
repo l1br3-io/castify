@@ -25,7 +25,11 @@ import { renderWithProviders, jsonResponse } from "../test/utils";
 /** Location readout — MemoryRouter never touches window.location. */
 function LocationProbe() {
   const location = useLocation();
-  return <output data-testid="location">{location.search}</output>;
+  return (
+    <output data-testid="location" data-path={location.pathname}>
+      {location.search}
+    </output>
+  );
 }
 
 /** Route-aware mutation mock: keeps the curated tree + contents queries
@@ -1201,10 +1205,13 @@ describe("FolderOrganizer drag to organize", () => {
     dragFromCard("Loose.mp4");
     fireEvent.pointerOver(tileFor("Trip"));
     vi.stubGlobal("fetch", vi.fn(mutationFetch(() => new Response(null, { status: 204 }))));
-    fireEvent.pointerUp(window);
+    // Released over a section-internal target so the pane's capture
+    // handlers arm the swallow exactly as a real browser release does.
+    fireEvent.pointerUp(tileFor("Trip"));
 
     // The click the browser fires after pointerup must not navigate.
     fireEvent.click(screen.getByRole("link", { name: "Play Loose.mp4" }));
+    expect(screen.getByTestId("location").dataset.path).toBe("/");
     expect(locationSearch()).toBe("");
   });
 });
@@ -1347,6 +1354,248 @@ describe("FolderOrganizer folder reparent drags", () => {
       expect(patches).toHaveLength(1);
       expect(JSON.parse(String((patches[0]![1] as RequestInit).body))).toEqual({
         parent_id: null,
+      });
+    });
+  });
+});
+
+// --- Drag to reorder (drag-and-drop task 007) ---
+//
+// An item drag within its own listing is a reorder: pointer moves
+// hit-test the band (synthetic rects — jsdom has no layout), the
+// insertion caret renders, and the drop commits the full ordered list
+// in ONE items/order request. Concrete targets win over reordering;
+// filtered views refuse with an explanation; folder tiles reorder
+// among siblings via folders/order.
+
+describe("FolderOrganizer drag to reorder", () => {
+  const section = () =>
+    screen.getByRole("region", { name: "Folder organizer" });
+
+  function tileFor(name: string): HTMLElement {
+    return screen.getByRole("link", { name: `Open folder ${name}` }).closest("article")!;
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  /** mutationFetch variant whose contents endpoint serves a CONSISTENT
+   *  single full page — the reorder drop fetches every page before it
+   *  commits, and the stock fixture's total outlives its entries. */
+  function fullPageFetch(
+    mutate: (input: RequestInfo | URL, init?: RequestInit) => Response,
+  ) {
+    return (input: RequestInfo | URL, init?: RequestInit): Response => {
+      const url = String(input);
+      if (url.startsWith("/api/library-folders/tree")) return jsonResponse(LIBRARY_TREE);
+      if (url.startsWith("/api/library-folders/contents")) {
+        return jsonResponse({
+          entries: UNFILED_PAGE.entries,
+          total: UNFILED_PAGE.entries.length,
+          page: 1,
+          limit: 200,
+        });
+      }
+      return mutate(input, init);
+    };
+  }
+
+  /** Synthetic layout for the hit-testing: data-reorder-key → rect. */
+  function layout(rects: Record<string, [number, number, number, number]>) {
+    const toRect = ([x, y, w, h]: [number, number, number, number]) => ({
+      left: x,
+      top: y,
+      right: x + w,
+      bottom: y + h,
+      width: w,
+      height: h,
+      x,
+      y,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const key = this.getAttribute("data-reorder-key");
+        if (key !== null && key in rects) {
+          return toRect(rects[key]!) as DOMRect;
+        }
+        return toRect([0, 0, 0, 0]) as DOMRect;
+      },
+    );
+  }
+
+  function cardFor(name: string): HTMLElement {
+    return screen.getByText(name).closest("article")!;
+  }
+
+  function armDrag(name: string): void {
+    fireEvent.pointerDown(cardFor(name), { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 140, clientY: 120 });
+  }
+
+  it("reorders the band in one items/order request with the full list", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    // Band layout: the dragged card (u1) excluded from hit-testing, but
+    // give it a rect anyway to prove exclusion.
+    layout({ u1: [0, 0, 100, 50], u2: [120, 0, 100, 50] });
+    armDrag("Loose.mp4");
+
+    // Pointer between/into the remaining card's left half → caret 0.
+    fireEvent.pointerMove(section(), { clientX: 130, clientY: 25 });
+    const photo = cardFor("Photo.jpg");
+    expect(photo.className).toContain("shadow-[-2px");
+    expect(photo.className).toContain("motion-reduce:transition-none");
+
+    const fetchSpy = vi.fn(fullPageFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const orders = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items/order",
+      );
+      expect(orders).toHaveLength(1);
+      expect(JSON.parse(String((orders[0]![1] as RequestInit).body))).toEqual({
+        folder_id: null,
+        items: [
+          { kind: "video", id: "u1" },
+          { kind: "file", id: "u2" },
+        ],
+      });
+    });
+    expect(await screen.findByText("Order saved")).toBeInTheDocument();
+  });
+
+  it("a concrete folder target wins over reorder — the drop moves instead", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    layout({ u1: [0, 0, 100, 50], u2: [120, 0, 100, 50] });
+    armDrag("Loose.mp4");
+    fireEvent.pointerOver(tileFor("Trip"));
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      expect(
+        fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items"),
+      ).toHaveLength(1);
+    });
+    expect(
+      fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items/order"),
+    ).toHaveLength(0);
+  });
+
+  it("a filtered view refuses the reorder and explains at the drop", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    fireEvent.click(screen.getByRole("button", { name: "Videos" }));
+    // The kind-filtered refetch must settle before the drag arms.
+    await screen.findByText("Loose.mp4");
+    layout({ u1: [0, 0, 100, 50] });
+    armDrag("Loose.mp4");
+    fireEvent.pointerMove(section(), { clientX: 40, clientY: 25 });
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    // Released over the contents (a section-internal target — the pane's
+    // capture handler reads the hover state at pointerup time).
+    fireEvent.pointerUp(section());
+
+    expect(
+      await screen.findByText(/isn't the whole folder/),
+    ).toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.filter((c) => String(c[0]) === "/api/library-folders/items/order"),
+    ).toHaveLength(0);
+  });
+
+  it("reorders from list view rows through the same request", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    // List rows carry no data-reorder-key — layout positionally: the
+    // row query maps DOM rows of the CONTENTS table to entries in order.
+    const table = screen.getByRole("table", { name: "Folder contents" });
+    const rows = within(table).getAllByRole("row").slice(1); // skip the header
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    layout({});
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const idx = Array.prototype.indexOf.call(this.parentElement?.children, this);
+        const base = { width: 600, height: 40, x: 0, y: idx * 60, toJSON: () => ({}) };
+        return {
+          ...base,
+          left: 0,
+          top: idx * 60,
+          right: 600,
+          bottom: idx * 60 + 40,
+        } as DOMRect;
+      },
+    );
+
+    fireEvent.pointerDown(rows[0]!, { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 140, clientY: 120 });
+    // Row 2 (y 60-100), leading half → caret before it.
+    fireEvent.pointerMove(section(), { clientX: 100, clientY: 70 });
+
+    const fetchSpy = vi.fn(fullPageFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const orders = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/items/order",
+      );
+      expect(orders).toHaveLength(1);
+      expect(JSON.parse(String((orders[0]![1] as RequestInit).body))).toEqual({
+        folder_id: null,
+        items: [
+          { kind: "video", id: "u1" },
+          { kind: "file", id: "u2" },
+        ],
+      });
+    });
+  });
+
+  it("folder tiles reorder among siblings via one folders/order request", async () => {
+    renderOrganizer({}, ["/"]);
+    await screen.findByText("Loose.mp4");
+
+    layout({
+      "f-trip": [0, 0, 100, 50],
+      "f-docs": [120, 0, 100, 50],
+    });
+    fireEvent.pointerDown(tileFor("Trip"), { clientX: 50, clientY: 25, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 90, clientY: 60 });
+    // Into the gap past Docs' center → caret after Docs (index 1).
+    fireEvent.pointerMove(section(), { clientX: 200, clientY: 25 });
+    expect(tileFor("Docs").querySelector(".aspect-video")!.className).toContain(
+      "shadow-[2px",
+    );
+
+    const fetchSpy = vi.fn(mutationFetch(() => new Response(null, { status: 204 })));
+    vi.stubGlobal("fetch", fetchSpy);
+    fireEvent.pointerUp(window);
+
+    await waitFor(() => {
+      const orders = fetchSpy.mock.calls.filter(
+        (c) => String(c[0]) === "/api/library-folders/folders/order",
+      );
+      expect(orders).toHaveLength(1);
+      expect(JSON.parse(String((orders[0]![1] as RequestInit).body))).toEqual({
+        parent_id: null,
+        folder_ids: ["f-docs", "f-trip"],
       });
     });
   });

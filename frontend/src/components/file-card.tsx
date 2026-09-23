@@ -54,7 +54,13 @@ type SelectionProps = {
    *  card/row. See PosterCard's `dragHandle` for the contract. */
   dragHandle?: {
     onPointerDown: (event: React.PointerEvent) => void;
+    /** Marks the element for the reorder hit-testing query (task 007). */
+    reorderKey?: string;
   };
+  /** Insertion caret (task 007) — vertical band semantics: FileRow is a
+   *  stacked row, so the caret rides the top/bottom edge. FileCard
+   *  matches the grid's leading/trailing edges. */
+  reorderCaret?: "before" | "after";
 };
 
 /** The kind glyph, tinted by its hue (see ./kind-hues.ts). Exported for
@@ -87,12 +93,26 @@ function formatModifiedDate(iso: string | null): string {
   return Number.isFinite(year) ? String(year) : "";
 }
 
-export function FileCard({ file, selection, menuSlot, dragHandle }: { file: FileEntryDto } & SelectionProps) {
+export function FileCard({
+  file,
+  selection,
+  menuSlot,
+  dragHandle,
+  reorderCaret,
+}: { file: FileEntryDto } & SelectionProps) {
   return (
     <article
       onClick={selection ? selection.onToggle : undefined}
       onPointerDown={dragHandle?.onPointerDown}
-      className={`group relative flex flex-col gap-2 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] p-2 transition duration-150 ease-out hover:border-[var(--color-castify-accent)]/40 motion-reduce:transition-none
+      data-reorder-key={dragHandle?.reorderKey}
+      style={{
+        marginLeft: reorderCaret === "before" ? 14 : 0,
+        marginRight: reorderCaret === "after" ? 14 : 0,
+      }}
+      className={`group relative flex flex-col gap-2 rounded-[var(--radius-card)] border bg-[var(--color-castify-surface)] p-2 transition-[margin,border-color] duration-150 ease-out motion-reduce:transition-none
+        ${reorderCaret === "before" ? "border-transparent shadow-[-2px_0_0_0_var(--color-castify-accent)]" : "border-[var(--color-castify-rule)]"}
+        ${reorderCaret === "after" ? "border-transparent shadow-[2px_0_0_0_var(--color-castify-accent)]" : ""}
+        ${!reorderCaret ? "hover:border-[var(--color-castify-accent)]/40" : ""}
         ${selection ? "cursor-pointer" : ""}
         ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}
@@ -133,13 +153,27 @@ export function FileCard({ file, selection, menuSlot, dragHandle }: { file: File
   );
 }
 
-export function FileRow({ file, selection, menuSlot, dragHandle }: { file: FileEntryDto } & SelectionProps) {
+export function FileRow({
+  file,
+  selection,
+  menuSlot,
+  dragHandle,
+  reorderCaret,
+}: { file: FileEntryDto } & SelectionProps) {
   const modified = formatModifiedDate(file.modified_at);
   return (
     <div
       onClick={selection ? selection.onToggle : undefined}
       onPointerDown={dragHandle?.onPointerDown}
-      className={`relative flex items-center gap-3 rounded-[var(--radius-card)] border border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] px-3 py-2 transition hover:border-[var(--color-castify-accent)]/40
+      data-reorder-key={dragHandle?.reorderKey}
+      style={{
+        marginTop: reorderCaret === "before" ? 10 : 0,
+        marginBottom: reorderCaret === "after" ? 10 : 0,
+      }}
+      className={`relative flex items-center gap-3 rounded-[var(--radius-card)] border bg-[var(--color-castify-surface)] px-3 py-2 transition-[margin,border-color] duration-150 ease-out motion-reduce:transition-none
+        ${reorderCaret === "before" ? "border-transparent shadow-[0_-2px_0_0_var(--color-castify-accent)]" : "border-[var(--color-castify-rule)]"}
+        ${reorderCaret === "after" ? "shadow-[0_2px_0_0_var(--color-castify-accent)]" : ""}
+        ${!reorderCaret ? "hover:border-[var(--color-castify-accent)]/40" : ""}
         ${selection ? "cursor-pointer" : ""}
         ${selection?.isSelected ? "ring-2 ring-[var(--color-castify-accent)]" : ""}`}
       aria-label={`${FILE_KIND_LABELS[file.kind]} file ${file.name}`}

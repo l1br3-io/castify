@@ -49,7 +49,12 @@ type FolderTileProps = {
    *  tile (folder reparent drags). See PosterCard's `dragHandle`. */
   dragHandle?: {
     onPointerDown: (event: React.PointerEvent) => void;
+    /** Marks the tile for the sibling-reorder hit-testing query. */
+    reorderKey?: string;
   };
+  /** Insertion caret for sibling reorder (task 007) — grid semantics:
+   *  leading/trailing edges, 2px amber rule + eased gap. */
+  reorderCaret?: "before" | "after";
 };
 
 export function FolderTile({
@@ -65,13 +70,19 @@ export function FolderTile({
   countPreview = null,
   dropInvalid = false,
   dragHandle,
+  reorderCaret,
 }: FolderTileProps) {
   return (
     <article
-      className={`group relative flex flex-col gap-2 ${dropInvalid ? "cursor-not-allowed" : ""}`}
+      className={`group relative flex flex-col gap-2 transition-[margin] duration-150 ease-out motion-reduce:transition-none ${dropInvalid ? "cursor-not-allowed" : ""}`}
       onPointerDown={dragHandle?.onPointerDown}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
+      data-reorder-key={dragHandle?.reorderKey}
+      style={{
+        marginLeft: reorderCaret === "before" ? 14 : 0,
+        marginRight: reorderCaret === "after" ? 14 : 0,
+      }}
     >
       <Link
         to={{
@@ -92,6 +103,8 @@ export function FolderTile({
                         ? "border-[var(--color-castify-accent)] bg-[var(--color-castify-accent-subtle)]"
                         : "border-[var(--color-castify-rule)] bg-[var(--color-castify-surface)] group-hover:border-[var(--color-castify-accent)] group-focus-within:border-[var(--color-castify-accent)]"
                     }
+                    ${reorderCaret === "before" ? "shadow-[-2px_0_0_0_var(--color-castify-accent)]" : ""}
+                    ${reorderCaret === "after" ? "shadow-[2px_0_0_0_var(--color-castify-accent)]" : ""}
                     text-[var(--color-castify-muted)]`}
       >
         <FolderIcon className="h-10 w-10" />

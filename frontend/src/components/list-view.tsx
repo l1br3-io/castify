@@ -89,6 +89,15 @@ type ListViewProps = {
     isSelected: (row: ListViewRow) => boolean;
     onToggle: (row: ListViewRow) => void;
   };
+  /** Insertion caret for drag-to-reorder (drag-and-drop task 007): the
+   *  row whose id matches `reorderCaretBeforeId` carries the 2px amber
+   *  top rule + eased gap; the last-row bottom edge rides
+   *  `reorderCaretAfterId`. */
+  reorderCaretBeforeId?: string | null;
+  reorderCaretAfterId?: string | null;
+  /** Drag source wiring per row (task 007): returned handle attaches to
+   *  the row; undefined rows never arm. */
+  rowDragHandle?: (row: ListViewRow) => { onPointerDown: (event: React.PointerEvent) => void } | undefined;
 };
 
 function ariaSortValue(
@@ -142,6 +151,9 @@ export function ListView({
   nameSortKey,
   sort,
   selection,
+  reorderCaretBeforeId,
+  reorderCaretAfterId,
+  rowDragHandle,
 }: ListViewProps) {
   const hasActions = rows.some((row) => row.menuSlot || row.favoriteSlot);
   // Column headers come from the first row — every row of one listing
@@ -173,7 +185,20 @@ export function ListView({
       </thead>
       <tbody>
         {rows.map((row) => (
-          <ListViewBodyRow key={row.id} row={row} selection={selection} hasActions={hasActions} />
+          <ListViewBodyRow
+            key={row.id}
+            row={row}
+            selection={selection}
+            hasActions={hasActions}
+            reorderCaret={
+              row.id === reorderCaretBeforeId
+                ? "before"
+                : row.id === reorderCaretAfterId
+                  ? "after"
+                  : undefined
+            }
+            dragHandle={rowDragHandle?.(row)}
+          />
         ))}
       </tbody>
     </table>
@@ -184,19 +209,30 @@ function ListViewBodyRow({
   row,
   selection,
   hasActions,
+  reorderCaret,
+  dragHandle,
 }: {
   row: ListViewRow;
   selection?: ListViewProps["selection"];
   /** The listing renders an actions column (any row has slots). Every
    *  body row must render that cell — missing cells shift the row. */
   hasActions: boolean;
+  /** Drag-to-reorder caret state (task 007). */
+  reorderCaret?: "before" | "after";
+  /** Drag source wiring (task 007) — the row reports the press. */
+  dragHandle?: { onPointerDown: (event: React.PointerEvent) => void };
 }) {
   const isSelected = selection?.isSelected(row) ?? false;
 
   return (
     <tr
       onClick={selection ? () => selection.onToggle(row) : undefined}
-      className={`group border-b border-[var(--color-castify-rule)] transition-colors motion-reduce:transition-none hover:bg-[var(--color-castify-hover)] ${
+      onPointerDown={dragHandle?.onPointerDown}
+      className={`group border-b transition-[margin,padding] duration-150 ease-out motion-reduce:transition-none ${
+        reorderCaret === "before"
+          ? "shadow-[inset_0_2px_0_0_var(--color-castify-accent)]"
+          : "border-[var(--color-castify-rule)]"
+      } ${reorderCaret === "after" ? "shadow-[inset_0_-2px_0_0_var(--color-castify-accent)]" : ""} hover:bg-[var(--color-castify-hover)] ${
         selection ? "cursor-pointer" : ""
       } ${
         isSelected

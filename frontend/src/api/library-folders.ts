@@ -115,3 +115,34 @@ export function moveLibraryItems(
     body: { items, folder_id: folderId },
   });
 }
+
+/**
+ * `PATCH /api/library-folders/items/order` — reorder one folder's
+ * contents. The body carries the FULL ordered item list for the scope
+ * (exactly its current placed items); positions rewrite densely
+ * server-side in one transaction. Mismatched lists fail whole (400).
+ */
+export function reorderLibraryItems(
+  folderId: string | null,
+  items: LibraryMoveItem[],
+): Promise<void> {
+  return apiFetch<void>("/api/library-folders/items/order", {
+    method: "PATCH",
+    body: { folder_id: folderId, items },
+  });
+}
+
+/**
+ * `PATCH /api/library-folders/folders/order` — reorder one scope's
+ * folder siblings (`parentId` null = tree root). Same full-list
+ * contract as `reorderLibraryItems`.
+ */
+export function reorderLibraryFolders(
+  parentId: string | null,
+  folderIds: string[],
+): Promise<void> {
+  return apiFetch<void>("/api/library-folders/folders/order", {
+    method: "PATCH",
+    body: { parent_id: parentId, folder_ids: folderIds },
+  });
+}

@@ -53,6 +53,12 @@ import { Dialog } from "./ui/dialog";
 import { useDrag } from "./drag-context";
 import { carryPayload, type DragItem, type DragPayload } from "../lib/drag-engine";
 import { canReparent } from "../lib/library-tree";
+import { insertionIndex, type SlotRect } from "../lib/reorder";
+import {
+  useReorderLibraryFolders,
+  useReorderLibraryItems,
+} from "../hooks/use-library-folders";
+import { fetchLibraryFolderContents } from "../api/library-folders";
 import { useDropTarget } from "../hooks/use-drop-target";
 import { useToast } from "../hooks/use-toast";
 import {
@@ -172,7 +178,33 @@ type ContentsBodyProps = {
    *  payload (selection rule); the engine's threshold separates click
    *  from drag. */
   itemDragStart?: (entry: FolderEntryDto, event: ReactPointerEvent) => void;
+  /** Reorder wiring (drag-and-drop task 007): present while an item
+   *  drag from this folder's own listing is live. `restBandIds` are the
+   *  non-dragged band members in served order; `caretIndex` is the
+   *  insertion point among them (null = no caret). */
+  reorder?: {
+    restBandIds: string[];
+    caretIndex: number | null;
+  };
 };
+
+/** Caret resolution shared by both band presentations: "before" the
+ *  entry at caretIndex, or "after" the last when the caret is at the
+ *  end. */
+function caretFor(
+  indexInBand: number,
+  reorder: { restBandIds: string[]; caretIndex: number | null },
+): "before" | "after" | undefined {
+  if (reorder.caretIndex === null) return undefined;
+  if (indexInBand === reorder.caretIndex) return "before";
+  if (
+    reorder.caretIndex === reorder.restBandIds.length &&
+    indexInBand === reorder.restBandIds.length - 1
+  ) {
+    return "after";
+  }
+  return undefined;
+}
 
 /** One contents entry → one slate row (library-list-view task 005). The
  *  mixed table wears a uniform column set — the header comes from the
@@ -242,6 +274,7 @@ function ContentsBody({
   selection,
   itemMenu,
   itemDragStart,
+  reorder,
 }: ContentsBodyProps) {
   const gridEntries = contents.data?.entries.filter(isTileEntry) ?? [];
   const listEntries = contents.data?.entries.filter(isListRowEntry) ?? [];
@@ -289,6 +322,26 @@ function ContentsBody({
                 },
               }
             }
+            rowDragHandle={
+              itemDragStart
+                ? (row) => {
+                    const entry = contents.data?.entries.find((e) => e.id === row.id);
+                    return entry !== undefined
+                      ? { onPointerDown: (event) => itemDragStart(entry, event) }
+                      : undefined;
+                  }
+                : undefined
+            }
+            reorderCaretBeforeId={
+              reorder && reorder.caretIndex !== null
+                ? (reorder.restBandIds[reorder.caretIndex] ?? null)
+                : null
+            }
+            reorderCaretAfterId={
+              reorder && reorder.caretIndex === reorder.restBandIds.length
+                ? (reorder.restBandIds[reorder.restBandIds.length - 1] ?? null)
+                : null
+            }
           />
 
           {contents.data.total > contents.data.limit && (
@@ -320,17 +373,27 @@ function ContentsBody({
         <>
           {/* Grid children: videos + tile files; list kinds render as rows
               below (a mixed grid breaks on wildly different card heights). */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-            {gridEntries.map((entry) =>
-              entry.kind === "video" ? (
+          <div
+            data-contents-grid
+            className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"
+          >
+            {gridEntries.map((entry) => {
+              const bandIndex = reorder
+                ? reorder.restBandIds.indexOf(entry.id)
+                : -1;
+              const reorderCaret =
+                reorder && bandIndex >= 0 ? caretFor(bandIndex, reorder) : undefined;
+              return entry.kind === "video" ? (
                 <PosterCard
                   key={entry.id}
                   video={entry}
                   href={`/watch/${entry.id}`}
                   queue={videoQueue}
+                  reorderCaret={reorderCaret}
                   dragHandle={
                     itemDragStart && {
                       onPointerDown: (event) => itemDragStart(entry, event),
+                      reorderKey: reorder ? entry.id : undefined,
                     }
                   }
                   topRightSlot={
@@ -350,9 +413,11 @@ function ContentsBody({
                 <FileCard
                   key={entry.id}
                   file={entry}
+                  reorderCaret={reorderCaret}
                   dragHandle={
                     itemDragStart && {
                       onPointerDown: (event) => itemDragStart(entry, event),
+                      reorderKey: reorder ? entry.id : undefined,
                     }
                   }
                   selection={
@@ -363,29 +428,38 @@ function ContentsBody({
                   }
                   menuSlot={itemMenu?.(entry)}
                 />
-              ),
-            )}
+              );
+            })}
           </div>
           {/* List children: documents/archives/subtitles/other. */}
-          <div className="space-y-2">
-            {listEntries.map((entry) => (
-              <FileRow
-                key={entry.id}
-                file={entry}
-                dragHandle={
-                  itemDragStart && {
-                    onPointerDown: (event) => itemDragStart(entry, event),
+          <div data-contents-rows className="space-y-2">
+            {listEntries.map((entry) => {
+              const bandIndex = reorder
+                ? reorder.restBandIds.indexOf(entry.id)
+                : -1;
+              return (
+                <FileRow
+                  key={entry.id}
+                  file={entry}
+                  reorderCaret={
+                    reorder && bandIndex >= 0 ? caretFor(bandIndex, reorder) : undefined
                   }
-                }
-                selection={
-                  selection && {
-                    isSelected: selection.selectedIds.has(entry.id),
-                    onToggle: () => selection.onToggle(entry),
+                  dragHandle={
+                    itemDragStart && {
+                      onPointerDown: (event) => itemDragStart(entry, event),
+                      reorderKey: reorder ? entry.id : undefined,
+                    }
                   }
-                }
-                menuSlot={itemMenu?.(entry)}
-              />
-            ))}
+                  selection={
+                    selection && {
+                      isSelected: selection.selectedIds.has(entry.id),
+                      onToggle: () => selection.onToggle(entry),
+                    }
+                  }
+                  menuSlot={itemMenu?.(entry)}
+                />
+              );
+            })}
           </div>
 
           {contents.data.total > contents.data.limit && (
@@ -620,6 +694,27 @@ function sameItems(a: LibraryMoveItem[], b: LibraryMoveItem[]): boolean {
   );
 }
 
+/** Every placed entry of one scope — the reorder wire contract demands
+ *  the scope's FULL member set and the listing may be one page of it,
+ *  so the drop walks the pages (one read burst, then one mutation). */
+async function fetchAllFolderEntries(folderId: string | null): Promise<FolderEntryDto[]> {
+  const out: FolderEntryDto[] = [];
+  let page = 1;
+  for (;;) {
+    const res = await fetchLibraryFolderContents({
+      folder_id: folderId ?? undefined,
+      page,
+      limit: 200,
+    });
+    out.push(...res.entries);
+    if (out.length >= res.total || res.entries.length === 0) return out;
+    page += 1;
+  }
+}
+
+/** The reorder drop-target id for the pane's scope. */
+const reorderTargetIdFor = (folderId: string | null) => `reorder:${folderId ?? "unfiled"}`;
+
 /**
  * A folder tile that accepts drops and starts folder drags
  * (drag-and-drop tasks 002 + 004). Item payloads move in a batch;
@@ -634,6 +729,8 @@ function DroppableFolderTile({
   topRightSlot,
   onDropPayload,
   onDragStart,
+  reorderCaret,
+  reorderActive,
 }: {
   folder: LibraryTreeFolderDto;
   /** The flat tree — legality math for folder payloads. */
@@ -641,6 +738,10 @@ function DroppableFolderTile({
   topRightSlot?: ReactNode;
   onDropPayload: (folderId: string | null, folderName: string, payload: DragPayload) => void;
   onDragStart: (folder: LibraryTreeFolderDto, event: ReactPointerEvent) => void;
+  /** Sibling-reorder caret (task 007) + band marking while a sibling
+   *  folder drag is live. */
+  reorderCaret?: "before" | "after";
+  reorderActive: boolean;
 }) {
   const { state } = useDrag();
   const { isDropHovered, isInvalidDropHover, dropProps } = useDropTarget(`folder:${folder.id}`, {
@@ -661,7 +762,11 @@ function DroppableFolderTile({
       to="/"
       count={folder.item_count}
       topRightSlot={topRightSlot}
-      dragHandle={{ onPointerDown: (event) => onDragStart(folder, event) }}
+      dragHandle={{
+        onPointerDown: (event) => onDragStart(folder, event),
+        reorderKey: reorderActive ? folder.id : undefined,
+      }}
+      reorderCaret={reorderCaret}
       {...dropProps}
       dropHovered={isDropHovered}
       dropInvalid={isInvalidDropHover}
@@ -696,7 +801,7 @@ function CuratedPane() {
   // selection-carry rule; folder tiles + the Unfiled pin accept drops.
   // One drop → the same `moveItems` mutation the dialogs use — one
   // request, one transaction, unchanged contract.
-  const { state: dragState, beginDrag } = useDrag();
+  const { state: dragState, beginDrag, hoverTarget } = useDrag();
   const toast = useToast();
   // A completed drag swallows its ghost click (see the section handlers
   // below) so releasing over a card or tile never navigates.
@@ -868,10 +973,224 @@ function CuratedPane() {
 
   const filtersActive = kindFilter !== undefined || nameQuery.trim() !== "";
 
+  // --------------------------------------------------------------------
+  // Reorder wiring (drag-and-drop task 007). An item drag whose whole
+  // payload sits in THIS listing is a reorder candidate: pointer moves
+  // over the contents hit-test the band rects, the insertion caret
+  // renders at the gap, and the drop commits the full ordered list in
+  // one request. A folder drag whose folder is a child of the current
+  // level reorders the sibling tiles band the same way. Concrete
+  // targets always win: hovering a folder tile mid-drag means MOVE, and
+  // the caret steps aside.
+  // --------------------------------------------------------------------
+  const reorderItems = useReorderLibraryItems();
+  const reorderFolders = useReorderLibraryFolders();
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const reorderTargetId = reorderTargetIdFor(selectedFolder);
+  // The caret at drop time — a ref so `onDrop` reads the last seen
+  // index without waiting for a render; `caret` mirrors it for paint.
+  const caretRef = useRef<{ kind: "items" | "folders"; index: number | null } | null>(null);
+  const [caret, setCaret] = useState<{
+    kind: "items" | "folders";
+    index: number | null;
+  } | null>(null);
+
+  const entries = contents.data?.entries ?? [];
+  const draggedIds =
+    dragState.phase === "dragging" && dragState.payload.type === "items"
+      ? new Set(dragState.payload.items.map((item) => item.id))
+      : null;
+  const payloadIsInListing =
+    draggedIds !== null && [...draggedIds].every((id) => entries.some((e) => e.id === id));
+  /* GOTCHA: reorder needs the scope's whole ordered set, and a filtered
+   * listing (kind/name) is a projection of it — committing a filtered
+   * view's order would silently canonize an incomplete list. Filtered
+   * views never arm the caret; the drop explains instead of guessing. */
+  const selfItemDrag =
+    dragState.phase === "dragging" &&
+    dragState.payload.type === "items" &&
+    !filtersActive &&
+    payloadIsInListing;
+  const selfFolderId =
+    dragState.phase === "dragging" && dragState.payload.type === "folder"
+      ? dragState.payload.id
+      : null;
+  const selfFolderDrag =
+    selfFolderId !== null &&
+    folders.find((f) => f.id === selfFolderId)?.parent_id === selectedFolder;
+
+  // The active item band: grid tiles vs list rows — decided by the
+  // FIRST payload item's rendering (a mixed-kind selection reorders its
+  // first band; the other members ride their current slots).
+  const bandIsTile =
+    selfItemDrag && draggedIds !== null
+      ? isTileEntry(entries.find((e) => draggedIds.has(e.id)) ?? entries[0]!)
+      : true;
+  const restBandIds =
+    selfItemDrag && draggedIds !== null
+      ? entries
+          .filter((e) => isTileEntry(e) === bandIsTile && !draggedIds.has(e.id))
+          .map((e) => e.id)
+      : [];
+
+  const restFolderIds = selfFolderDrag
+    ? subfolders.filter((f) => f.id !== selfFolderId).map((f) => f.id)
+    : [];
+
+  const reorderDrop = useDropTarget(reorderTargetId, {
+    canDrop: (payload) =>
+      payload.type === "items"
+        ? payload.items.every((item) => entries.some((e) => e.id === item.id)) &&
+          !filtersActive
+        : folders.find((f) => f.id === payload.id)?.parent_id === selectedFolder,
+    onDrop: (payload) => {
+      if (payload.type === "items") {
+        void handleReorderDropItems(payload);
+      } else {
+        handleReorderDropFolders(payload);
+      }
+    },
+  });
+
+  /** Pointer moves during a live drag: hit-test the active band, keep
+   *  the caret in step, and claim the hover whenever no concrete target
+   *  (a folder tile, the Unfiled pin) already owns it. */
+  function handleSectionPointerMove(event: ReactPointerEvent): void {
+    if (dragState.phase !== "dragging") return;
+    const point = { x: event.clientX, y: event.clientY };
+    const concreteTargetOwnsHover =
+      dragState.over !== null && dragState.over !== reorderTargetId;
+    if (concreteTargetOwnsHover) {
+      updateCaret(null);
+      return;
+    }
+    if (!selfItemDrag && !selfFolderDrag) return;
+
+    const ids = selfItemDrag ? restBandIds : restFolderIds;
+    const rects = collectBandRects(ids);
+    const index = insertionIndex(rects, point);
+    updateCaret({ kind: selfItemDrag ? "items" : "folders", index });
+    if (index !== null) {
+      hoverTarget(reorderTargetId);
+    } else if (dragState.over === reorderTargetId) {
+      hoverTarget(null);
+    }
+  }
+
+  function updateCaret(
+    next: { kind: "items" | "folders"; index: number | null } | null,
+  ): void {
+    const same =
+      caretRef.current?.kind === next?.kind && caretRef.current?.index === next?.index;
+    if (same) return;
+    caretRef.current = next;
+    setCaret(next);
+  }
+
+  /** Viewport rects of the band's rendered elements, in band order —
+   *  grid cards/tiles by `data-reorder-key`, list rows positionally. */
+  function collectBandRects(bandIds: string[]): SlotRect[] {
+    const section = sectionRef.current;
+    if (section === null) return [];
+    const rectById = new Map<string, SlotRect>();
+    if (viewMode === "list" && selfItemDrag) {
+      const rows = Array.from(
+        section.querySelectorAll<HTMLElement>(
+          'table[aria-label="Folder contents"] tbody tr',
+        ),
+      );
+      rows.forEach((row, i) => {
+        const entry = entries[i];
+        if (entry !== undefined) rectById.set(entry.id, row.getBoundingClientRect());
+      });
+    } else {
+      section
+        .querySelectorAll<HTMLElement>("[data-reorder-key]")
+        .forEach((el) => {
+          const key = el.getAttribute("data-reorder-key");
+          if (key !== null) rectById.set(key, el.getBoundingClientRect());
+        });
+    }
+    return bandIds
+      .map((id) => rectById.get(id))
+      .filter((rect): rect is SlotRect => rect !== undefined);
+  }
+
+  /** Item reorder drop: fetch the scope's full member set, splice the
+   *  carried items in at the caret, commit in one mutation. */
+  async function handleReorderDropItems(
+    payload: Extract<DragPayload, { type: "items" }>,
+  ): Promise<void> {
+    const snap = caretRef.current;
+    if (snap?.kind !== "items" || snap.index === null) return;
+    const index = snap.index;
+    try {
+      const all = await fetchAllFolderEntries(selectedFolder);
+      const dragged = new Set(payload.items.map((item) => item.id));
+      const band = all.filter((e) => isTileEntry(e) === bandIsTile);
+      const draggedBand = band.filter((e) => dragged.has(e.id));
+      const rest = band.filter((e) => !dragged.has(e.id));
+      const at = Math.min(index, rest.length);
+      const reordered = [...rest.slice(0, at), ...draggedBand, ...rest.slice(at)];
+      let cursor = 0;
+      const items: LibraryMoveItem[] = all.map((entry) => {
+        if (isTileEntry(entry) === bandIsTile) {
+          const next = reordered[cursor]!;
+          cursor += 1;
+          return { kind: next.kind === "video" ? "video" : "file", id: next.id };
+        }
+        return { kind: entry.kind === "video" ? "video" : "file", id: entry.id };
+      });
+      reorderItems.mutate(
+        { folderId: selectedFolder, items },
+        {
+          onSuccess: () => toast.success("Order saved"),
+          onError: (error) => toast.error(`Reorder failed — ${describeError(error)}`),
+        },
+      );
+    } catch (error) {
+      toast.error(`Reorder failed — ${describeError(error)}`);
+    }
+  }
+
+  /** Folder sibling reorder drop: dense rewrite of the sibling ids with
+   *  the dragged folder at the caret — one request. */
+  function handleReorderDropFolders(
+    payload: Extract<DragPayload, { type: "folder" }>,
+  ): void {
+    const snap = caretRef.current;
+    if (snap?.kind !== "folders" || snap.index === null) return;
+    const rest = subfolders.filter((f) => f.id !== payload.id);
+    const at = Math.min(snap.index, rest.length);
+    const ordered = [
+      ...rest.slice(0, at),
+      ...subfolders.filter((f) => f.id === payload.id),
+      ...rest.slice(at),
+    ].map((f) => f.id);
+    reorderFolders.mutate(
+      { parentId: selectedFolder, folderIds: ordered },
+      {
+        onSuccess: () => toast.success("Order saved"),
+        onError: (error) => toast.error(`Reorder failed — ${describeError(error)}`),
+      },
+    );
+  }
+
+  const itemsCaret = caret?.kind === "items" ? caret.index : null;
+  const foldersCaret = caret?.kind === "folders" ? caret.index : null;
+
   return (
     <section
+      ref={sectionRef}
       aria-label="Folder organizer"
       className="space-y-4"
+      // The section doubles as the reorder drop target (task 007): its
+      // enter/leave claim/release the hover; the move handler hit-tests
+      // the active band. Concrete targets (tiles, the Unfiled pin)
+      // override it from their own enter events — deepest target wins.
+      onPointerEnter={reorderDrop.dropProps.onPointerEnter}
+      onPointerLeave={reorderDrop.dropProps.onPointerLeave}
+      onPointerMove={handleSectionPointerMove}
       // Ghost-click swallow: the browser fires a click after a completed
       // drag's pointerup (on the down/up targets' common ancestor). The
       // capture handlers run before the provider's window pointerup
@@ -883,6 +1202,18 @@ function CuratedPane() {
       }}
       onPointerUpCapture={() => {
         if (dragState.phase === "dragging") swallowClickRef.current = true;
+        // The filtered-view reorder refusal explains itself (task 007):
+        // a drop over the contents while a filter projects the listing
+        // is a no-op — say why, once, at the attempted drop.
+        if (
+          dragState.phase === "dragging" &&
+          dragState.payload.type === "items" &&
+          filtersActive &&
+          payloadIsInListing &&
+          dragState.over === null
+        ) {
+          toast.info("A filtered view isn't the whole folder — clear the filters to reorder.");
+        }
       }}
       onClickCapture={(event) => {
         if (swallowClickRef.current) {
@@ -1136,14 +1467,29 @@ function CuratedPane() {
                 </div>
               </article>
             )}
-            {subfolders.map((folder) => (
-              <DroppableFolderTile
-                key={folder.id}
-                folder={folder}
-                folders={folders}
-                onDropPayload={handleDropIntoFolder}
-                onDragStart={handleFolderPointerDown}
-                topRightSlot={
+            {subfolders.map((folder) => {
+              const folderCaretIndex = selfFolderDrag
+                ? restFolderIds.indexOf(folder.id)
+                : -1;
+              const folderCaret =
+                selfFolderDrag && foldersCaret !== null && folderCaretIndex >= 0
+                  ? folderCaretIndex === foldersCaret
+                    ? "before"
+                    : foldersCaret === restFolderIds.length &&
+                        folderCaretIndex === restFolderIds.length - 1
+                      ? "after"
+                      : undefined
+                  : undefined;
+              return (
+                <DroppableFolderTile
+                  key={folder.id}
+                  folder={folder}
+                  folders={folders}
+                  onDropPayload={handleDropIntoFolder}
+                  onDragStart={handleFolderPointerDown}
+                  reorderCaret={folderCaret}
+                  reorderActive={selfFolderDrag}
+                  topRightSlot={
                   <LibraryFolderMenu
                     label={folder.name}
                     onRename={() => setFolderDialog({ kind: "rename", folder })}
@@ -1151,8 +1497,9 @@ function CuratedPane() {
                     onDelete={() => setFolderDialog({ kind: "delete", folder })}
                   />
                 }
-              />
-            ))}
+                />
+              );
+            })}
           </div>
         )}
 
@@ -1180,6 +1527,11 @@ function CuratedPane() {
           filtersActive={filtersActive}
           viewMode={viewMode}
           itemDragStart={handleItemPointerDown}
+          reorder={
+            selfItemDrag
+              ? { restBandIds, caretIndex: itemsCaret }
+              : undefined
+          }
           selection={
             selectMode ? { selectedIds, onToggle: toggleSelected } : undefined
           }

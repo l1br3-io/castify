@@ -91,7 +91,16 @@ type PosterCardProps = {
    */
   dragHandle?: {
     onPointerDown: (event: React.PointerEvent) => void;
+    /** Marks the card for the reorder hit-testing query (task 007). */
+    reorderKey?: string;
   };
+  /**
+   * Insertion caret (drag-and-drop task 007): "before" renders the 2px
+   * amber rule + opened gap on the card's leading edge, "after" on its
+   * trailing edge (grid bands are horizontal). The gap eases 150ms;
+   * reduced-motion collapses it.
+   */
+  reorderCaret?: "before" | "after";
 };
 
 export function PosterCard({
@@ -104,6 +113,7 @@ export function PosterCard({
   scope,
   selection,
   dragHandle,
+  reorderCaret,
 }: PosterCardProps) {
   // Providers from `sources` excluding the representative's own. Used to
   // decide whether to render a DedupBadge. Shared helper (lib/video.ts).
@@ -114,8 +124,15 @@ export function PosterCard({
     <article
       onClick={selection ? selection.onToggle : undefined}
       onPointerDown={dragHandle?.onPointerDown}
+      data-reorder-key={dragHandle?.reorderKey}
+      style={{
+        marginLeft: reorderCaret === "before" ? 14 : 0,
+        marginRight: reorderCaret === "after" ? 14 : 0,
+      }}
       className={`
-        relative group flex flex-col gap-2
+        relative group flex flex-col gap-2 transition-[margin] duration-150 ease-out motion-reduce:transition-none
+        ${reorderCaret === "before" ? "shadow-[-2px_0_0_0_var(--color-castify-accent)]" : ""}
+        ${reorderCaret === "after" ? "shadow-[2px_0_0_0_var(--color-castify-accent)]" : ""}
         ${selection ? "cursor-pointer" : ""}
         ${selection?.isSelected ? "rounded-[var(--radius-card)] ring-2 ring-[var(--color-castify-accent)]" : ""}
       `}

@@ -21,6 +21,8 @@ import {
   fetchLibraryFolderContents,
   fetchLibraryFolderTree,
   moveLibraryItems,
+  reorderLibraryFolders,
+  reorderLibraryItems,
   updateLibraryFolder,
 } from "../api/library-folders";
 import type { LibraryMoveItem } from "../api/library-folders";
@@ -103,6 +105,34 @@ export function useMoveLibraryItems() {
       items: LibraryMoveItem[];
       folderId: string | null;
     }) => moveLibraryItems(items, folderId),
+    onSettled: invalidate,
+  });
+}
+
+export function useReorderLibraryItems() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: ({
+      folderId,
+      items,
+    }: {
+      folderId: string | null;
+      items: LibraryMoveItem[];
+    }) => reorderLibraryItems(folderId, items),
+    onSettled: invalidate,
+  });
+}
+
+export function useReorderLibraryFolders() {
+  const invalidate = useInvalidateLibraryFolders();
+  return useMutation({
+    mutationFn: ({
+      parentId,
+      folderIds,
+    }: {
+      parentId: string | null;
+      folderIds: string[];
+    }) => reorderLibraryFolders(parentId, folderIds),
     onSettled: invalidate,
   });
 }
