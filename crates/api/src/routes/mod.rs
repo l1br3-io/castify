@@ -10,6 +10,7 @@ pub mod settings;
 pub mod setup;
 pub mod share;
 pub mod shares;
+pub mod uploads;
 pub mod videos;
 
 use crate::error::{ApiError, ApiResult};

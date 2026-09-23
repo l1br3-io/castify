@@ -881,7 +881,7 @@ fn not_configured(provider: Provider) -> ApiError {
     ApiError::ServiceUnavailable(format!("{provider} not configured"))
 }
 
-fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
+pub(crate) fn spawn_scan(state: &AppState, connection_id: &str, provider: Provider) {
     let repo = state.catalog_repository().clone();
     let conn_id = connection_id.to_string();
 

@@ -35,6 +35,14 @@ pub enum ApiError {
     ForbiddenCsrf,
     #[error("service unavailable: {0}")]
     ServiceUnavailable(String),
+    /// The request must state its length (uploads stream with a known
+    /// total — the provider contract needs Content-Length).
+    #[error("length required: {0}")]
+    LengthRequired(String),
+    /// The provider behind this connection doesn't implement the
+    /// operation (e.g. a read-only provider asked to upload).
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
     #[error("auth error: {0}")]
     Auth(#[from] castify_auth::AuthError),
     #[error("catalog error: {0}")]
@@ -114,6 +122,20 @@ impl IntoResponse for ApiError {
             ApiError::ForbiddenCsrf => (StatusCode::FORBIDDEN, self.to_string(), None, None, None),
             ApiError::ServiceUnavailable(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,
+                self.to_string(),
+                None,
+                None,
+                None,
+            ),
+            ApiError::LengthRequired(_) => (
+                StatusCode::LENGTH_REQUIRED,
+                self.to_string(),
+                None,
+                None,
+                None,
+            ),
+            ApiError::NotImplemented(_) => (
+                StatusCode::NOT_IMPLEMENTED,
                 self.to_string(),
                 None,
                 None,
