@@ -930,13 +930,7 @@ mod tests {
         /// A deterministic fixture larger than any client chunk window,
         /// chunked into 8 KiB pieces.
         fn fixture() -> Vec<u8> {
-            (0..64 * 1024)
-                .map(|i| (i % 251) as u8)
-                .collect::<Vec<u8>>()
-                .into_iter()
-                .cycle()
-                .take(300 * 1024)
-                .collect()
+            (0..300 * 1024).map(|i| (i % 251) as u8).collect()
         }
 
         fn chunked(bytes: Vec<u8>) -> BodyStream {
