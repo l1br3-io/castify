@@ -2,9 +2,7 @@
 description: Run TDD workflow — write failing tests, implement, verify. For bugs, use the Prove-It pattern.
 ---
 
-# /test
-
-Invoke the test-driven-development skill.
+Load the `test-driven-development` skill with the `skill` tool.
 
 For new features:
 1. Write tests that describe the expected behavior (they should FAIL)
@@ -18,6 +16,4 @@ For bug fixes (Prove-It pattern):
 4. Confirm the test passes
 5. Run the full test suite for regressions
 
-For browser-related issues, also invoke browser-testing-with-devtools to verify with Chrome DevTools MCP.
-
-Apply the patterns in `.opencode/harness/rules/testing-patterns.md` when designing the suite — it covers naming, structure, coverage targets, and test-data conventions.
+For browser-related issues, also load `browser-testing-with-devtools` to verify with Chrome DevTools MCP.

@@ -30,3 +30,5 @@ Cargo.lock.bak
 # Playwright artifacts
 test-results/
 playwright-report/
+SPEC*.md
+/tasks

@@ -2,9 +2,7 @@
 description: Start spec-driven development — write a structured specification before writing code
 ---
 
-# /spec
-
-Invoke the spec-driven-development skill.
+Load the `spec-driven-development` skill with the `skill` tool.
 
 Begin by understanding what the user wants to build. Ask clarifying questions about:
 1. The objective and target users
@@ -14,15 +12,6 @@ Begin by understanding what the user wants to build. Ask clarifying questions ab
 
 Then generate a structured spec covering all six core areas: objective, commands, project structure, code style, testing strategy, and boundaries.
 
-Save the spec to `docs/specs/<effort-slug>/spec.md` (create the directory). The `<effort-slug>` should match the branch name — pick it once, use it consistently as the branch name and the directory name. Use clean slugs (e.g. `auth-google-oauth`, `billing-refunds`); no numeric prefix.
+If the request bundles several independently testable capabilities, first propose a capability map (module ids, dependency direction, build order) per the skill's Phase 0 and get it approved, then spec each module in dependency order.
 
-Add frontmatter tracking the effort's lifecycle:
-
-```yaml
----
-status: draft        # draft → active → shipped (flipped by /build and on merge)
-started: YYYY-MM-DD
----
-```
-
-Confirm with the user before proceeding.
+Save the master index (capability map + status) as SPEC.md in the project root and per-module specs as SPEC-<module-id>.md, named by the module id from the approved map. All are local working artifacts (gitignored). When a module's spec is approved, record it with the date in SPEC.md's status table — `/build auto` gates on that marker. Confirm with the user before proceeding.
