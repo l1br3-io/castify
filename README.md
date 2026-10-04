@@ -6,13 +6,14 @@ Castify is a free, open-source **personal media server** that connects to the cl
 
 - **Vision:** [`docs/VISION.md`](./docs/VISION.md)
 - **Roadmap:** [`docs/ROADMAP.md`](./docs/ROADMAP.md)
-- **Current effort:** M8 — Advanced subtitles (see [`docs/specs/advanced-subtitles/spec.md`](./docs/specs/advanced-subtitles/spec.md))
+- **Effort history:** in the git log — anchor commit messages carry each effort's context, decisions, and outcome (`git log --grep='<effort>'`)
 
 ## Status
 
 M0–M7 are complete (launch core M0–M3, plus the self-hosted media server arc M3.5–M7).
-M8 (Advanced subtitles) is the current effort. Finished efforts live in place as
-shipped specs under [`docs/specs/`](./docs/specs/).
+M8 (Advanced subtitles) shipped. Every finished effort is documented by its landing
+commit: run `git log --grep='<effort-slug>'` to read its context, decisions,
+deviations, and outcome.
 
 ## Repository layout
 
@@ -20,7 +21,7 @@ shipped specs under [`docs/specs/`](./docs/specs/).
 castify/
 ├── crates/         # Rust workspace (api, core, storage, auth, catalog, cache, bench)
 ├── frontend/       # Vite + React SPA
-├── docs/           # Vision, roadmap, deploy, and per-effort specs (docs/specs/<slug>/)
+├── docs/           # Vision, roadmap, deploy, and provider guides
 ├── Dockerfile      # Multi-stage build (Node → Rust → distroless)
 └── docker-compose.yml
 ```

@@ -1,8 +1,9 @@
 # Roadmap
 
 > **Companion:** [`VISION.md`](./VISION.md) — the problem and goals. This roadmap
-> communicates direction and sequencing only; per-effort requirements live in
-> [`docs/specs/<effort-slug>/spec.md`](./specs/) — one directory per effort.
+> communicates direction and sequencing only; per-effort requirements, decisions,
+> and outcomes live in the effort's anchor commit message —
+> `git log --grep='<effort-slug>'`.
 
 Castify is a free, open-source **personal media server**: connect the cloud storage
 you already pay for, unify every provider into one library, organize and browse your
@@ -21,24 +22,23 @@ VISION   "What problem are we solving?"   docs/VISION.md
   │
 ROADMAP  "What directions / milestones?"  docs/ROADMAP.md  (this)
   │
-SPEC     "Current effort requirements"    docs/specs/<effort-slug>/spec.md
+RECORD   "Current effort requirements"    anchor commit message (git log --grep=<slug>)
 ```
 
 ### Each effort ships through the harness lifecycle
 
 ```text
-DEFINE → /spec       spec-driven-development             → docs/specs/<slug>/spec.md (status: draft)
-PLAN   → /planning   planning-and-task-breakdown         → docs/specs/<slug>/{plan.md, todo.md, tasks/00N-*.md}
-BUILD  → /build      incremental-implementation + TDD    → source + tests (flips spec status: draft → active)
-VERIFY → /test       debugging-and-error-recovery        → pnpm verify green
-REVIEW → /review     code-review-and-quality             → sign-off
-SHIP   → /ship       shipping-and-launch                 → merge PR; spec status flips to shipped (dir stays in place)
+DEFINE → plan scope   planning-and-task-breakdown     → decisions recorded at landing time
+BUILD  → /build       incremental-implementation + TDD → source + tests (one commit per task)
+VERIFY → /test        debugging-and-error-recovery     → just ci green
+REVIEW → /review      code-review-and-quality          → sign-off
+SHIP   → /ship        shipping-and-launch              → merge PR; anchor message finalized
 ```
 
-When an effort ships, its spec.md frontmatter flips to status: shipped with the merge
-date. The directory stays at `docs/specs/<slug>/` forever — no archive step, no move.
-Git is the full history; the filesystem is the browsable index. The next effort starts
-on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
+When an effort ships, the anchor commit — the commit that landed the feature —
+carries its Context/Decisions/Deviations/Outcome block (see AGENTS.md "Git is
+the documentation"). Git is the full history and the browsable index; the next
+effort starts on a fresh branch.
 
 ---
 
@@ -57,7 +57,7 @@ on a fresh branch with a fresh `docs/specs/<new-slug>/` directory.
 
 > **Last shipped: Share management** — generated share names, searchable/filtered
 > shares list, add-to-existing from the share dialog, and hard-delete (purge).
-> See [`docs/specs/share-management/spec.md`](./specs/share-management/spec.md).
+> See `git log --grep=share-management`.
 
 | Milestone | State |
 |-----------|-------|
@@ -91,4 +91,4 @@ Revisited once the core hub is shipped and adopted:
 
 - **Media intelligence** — memories and stories, face and place search, smart organization and cleanup.
 - **Platform & ecosystem** — cross-platform mobile, desktop, and CLI apps, TV apps, casting, watch parties, multi-user household profiles, audio/music support.
-- **Library folders** — Google Drive-style folders the owner creates inside Castify to organize the whole library, layered on the auto-detected cloud-provider folders (new files land at the top level until filed). Reuses the share-folders components; see `docs/specs/share-folders/`.
+- **Library folders** — Google Drive-style folders the owner creates inside Castify to organize the whole library, layered on the auto-detected cloud-provider folders (new files land at the top level until filed). Reuses the share-folders components; see `git log --grep=share-folders`.

@@ -85,7 +85,7 @@ ci:
 
 # Run all tests reliably in one go — parallel process-per-test backend via
 # nextest (m0 deviation #8's serialization is resolved; see
-# docs/specs/test-parallelism/) plus doctests and frontend type/lint/test.
+# git log --grep=test-parallelism) plus doctests and frontend type/lint/test.
 # Use as a pre-manual-testing baseline.
 preflight:
     #!/usr/bin/env bash

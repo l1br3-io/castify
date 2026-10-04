@@ -1,8 +1,9 @@
 # Changelog
 
-Reverse-chronological ship history. Shipped efforts live in place under
-[`docs/specs/`](./docs/specs/) with `status: shipped` in their spec.md frontmatter;
-this file is the human-facing summary. Direction and sequencing live in
+Reverse-chronological ship history. Each shipped effort's context, decisions,
+deviations, and outcome are recorded in its anchor commit message
+(`git log --grep='<effort>'`); this file is the human-facing summary.
+Direction and sequencing live in
 [`docs/ROADMAP.md`](./docs/ROADMAP.md).
 
 ## Lossless Reconnect (shipped)
