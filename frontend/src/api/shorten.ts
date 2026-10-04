@@ -1,5 +1,5 @@
 // Shortener client — the single network seam for short-link minting
-// (docs/specs/short-links, task 001). Swapping providers means editing this
+// (short-links, task 001). Swapping providers means editing this
 // file only.
 //
 // Provider: spoo.me — free, keyless, open source, CORS `*`, verified live

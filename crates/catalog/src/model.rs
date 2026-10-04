@@ -67,7 +67,7 @@ mod tests {
 
     /// The serde wire form must be `"s3"` — snake_case auto-rename would
     /// produce `"s3_compatible"`, which the spec pins as `"s3"`
-    /// (docs/specs/s3-compatible-storage, §4).
+    /// (s3-compatible-storage, §4).
     #[test]
     fn s3_compatible_serde_wire_form_is_s3() {
         let json = serde_json::to_string(&Provider::S3Compatible).unwrap();
@@ -629,7 +629,7 @@ pub struct PlaybackProgress {
 /// key (`"text"` → serve to browser, `"image"` → burn-in), and
 /// `embedded_track_id` links an extracted-embedded text track back to its
 /// muxed stream index (`None` for sidecars). See
-/// `docs/specs/advanced-subtitles/spec.md`.
+/// `git log --grep=advanced-subtitles`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleTrack {
     pub id: String,

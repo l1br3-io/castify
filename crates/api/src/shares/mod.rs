@@ -1,5 +1,5 @@
 //! Sharing — read-only links for family and friends
-//! (docs/specs/sharing/spec.md).
+//! (git log --grep=sharing).
 //!
 //! A share is a revocable, optionally password-protected, optionally
 //! expiring set of catalog items addressed by a single URL token

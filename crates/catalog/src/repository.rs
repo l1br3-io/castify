@@ -935,7 +935,7 @@ impl CatalogRepository {
     }
 
     /// Fetch [`VideoSummary`] rows for an explicit set of video ids,
-    /// preserving **caller order** (share curation order, docs/specs/sharing).
+    /// preserving **caller order** (share curation order, sharing).
     ///
     /// This is the recipient-facing read: there is no owner context, so the
     /// personalization columns are neutral by construction (`is_favorite`
@@ -3509,7 +3509,7 @@ mod tests {
         assert_eq!(state.files_pruned, 1);
     }
 
-    // ── Catalog prune: stamp / prune (docs/specs/catalog-prune) ────────
+    // ── Catalog prune: stamp / prune (catalog-prune) ────────
 
     async fn video_tombstone(
         repo: &CatalogRepository,

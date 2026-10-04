@@ -1,5 +1,5 @@
 // ShortLinkButton — mint-once + canonical-fallback behavior
-// (docs/specs/short-links, task 003).
+// (short-links, task 003).
 //
 // The network layer is stubbed via globalThis.fetch (the real
 // `src/api/shorten` seam runs), so the fetch spy genuinely counts outbound

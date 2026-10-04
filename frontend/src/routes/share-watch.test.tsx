@@ -1,4 +1,4 @@
-// Share watch page tests (docs/specs/sharing task 010).
+// Share watch page tests (sharing task 010).
 //
 // Covers the recipient player page through the fetch boundary:
 //   items (share-scoped) + subtitles (share-scoped) + stream-url

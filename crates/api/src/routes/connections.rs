@@ -371,7 +371,7 @@ async fn callback_inner(
     let credential = Credential::OAuth(token_bundle);
     // `verify` resolves the account identity through the provider's OAuth
     // flow — the same entry point the credentials-form endpoint uses for
-    // static credentials (docs/specs/s3-compatible-storage, task 007).
+    // static credentials (s3-compatible-storage, task 007).
     let (account_id, account_email) = factory
         .verify(&credential)
         .await

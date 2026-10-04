@@ -1,4 +1,4 @@
-// `share-links-db` — short-link cache (docs/specs/short-links, task 002).
+// `share-links-db` — short-link cache (short-links, task 002).
 //
 // jsdom ships no IndexedDB, so these tests install a minimal in-memory
 // shim (Map-backed, microtask-async requests) shaped exactly to what the

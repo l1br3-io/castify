@@ -7,9 +7,9 @@
 # The runtime target is the alpine+ffmpeg stage (`e2e-runtime` in the
 # Dockerfile) so the Playwright suite can exercise the real transcode
 # pipeline (strategy override → ffmpeg → HLS → hls.js) — see
-# docs/specs/sharing task 013.
+# sharing task 013.
 #
-# Also boots MinIO (docs/specs/s3-compatible-storage task 009) seeded from
+# Also boots MinIO (s3-compatible-storage task 009) seeded from
 # `e2e/fixtures/bucket/`. MinIO shares the castify service's network
 # namespace: the API reaches it at the loopback endpoint
 # `http://localhost:9000` (exercising the production SSRF allowance for

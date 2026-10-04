@@ -16,7 +16,7 @@
 //! The codebase already shells out to `ffmpeg`/`ffprobe` (see `transcode.rs`
 //! and `probe.rs`) rather than binding `ffmpeg-the-third`. Extraction reuses
 //! that convention — same demux capability, different binding. Recorded in
-//! `docs/specs/advanced-subtitles/m8-deviations.md`.
+//! `the m8 deviations (see git log --grep=m8)`.
 //!
 //! ## Reliability
 //!

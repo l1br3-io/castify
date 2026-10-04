@@ -1,4 +1,4 @@
-// E2e sharing spec (docs/specs/sharing task 013) — the spec's user journey,
+// E2e sharing spec (sharing task 013) — the spec's user journey,
 // end to end against the docker stack:
 //
 //   owner creates a password-protected share → clean browser context opens
@@ -107,7 +107,7 @@ async function waitForVideoReady(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-test.describe("Sharing (docs/specs/sharing task 013)", () => {
+test.describe("Sharing (sharing task 013)", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {

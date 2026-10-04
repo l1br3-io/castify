@@ -1,5 +1,5 @@
 //! Library-folders REST — owner-curated organization for the whole
-//! catalog (docs/specs/library-folders/spec.md).
+//! catalog (git log --grep=library-folders).
 //!
 //! Every route here is owner-only (session-gated via the middleware
 //! stack, CSRF on mutations — no allowlist entry, mirroring the shares

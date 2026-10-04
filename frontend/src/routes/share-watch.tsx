@@ -1,4 +1,4 @@
-// Share watch page (docs/specs/sharing task 010) — the recipient's player
+// Share watch page (sharing task 010) — the recipient's player
 // at `/share/:token/watch/:videoId`, fully public (no session, no
 // AppLayout).
 //

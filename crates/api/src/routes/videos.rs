@@ -337,7 +337,7 @@ pub async fn get_thumbnail(
 }
 
 /// Thumbnail-serving core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 005): authorization is the caller's job, this
+/// (sharing task 005): authorization is the caller's job, this
 /// resolves the bytes — disk-cached fast path first, provider fetch with a
 /// single token refresh otherwise, caching what it fetches.
 pub(crate) async fn serve_thumbnail(state: &AppState, id: &str) -> ApiResult<Response> {
@@ -499,7 +499,7 @@ pub async fn get_stream(
 }
 
 /// Stream-serving core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 005): resolve → open (with token refresh) →
+/// (sharing task 005): resolve → open (with token refresh) →
 /// tee to the hot-video cache → instrument. Authorization is the caller's
 /// job; the body behavior is identical for owner and recipient requests.
 pub(crate) async fn serve_video_stream(
@@ -710,7 +710,7 @@ pub async fn get_stream_url(
 }
 
 /// Stream-URL-resolution core shared by the owner route and the share
-/// mirror (docs/specs/sharing task 005). `scope_base` roots every
+/// mirror (sharing task 005). `scope_base` roots every
 /// Castify-served URL the response can carry:
 ///
 /// // GOTCHA: this base-path parameter is the only path-rewriting the share
@@ -1350,7 +1350,7 @@ pub async fn get_cached_stream(
 }
 
 /// Cached-stream core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 007). Authorization is the caller's job.
+/// (sharing task 007). Authorization is the caller's job.
 ///
 /// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
 /// // and the share mirror delegate here and must stay behavior-identical
@@ -1666,7 +1666,7 @@ pub async fn list_subtitles(
 }
 
 /// Subtitle-list core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 006): authorization is the caller's job, this
+/// (sharing task 006): authorization is the caller's job, this
 /// resolves the tracks in the existing DTO shape.
 pub(crate) async fn serve_subtitle_list(
     state: &AppState,
@@ -1692,7 +1692,7 @@ pub async fn get_subtitle_track(
 }
 
 /// Subtitle-serving core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 006). The track↔video binding is inherent:
+/// (sharing task 006). The track↔video binding is inherent:
 /// `fetch_subtitle_track` selects on `id AND video_id`, so a track row
 /// belonging to a different video than the path's `{id}` resolves to
 /// `None` → 404 here, exactly as the owner handler behaves.
@@ -2171,7 +2171,7 @@ pub async fn get_transcode_master(
 }
 
 /// Master-playlist core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 007). Authorization is the caller's job.
+/// (sharing task 007). Authorization is the caller's job.
 ///
 /// // GOTCHA: the owner handler and the share mirror must stay
 /// // behavior-identical — both delegate here, so any divergence between
@@ -2420,7 +2420,7 @@ pub async fn get_transcode_playlist(
 }
 
 /// Variant-playlist core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 007). Authorization is the caller's job.
+/// (sharing task 007). Authorization is the caller's job.
 ///
 /// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
 /// // and the share mirror delegate here and must stay behavior-identical.
@@ -2502,7 +2502,7 @@ pub async fn get_transcode_segment(
 }
 
 /// Segment-serving core shared by the owner route and the share mirror
-/// (docs/specs/sharing task 007). Authorization is the caller's job.
+/// (sharing task 007). Authorization is the caller's job.
 ///
 /// // GOTCHA: same rule as [`serve_transcode_master`] — the owner handler
 /// // and the share mirror delegate here and must stay behavior-identical,

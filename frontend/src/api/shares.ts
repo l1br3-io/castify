@@ -1,10 +1,10 @@
-// Shares API client (docs/specs/sharing, tasks 002–004).
+// Shares API client (sharing, tasks 002–004).
 //
 // Two halves of one feature:
 //
 //   * Owner client — session-gated `/api/shares` (create/list/revoke/purge)
 //     and `/api/shares/{id}/items` (replace/fetch members for the edit
-//     dialog, docs/specs/mutable-share-list) for the Settings management
+//     dialog, mutable-share-list) for the Settings management
 //     page (task 011) and creation dialogs (task 012). Mutations ride the
 //     normal CSRF flow in `apiFetch`.
 //   * Recipient client — pre-auth `/api/share/{token}/...` (resolve/items/

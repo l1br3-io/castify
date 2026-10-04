@@ -1,4 +1,4 @@
-// E2e share manage spec (docs/specs/share-manage-page task 006) — the
+// E2e share manage spec (share-manage-page task 006) — the
 // effort's user journey, end to end against the docker stack.
 //
 // It subsumes the old share-edit.spec.ts journey (mutable-share-list task
@@ -91,7 +91,7 @@ async function removeViaMenu(page: Page, videoName: string): Promise<void> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-test.describe("Share manage page (docs/specs/share-manage-page task 006)", () => {
+test.describe("Share manage page (share-manage-page task 006)", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {

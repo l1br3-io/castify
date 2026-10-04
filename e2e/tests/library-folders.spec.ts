@@ -1,5 +1,5 @@
 // E2e library-folders test: the owner-curated organization flow against
-// the full stack (docs/specs/library-folders/spec.md success criteria).
+// the full stack (git log --grep=library-folders success criteria).
 //
 // Flow:
 //   1. Authenticate + seed Google Drive → scan (fixtures carry videos

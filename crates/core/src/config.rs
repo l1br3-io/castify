@@ -207,7 +207,7 @@ impl Default for AbrConfig {
     }
 }
 
-/// Catalog-prune reconcile mode (docs/specs/catalog-prune/spec.md). Controls
+/// Catalog-prune reconcile mode (git log --grep=catalog-prune). Controls
 /// when a catalog row the provider no longer lists gets deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PruneMode {

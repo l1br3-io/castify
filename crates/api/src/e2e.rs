@@ -255,7 +255,7 @@ const MOCK_MP4: &[u8] = &[
 /// Canned VTT content returned by the e2e mock's `fetch_subtitle_content`.
 const MOCK_VTT: &[u8] = b"WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nTest subtitle\n";
 
-/// MPEG-2 program stream fixture (docs/specs/sharing task 013), served for
+/// MPEG-2 program stream fixture (sharing task 013), served for
 /// the `gd-concert` file id: 12s of 32x24 testsrc plus a 440Hz sine,
 /// mpeg2video + mp2 — codecs no browser plays. Once the lazy probe
 /// identifies them, `stream-url` flips to the `transcode` strategy and the

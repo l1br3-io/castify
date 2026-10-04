@@ -194,7 +194,7 @@ async fn expired_share_is_410_share_unavailable() {
 
 #[tokio::test]
 async fn purged_share_is_404_unknown_for_recipient() {
-    // Spec criterion 8 (docs/specs/share-management): after a purge the
+    // Spec criterion 8 (share-management): after a purge the
     // token-hash row is gone, so the recipient resolve route answers 404
     // "unknown" — a deleted share is indistinguishable from one that never
     // existed. Deliberately LESS information than revoke's 410; the landing

@@ -13,7 +13,7 @@ use castify_auth::{SessionId, SessionSecret, SessionToken};
 pub const SESSION_COOKIE_NAME: &str = "castify_session";
 pub const CSRF_COOKIE_NAME: &str = "castify_csrf";
 pub const CSRF_HEADER_NAME: &str = "x-csrf-token";
-/// Share unlock cookie (docs/specs/sharing). One name for all shares: the
+/// Share unlock cookie (sharing). One name for all shares: the
 /// signed payload carries the share id, so a cookie can only ever vouch
 /// for the share it was minted for. Written by the unlock endpoint.
 pub const SHARE_UNLOCK_COOKIE_NAME: &str = "castify_share_unlock";
@@ -78,7 +78,7 @@ pub fn extract_session_id(jar: &CookieJar, secret: &SessionSecret) -> Option<Ses
 }
 
 /// Read and verify a share unlock cookie, recovering the share it unlocks
-/// (docs/specs/sharing). `None` when absent, empty, or failing HMAC/payload
+/// (sharing). `None` when absent, empty, or failing HMAC/payload
 /// verification — callers treat `None` as "locked", never as an error: a
 /// tampered cookie is indistinguishable from no cookie at this layer.
 ///
@@ -98,7 +98,7 @@ pub fn extract_share_unlock(
     crate::shares::token::verify_unlock_value(secret, raw).ok()
 }
 
-/// Build the share unlock cookie (docs/specs/sharing, task 004).
+/// Build the share unlock cookie (sharing, task 004).
 ///
 /// Attributes mirror [`build_session_cookie`] (HttpOnly, SameSite=Lax,
 /// `Secure` in prod) with one deliberate difference: `Path=/api/share/`

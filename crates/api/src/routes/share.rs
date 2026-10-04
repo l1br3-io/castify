@@ -1,4 +1,4 @@
-//! Recipient-facing share endpoints (docs/specs/sharing, tasks 003+004).
+//! Recipient-facing share endpoints (sharing, tasks 003+004).
 //!
 //!   * `GET /api/share/{token}`        — resolve: title, item count,
 //!     `locked`, `status` only; no items, no video metadata (see [`resolve`])

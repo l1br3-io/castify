@@ -255,7 +255,7 @@ async fn collect_body(mut body: BodyStream) -> ProviderResult<Vec<u8>> {
 /// Obtained via [`ProviderFactory::connect_flow`] returning
 /// [`ConnectFlow::OAuth`]. Split out of `ProviderFactory` so
 /// credential-based providers (S3-compatible storage) don't have to stub
-/// OAuth methods — see `docs/specs/s3-compatible-storage/extending-providers.md`.
+/// OAuth methods — see `docs/extending-providers.md`.
 #[async_trait::async_trait]
 pub trait OAuthFlow: Send + Sync {
     /// Build the OAuth authorization URL with PKCE. Infallible — pure string

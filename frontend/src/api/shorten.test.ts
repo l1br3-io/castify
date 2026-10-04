@@ -1,4 +1,4 @@
-// `shortenShareUrl` — the single shortener seam (docs/specs/short-links,
+// `shortenShareUrl` — the single shortener seam (short-links,
 // task 001). All cases use a stubbed global fetch; nothing here touches the
 // live spoo.me service.
 //

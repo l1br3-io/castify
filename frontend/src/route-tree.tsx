@@ -6,7 +6,7 @@
 //
 // Publicity rules:
 //   * `/share/*` routes are recipient-facing and deliberately loaderless —
-//     recipients hold no session (docs/specs/sharing). Their auth is
+//     recipients hold no session (sharing). Their auth is
 //     per-request against the share token, server-side.
 //   * Every owner route keeps `requireSessionLoader` (redirects
 //     unauthenticated users to login) or `setupLoader` (first-boot wizard).

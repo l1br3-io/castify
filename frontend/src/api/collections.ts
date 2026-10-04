@@ -1,4 +1,4 @@
-// Collections API (docs/specs/library-collections, spec F3): collection
+// Collections API (library-collections, spec F3): collection
 // CRUD/membership.
 //
 // Mirrors the Rust DTOs in `crates/api/src/routes/collections.rs`. All

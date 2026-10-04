@@ -330,7 +330,7 @@ export interface RatingResponseDto {
 // M3 introduced the sidecar subtitle shape; M8 widened it with `format_family`
 // (the routing key — `"text"` serves to browser, `"image"` triggers burn-in)
 // and `embedded_track_id` (muxed stream index for extracted-embedded text
-// tracks; null for sidecars). See `docs/specs/advanced-subtitles/spec.md`.
+// tracks; null for sidecars). See `git log --grep=advanced-subtitles`.
 export interface SubtitleTrackDto {
   id: string;
   language: string | null;
@@ -401,7 +401,7 @@ export interface StreamUrlDto {
   expires_at: string | null;
 }
 
-// ── Library collections (docs/specs/library-collections) ────────────────
+// ── Library collections (library-collections) ────────────────
 //
 // Shapes mirror `crates/api/src/routes/collections.rs` DTOs. `kind` maps the
 // backend's `CollectionKind`: `manual` is the only kind creatable via the

@@ -10,7 +10,7 @@
 // no local copy — the management list shows status only for those rows.
 //
 // The optional `shortUrl` field caches the minted spoo.me alias next to the
-// canonical link (docs/specs/short-links): same decision-rule #2 rationale
+// canonical link (short-links): same decision-rule #2 rationale
 // — the alias is per-device sugar for a link this device already holds —
 // plus it keeps repeat clicks from re-hitting the shortener's ~5/30s rate
 // limit. Records are schemaless, so the added field needs no DB_VERSION

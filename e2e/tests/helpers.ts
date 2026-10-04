@@ -473,7 +473,7 @@ export async function clearPlayerDB(page: Page): Promise<void> {
   `);
 }
 
-// ── Sharing (docs/specs/sharing) ────────────────────────────────────
+// ── Sharing (sharing) ────────────────────────────────────
 //
 // Owner-side helpers run on an authenticated owner page (session + CSRF,
 // like the connection helpers above). Recipient-side helpers run on a

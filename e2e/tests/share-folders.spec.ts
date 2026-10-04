@@ -1,4 +1,4 @@
-// E2e share-folders spec (docs/specs/share-folders task 009) — the
+// E2e share-folders spec (share-folders task 009) — the
 // effort's user journey, end to end against the docker stack:
 //
 //   owner builds a 2-level folder tree on the manage page (New folder ×2,
@@ -106,7 +106,7 @@ async function recipientPage(browser: Browser): Promise<{
 
 // ── Tests ────────────────────────────────────────────────────────────
 
-test.describe("Share folders (docs/specs/share-folders task 009)", () => {
+test.describe("Share folders (share-folders task 009)", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {

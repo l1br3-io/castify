@@ -1,5 +1,5 @@
 // ShortLinkButton — "Copy short link" sibling of CopyLinkButton
-// (docs/specs/short-links, task 003).
+// (short-links, task 003).
 //
 // Why a sibling and not a CopyButton variant: CopyButton's contract is a
 // static `value`; a short link must be resolved asynchronously (per-device

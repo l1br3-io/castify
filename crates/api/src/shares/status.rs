@@ -1,5 +1,5 @@
 //! The share status machine — one place that decides, per request, what a
-//! recipient may do with a share (docs/specs/sharing, task 003).
+//! recipient may do with a share (sharing, task 003).
 //!
 //! Every recipient-facing handler (resolve, items, the unlock + mirror
 //! routes that follow) funnels through [`lookup_share_state`]: the matrix

@@ -50,7 +50,7 @@ ENTRYPOINT ["/castify"]
 
 # ---- Stage 4: E2E runtime (alpine + ffmpeg; test-only) ----
 # Built via `--target e2e-runtime` (docker-compose.e2e.yml). The transcode
-# pipeline shells out to system ffmpeg/ffprobe (docs/specs/sharing task 013:
+# pipeline shells out to system ffmpeg/ffprobe (sharing task 013:
 # the e2e suite plays a genuinely transcode-needing item end to end), and the
 # distroless production stage has neither binary. Alpine runs the same musl
 # static binary and carries ffmpeg, so strategy override → ffmpeg → HLS →

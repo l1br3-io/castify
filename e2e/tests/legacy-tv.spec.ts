@@ -1,4 +1,4 @@
-// E2e legacy TV player spec (docs/specs/legacy-tv-player task 007) — the
+// E2e legacy TV player spec (legacy-tv-player task 007) — the
 // legacy page, end to end against the docker stack.
 //
 // GOTCHA — why `?legacy=1` on every navigation: Playwright's Chromium
@@ -65,7 +65,7 @@ async function recipientPage(
   return { context, page };
 }
 
-test.describe("Legacy TV player (docs/specs/legacy-tv-player task 007)", () => {
+test.describe("Legacy TV player (legacy-tv-player task 007)", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {
@@ -243,7 +243,7 @@ test.describe("Legacy TV player (docs/specs/legacy-tv-player task 007)", () => {
 
   // ── Folder navigation + whole-share search (nav-search task 005) ────
 
-  test.describe("Legacy TV navigation + search (docs/specs/legacy-tv-nav-search task 005)", () => {
+  test.describe("Legacy TV navigation + search (legacy-tv-nav-search task 005)", () => {
     test("folder rows + counts; folder entry is pushState; crumbs walk back to root", async ({
       browser,
     }) => {

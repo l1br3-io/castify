@@ -1,4 +1,4 @@
-// Share landing page tests (docs/specs/sharing task 009).
+// Share landing page tests (sharing task 009).
 //
 // Covers the page's state machine end to end through the fetch boundary:
 //   resolve → (locked? gate → unlock → items : items) → grid

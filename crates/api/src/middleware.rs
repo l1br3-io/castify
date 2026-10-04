@@ -31,7 +31,7 @@ use crate::state::AppState;
 /// on which routes are exempt. Non-`/api/` paths are also exempt — they're
 /// served by the SPA fallback and have nothing to do with auth.
 ///
-/// Recipient share routes (docs/specs/sharing) are pre-auth by prefix:
+/// Recipient share routes (sharing) are pre-auth by prefix:
 /// every GET under `/api/share/` plus the unlock POST. Share handlers do
 /// their own per-request validation (token hash, expiry, revocation,
 /// unlock) — the prefix rule only decides *session* gating. Note the
@@ -46,8 +46,8 @@ pub fn is_pre_auth(method: &Method, path: &str) -> bool {
     }
     // The e2e mock CDN simulates a provider's public preauthenticated CDN
     // URL — production direct-strategy URLs point at the provider, not at
-    // Castify, so no session applies. Recipient browsers (docs/specs/
-    // sharing) fetch it with no session; it must be pre-auth like the
+    // Castify, so no session applies. Recipient browsers (see the sharing
+    // effort, git log --grep=sharing) fetch it with no session; it must be pre-auth like the
     // thing it stands in for. Route exists only in e2e builds.
     #[cfg(feature = "e2e")]
     if path.starts_with("/api/__e2e/mock-cdn/") {
@@ -213,7 +213,7 @@ mod tests {
         assert!(!is_pre_auth(&Method::GET, "/api/shares"));
         assert!(!is_pre_auth(&Method::POST, "/api/shares"));
         assert!(!is_pre_auth(&Method::DELETE, "/api/shares/42"));
-        // The item-list edit (docs/specs/mutable-share-list) is an owner
+        // The item-list edit (mutable-share-list) is an owner
         // mutation — session + CSRF, like every other /api/shares write.
         assert!(!is_pre_auth(&Method::PUT, "/api/shares/42/items"));
     }

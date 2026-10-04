@@ -1,5 +1,5 @@
 // E2e drag-and-drop test: the three verbs against the full stack
-// (docs/specs/drag-and-drop/spec.md success criteria).
+// (git log --grep=drag-and-drop success criteria).
 //
 //   1. Organize — item drags onto folder tiles + the Unfiled pin (one
 //      PATCH per drop, selection carried), folder reparent drag, and

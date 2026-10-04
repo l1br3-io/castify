@@ -288,7 +288,7 @@ describe("ShareDialog", () => {
     ).toBeInTheDocument();
   });
 
-  // --- short link (docs/specs/short-links task 004) ---
+  // --- short link (short-links task 004) ---
 
   /** Creation POST plus the spoo.me mint — both over the one fetch stub. */
   function createShareAndShortenFetch(): FetchHandler {

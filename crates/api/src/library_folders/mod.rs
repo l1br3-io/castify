@@ -1,5 +1,5 @@
 //! Library folders — owner-curated organization for the whole catalog
-//! (docs/specs/library-folders/spec.md).
+//! (git log --grep=library-folders).
 //!
 //! Google Drive-style folders the owner creates inside Castify, filing
 //! catalog items (videos *and* non-video files) into them. The curated

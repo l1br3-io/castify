@@ -1,6 +1,6 @@
 //! Owner-facing shares REST — create, list, revoke, edit items, and
-//! organize them into folders (docs/specs/sharing,
-//! docs/specs/mutable-share-list, docs/specs/share-folders).
+//! organize them into folders (sharing,
+//! mutable-share-list, share-folders).
 //!
 //!   * `POST   /api/shares`     — create a share (see [`create`])
 //!   * `GET    /api/shares`     — management list (see [`list`])
@@ -524,7 +524,7 @@ pub struct PurgeParams {
 /// that never existed. That is deliberately LESS information than
 /// revoke's 410 ("this existed but is dead"): purge is the owner saying
 /// the share should leave no trace (spec criterion 8,
-/// docs/specs/share-management). The landing page already renders both
+/// share-management). The landing page already renders both
 /// 404 and 410 as terminal, so recipients see the right card either way.
 pub async fn revoke(
     State(state): State<AppState>,

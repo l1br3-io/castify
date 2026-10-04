@@ -40,7 +40,7 @@ struct AppStateInner {
     /// `get_stream_url` returns `Cached` strategy for cache hits.
     video_cache: Option<Arc<DiskCache>>,
     /// In-memory per-share failure counters for the unlock endpoint
-    /// (docs/specs/sharing, task 004). Deliberately never persisted — a
+    /// (sharing, task 004). Deliberately never persisted — a
     /// restart clears all lockouts.
     unlock_rate_limiter: crate::shares::ratelimit::UnlockRateLimiter,
     /// Runtime-editable transcode toggle (Settings page). Initialized from
@@ -162,12 +162,12 @@ impl AppState {
         &self.inner.catalog_repository
     }
 
-    /// Shares persistence + membership checks (docs/specs/sharing).
+    /// Shares persistence + membership checks (sharing).
     pub fn share_repository(&self) -> &ShareRepository {
         &self.inner.share_repository
     }
 
-    /// Curated library-folder persistence (docs/specs/library-folders).
+    /// Curated library-folder persistence (library-folders).
     pub fn library_folder_repository(&self) -> &LibraryFolderRepository {
         &self.inner.library_folder_repository
     }
@@ -193,7 +193,7 @@ impl AppState {
         self.inner.video_cache.as_ref()
     }
 
-    /// In-memory unlock rate limiting (docs/specs/sharing). Per-share
+    /// In-memory unlock rate limiting (sharing). Per-share
     /// failure counters with a 15-minute cool-off; never persisted.
     pub fn unlock_rate_limiter(&self) -> &crate::shares::ratelimit::UnlockRateLimiter {
         &self.inner.unlock_rate_limiter

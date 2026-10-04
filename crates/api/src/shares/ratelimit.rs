@@ -1,5 +1,5 @@
 //! In-memory rate limiting for the share unlock endpoint
-//! (docs/specs/sharing, task 004).
+//! (sharing, task 004).
 //!
 //! Brute-force protection for the password gate: after [`MAX_FAILURES`]
 //! consecutive wrong passwords for one share, [`UnlockRateLimiter::check`]

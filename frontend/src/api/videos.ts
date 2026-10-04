@@ -151,7 +151,7 @@ export function saveProgress(
 }
 
 // ---------------------------------------------------------------------------
-// Sharing — access scope seam (docs/specs/sharing task 008).
+// Sharing — access scope seam (sharing task 008).
 // ---------------------------------------------------------------------------
 
 /**

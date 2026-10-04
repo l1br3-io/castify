@@ -1,4 +1,4 @@
-// Share landing page (docs/specs/sharing task 009) — the recipient's entry
+// Share landing page (sharing task 009) — the recipient's entry
 // point at `/share/:token`, fully public (no session, no AppLayout).
 //
 // State machine, driven by exactly the spec's request budget (criterion 8:

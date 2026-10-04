@@ -11,7 +11,7 @@
  * GOTCHA: tokens are PRECOMPILED from the standalone design source
  * ("Media Library (standalone).html") — var()/color-mix() there become
  * literal hex/rgba here. The translation table lives in
- * docs/specs/legacy-tv-classical/spec.md; never hand-pick a value that
+ * git log --grep=legacy-tv-classical; never hand-pick a value that
  * isn't in the table.
  */
 

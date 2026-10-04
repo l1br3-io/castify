@@ -1,4 +1,4 @@
-// E2e short-link spec (docs/specs/short-links task 005) — the spec's two
+// E2e short-link spec (short-links task 005) — the spec's two
 // user journeys against the docker stack, with the third-party shortener
 // fully intercepted:
 //
@@ -42,7 +42,7 @@ let vacationId = "";
 
 // ── Setup ────────────────────────────────────────────────────────────
 
-test.describe("Short links (docs/specs/short-links task 005)", () => {
+test.describe("Short links (short-links task 005)", () => {
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {

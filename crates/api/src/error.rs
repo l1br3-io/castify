@@ -18,7 +18,7 @@ pub enum ApiError {
     /// A share link that was once live but is now revoked or expired.
     /// Terminal: HTTP 410 with `code: "share_unavailable"` so the SPA can
     /// show the recipient a permanent "no longer available" state instead
-    /// of retrying (docs/specs/sharing).
+    /// of retrying (sharing).
     #[error("this share is no longer available")]
     ShareUnavailable,
     /// A password-protected share accessed without a current unlock.
@@ -27,7 +27,7 @@ pub enum ApiError {
     #[error("this share requires a password")]
     ShareLocked,
     /// Too many consecutive failed unlock attempts for one share token
-    /// (docs/specs/sharing). HTTP 429 with `code: "rate_limited"` — the
+    /// (sharing). HTTP 429 with `code: "rate_limited"` — the
     /// cool-off window is 15 minutes (see `shares::ratelimit::COOL_OFF`).
     #[error("too many unlock attempts; wait a bit and try again")]
     RateLimited,

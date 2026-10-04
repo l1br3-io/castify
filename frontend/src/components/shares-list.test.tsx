@@ -421,7 +421,7 @@ describe("SharesSection", () => {
     expect(screen.getByText("Wedding cut")).toBeInTheDocument();
   });
 
-  // --- short link button (docs/specs/short-links task 004) ---
+  // --- short link button (short-links task 004) ---
 
   it("active rows with a local link offer both Copy link and Copy short link", async () => {
     vi.mocked(getShareLinkMap).mockResolvedValue({ s1: "/share/tok_abc" });

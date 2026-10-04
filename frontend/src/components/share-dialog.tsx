@@ -526,7 +526,7 @@ function ShareOptionRow({
 
 /** Post-creation view — the one-time link, copy, warning, Done. The
  * "Share link created" heading is the Dialog primitive's title. The
- * short link (docs/specs/short-links) is minted on explicit click via
+ * short link (short-links) is minted on explicit click via
  * `ShortLinkButton` and lifted here as text so it can be read onto
  * another device; the canonical link above it stays the durable one. */
 function CreatedView({
